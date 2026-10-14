@@ -151,7 +151,7 @@ Loopback-only HTTP clients, not outbound: 127.0.0.1:7601 (whatsmeow), :7602 (tra
 | com.apple.screensharing (system **LaunchDaemon**) | macOS Screen Sharing (VNC 5900) | `launchctl load -w` (persistent) | install.sh:2186 |
 | com.aos.qareen / qareen-deploy / com.agent.qareen-dev | Qareen dashboard :4096 / :4097 | KeepAlive | historical: 054:146-166, 080:141-177, 095 (rewrites); removed by 108 |
 | com.aos.qareen-tunnel | cloudflared tunnel | KeepAlive | historical (TunnelManager); unloaded by 098 |
-| com.aos.n8n | n8n :5678 | KeepAlive | historical: 056:184-195; removed by 109 |
+| n8n LaunchAgent (retired) | n8n :5678 | KeepAlive | historical: 056:184-195; removed by 109 |
 | com.aos.listen, com.aos.companion, com.aos.slack-watch, com.aos.memory, com.aos.work-runner, com.aos.dashboard | retired | — | removed by 055/098/109/110/128 |
 | com.aos.ios-deploy, com.aos.domain-watch/-catch, com.aos.sana-watch, com.aos.healthsync-deploy | instance-only (no template in repo) | — | referenced in config/modules.yaml:281, 120_retire_dead_mcp_entries_and_orphans.py |
 
