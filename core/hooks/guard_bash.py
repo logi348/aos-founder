@@ -284,6 +284,15 @@ def _check_words(words: list[str], cwd: Path, depth: int) -> tuple[str, str] | N
     if not words:
         return None
     name = os.path.basename(words[0])
+    # Applying updates / switching releases is the operator's call (they
+    # merge into the fork, then update). Agents may check, not apply.
+    if name == "aos" and len(words) > 1 and words[1] in ("update", "repair", "promote", "rollback", "channel"):
+        if not (words[1] == "channel" and len(words) == 2):
+            return ("ask", f"`aos {words[1]}` changes the running system; the operator decides when.")
+    if name in ("check-update", "release-manager") or any(w.endswith("/check-update") or
+                                                          w.endswith("/release-manager") for w in words[:2]):
+        if any(w in ("--apply", "--continue", "create", "activate", "convert") for w in words):
+            return ("ask", "Applying an update is the operator's call.")
     if name == "crontab" and any(a != "-l" for a in words[1:]):
         return ("deny", "Changing the crontab is blocked for agents (it would run code outside "
                         "Claude). Scheduled jobs belong in config/crons.yaml, changed by the operator.")

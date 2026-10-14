@@ -1363,6 +1363,21 @@ class TelegramChannel:
             await query.answer()
             return
 
+        # ── "Apply update" button from check-update (update_offer.py) ──
+        import update_offer
+        data = query.data or ""
+        if data.startswith(update_offer.PREFIX) or data == update_offer.LATER:
+            reply, to_apply = update_offer.decide(data)
+            await query.answer()
+            try:
+                await query.edit_message_reply_markup(reply_markup=None)
+            except Exception:
+                pass
+            await query.message.reply_text(reply)
+            if to_apply:
+                update_offer.start_apply()
+            return
+
         # ── Stop button — kill the active Claude process ──
         if query.data == "stop_generation":
             thread_id = getattr(query.message, 'message_thread_id', None)

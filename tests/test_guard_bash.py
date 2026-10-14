@@ -163,3 +163,13 @@ def test_aos_config_writes_need_the_operator():
         assert decision(cmd) == "ask", cmd
     assert decision("cat ~/.aos/config/comms.yaml") is None
     assert decision("echo x > ~/.aos/work/notes.md") is None
+
+
+def test_agents_may_check_for_updates_but_not_apply_them():
+    assert decision("aos check-update") is None
+    assert decision("bash ~/aos/core/bin/crons/check-update --status") is None
+    assert decision("aos channel") is None
+    for cmd in ["aos update", "aos repair", "aos channel edge",
+                "bash ~/aos/core/bin/crons/check-update --apply",
+                "~/aos/core/bin/crons/check-update --apply --allow-downgrade"]:
+        assert decision(cmd) == "ask", cmd

@@ -266,6 +266,51 @@ notify() {
         > /dev/null 2>&1 || true
 }
 
+# ── Offer an update on Telegram (hardened fork) ──────────────────────────────
+#
+# auto-update is disabled, so nothing is applied unattended. When the fork has
+# a new version, tell the operator once per version, with an "Apply update"
+# button. The bridge handles the button (owner-only) by running
+# `check-update --apply` — but only if that exact version is still the one
+# pending (core/services/bridge/update_offer.py).
+_offer_update() {
+    # check() just wrote the state file; read its verdict (no second fetch).
+    local marker="$HOME/.aos/data/update-offered-hash"
+    local remote behind changes
+    read -r remote behind < <("$AOS_PY" -c "
+import json, os
+s = json.load(open(os.environ['STATE_FILE']))
+if s.get('status') == 'update_available':
+    print(s.get('remote', ''), s.get('behind', '?'))
+" 2>/dev/null)
+    [[ -z "$remote" ]] && return 0
+    [[ -f "$marker" && "$(cat "$marker" 2>/dev/null)" == "$remote" ]] && return 0
+
+    local bot_token chat_id
+    bot_token=$("$AOS_DIR/core/bin/cli/agent-secret" get TELEGRAM_BOT_TOKEN 2>/dev/null) || return 0
+    chat_id=$("$AOS_DIR/core/bin/cli/agent-secret" get TELEGRAM_CHAT_ID 2>/dev/null) || return 0
+    [[ -z "$bot_token" || -z "$chat_id" ]] && return 0
+
+    changes=$(cd "$AOS_DIR" 2>/dev/null && git log --oneline -5 "HEAD..$remote" 2>/dev/null)
+    local payload
+    payload=$(CHAT="$chat_id" REMOTE="$remote" BEHIND="$behind" CHANGES="$changes" "$AOS_PY" -c "
+import json, os, html
+r = os.environ['REMOTE']
+text = (f'<b>AOS update available</b> — {os.environ[\"BEHIND\"]} new commit(s) on your fork '
+        f'(<code>{r[:12]}</code>).\n<pre>{html.escape(os.environ[\"CHANGES\"])}</pre>\n'
+        'Only apply what you merged yourself.')
+print(json.dumps({'chat_id': int(os.environ['CHAT']), 'text': text, 'parse_mode': 'HTML',
+                  'reply_markup': {'inline_keyboard': [[
+                      {'text': 'Apply update', 'callback_data': 'aos_update:' + r[:40]},
+                      {'text': 'Later', 'callback_data': 'aos_update_later'}]]}}))
+") || return 0
+    if curl -s --max-time 10 -X POST "https://api.telegram.org/bot${bot_token}/sendMessage" \
+        -H "Content-Type: application/json" -d "$payload" > /dev/null 2>&1; then
+        mkdir -p "$(dirname "$marker")" && echo "$remote" > "$marker"
+        log "Offered update $remote on Telegram"
+    fi
+}
+
 # ── Check for updates ────────────────────────────────────────────────────────
 #
 # IMPORTANT: check() and its variants ALWAYS exit 0 for any non-catastrophic
@@ -1308,6 +1353,7 @@ case "${1:-}" in
     *)
         # Plain check (the every-2h cron). Always exits 0 — see note above check().
         check
+        _offer_update
         ;;
 esac
 
