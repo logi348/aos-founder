@@ -13,8 +13,8 @@ sys.path.insert(0, str(REPO / "core" / "infra"))
 sys.path.insert(0, str(REPO / "core" / "infra" / "reconcile"))
 sys.path.insert(0, str(REPO / "core" / "infra" / "reconcile" / "checks"))
 
-from lib import claude_features as cf  # noqa: E402
 from claude_defaults import ClaudeDefaultsCheck  # noqa: E402
+from lib import claude_features as cf  # noqa: E402
 
 CLI = REPO / "core" / "bin" / "cli" / "claude-features"
 

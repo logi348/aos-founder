@@ -478,8 +478,8 @@ class TelegramChannel:
 
     async def _send_approval_prompt(self, approval_id: str, text_html: str):
         """Allow/Deny prompt for approvals.py. Returns the sent message."""
-        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
         import approvals
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
         keyboard = InlineKeyboardMarkup([[
             InlineKeyboardButton("✅ Allow", callback_data=f"{approvals.CALLBACK_PREFIX}{approval_id}:a"),
             InlineKeyboardButton("⛔ Deny", callback_data=f"{approvals.CALLBACK_PREFIX}{approval_id}:d"),

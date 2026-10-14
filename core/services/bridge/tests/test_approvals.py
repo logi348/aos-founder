@@ -1,5 +1,6 @@
 """Hardened fork: Telegram bridge sessions ask the operator's phone instead
 of bypassing permissions (approvals.py, approval_mcp.py, bridge_permissions.py)."""
+# ruff: noqa: I001  (local modules imported after the sys.path setup)
 import asyncio
 import json
 import sys
