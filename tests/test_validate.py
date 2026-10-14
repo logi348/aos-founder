@@ -2,8 +2,8 @@
 Tests for core/infra/lib/validate.py's operator.yaml key allowlist.
 
 _OPERATOR_KNOWN is a claim about what the system reads, and it has drifted
-before: commit f67adde added `location`, `prayer`, `nickname`, and
-`notifications` after they were flagged "Unknown key" on every single
+before: commit f67adde added `location`, `nickname`, and `notifications`
+(plus one key this fork has since removed with its feature) after they were flagged "Unknown key" on every single
 self-test run despite being read by shipped code. The same audit that found
 that (aos#237, the faisal-mini parity comparison) found two more fields a
 real operator's operator.yaml uses that the allowlist still didn't know
@@ -80,7 +80,6 @@ def test_previously_fixed_fields_remain_known(tmp_path):
     data = {
         **REQUIRED,
         "location": {"latitude": 0, "longitude": 0, "city": "Nowhere"},
-        "prayer": {"method": "NorthAmerica"},
         "nickname": "Boss",
         "notifications": {"morning_briefing": True},
     }
@@ -99,9 +98,8 @@ def test_reference_operator_yaml_shape_has_no_unknown_key_warnings(tmp_path):
         "name": "Test Operator",
         "timezone": "America/Toronto",
         "location": {"latitude": 43.59, "longitude": -79.64, "city": "Example City"},
-        "prayer": {"method": "NorthAmerica"},
         "communication": {"style": "concise", "questions": "one-at-a-time", "language": "en"},
-        "schedule": {"blocks": [], "weekends": {"active_after": "fajr"}},
+        "schedule": {"blocks": [], "weekends": {"active_after": "08:00"}},
         "daily_loop": {"morning_briefing": "06:00", "evening_checkin": "21:00"},
         "trust": {"default_level": 1, "escalation": "always"},
         "agent_name": "chief",

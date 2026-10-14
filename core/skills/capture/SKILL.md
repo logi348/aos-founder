@@ -76,6 +76,6 @@ Input: *">> rethink how the Record tab models a day"*
 → dispatch one Plan subagent → writes `captures/2026-06-20-record-tab-rethink.md`
 → append a stub with `→captures/…` → reply: `✓ shaped → captures/2026-06-20-record-tab-rethink.md — rethink how Record models a day`
 
-Input (ramble): *"call the accountant, and the qibla compass drifts, also we should capture voice notes"*
-→ three entries: `[task · ?] call the accountant` · `[bug · dod · qibla] qibla compass drifts` · `[idea · aos · capture] capture voice notes`
+Input (ramble): *"call the accountant, and the map pin drifts, also we should capture voice notes"*
+→ three entries: `[task · ?] call the accountant` · `[bug · na · map] map pin drifts` · `[idea · aos · capture] capture voice notes`
 → three one-line replies.

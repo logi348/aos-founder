@@ -189,7 +189,7 @@ jobs:
     at: "06:30"
     timeout: 60
     tier: 2
-    description: Prepares morning briefing with weather, prayer times, focus
+    description: Prepares morning briefing with weather and people nudges
 
   # ── Tier 3: Integration ─────────────────────────────────────────────────────
 

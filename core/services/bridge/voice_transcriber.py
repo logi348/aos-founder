@@ -113,7 +113,7 @@ def _transcribe_fallback(wav_path: str) -> str:
         'import mlx_whisper, json; '
         f'r = mlx_whisper.transcribe("{wav_path}", '
         'path_or_hf_repo="mlx-community/whisper-large-v3-turbo", '
-        'initial_prompt="\\u0628\\u0633\\u0645 \\u0627\\u0644\\u0644\\u0647 \\u0627\\u0644\\u0631\\u062d\\u0645\\u0646 \\u0627\\u0644\\u0631\\u062d\\u064a\\u0645. Hello, \\u0645\\u0631\\u062d\\u0628\\u0627."); '
+        'initial_prompt="\\u0645\\u0631\\u062d\\u0628\\u0627. \\u0647\\u0630\\u0627 \\u062a\\u0633\\u062c\\u064a\\u0644 \\u0635\\u0648\\u062a\\u064a. Hello, \\u0645\\u0631\\u062d\\u0628\\u0627."); '
         'print(json.dumps({"text": r.get("text", ""), "language": r.get("language", "unknown")}))'
     )
 

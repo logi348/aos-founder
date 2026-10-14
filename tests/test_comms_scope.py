@@ -72,8 +72,8 @@ CREATE TABLE message_attachment_join (
 );
 """
 
-HISHAM_PHONE = "+14165550100"
-HISHAM_EMAIL = "hisham@example.com"
+ALEX_PHONE = "+14165550100"
+ALEX_EMAIL = "alex@example.com"
 OTHER_PHONE = "+14165550199"
 THIRD_PHONE = "+14165550177"
 
@@ -81,23 +81,23 @@ THIRD_PHONE = "+14165550177"
 def _build_chat_db(path: Path) -> None:
     conn = sqlite3.connect(path)
     conn.executescript(_CHAT_SCHEMA)
-    # handles: 1 = Hisham phone, 2 = Hisham email, 3 = other, 4 = third
+    # handles: 1 = Alex phone, 2 = Alex email, 3 = other, 4 = third
     conn.executemany(
         "INSERT INTO handle (ROWID, id, service) VALUES (?, ?, ?)",
         [
-            (1, HISHAM_PHONE, "iMessage"),
-            (2, HISHAM_EMAIL.upper(), "iMessage"),  # stored upper-case on purpose
+            (1, ALEX_PHONE, "iMessage"),
+            (2, ALEX_EMAIL.upper(), "iMessage"),  # stored upper-case on purpose
             (3, OTHER_PHONE, "iMessage"),
             (4, THIRD_PHONE, "SMS"),
         ],
     )
-    # chats: 10 = Hisham 1:1 (phone), 11 = Hisham 1:1 (email), 12 = other 1:1,
-    #        13 = group with Hisham + other, 14 = short-code chat with no join rows
+    # chats: 10 = Alex 1:1 (phone), 11 = Alex 1:1 (email), 12 = other 1:1,
+    #        13 = group with Alex + other, 14 = short-code chat with no join rows
     conn.executemany(
         "INSERT INTO chat (ROWID, chat_identifier, style, display_name) VALUES (?, ?, ?, ?)",
         [
-            (10, HISHAM_PHONE, 45, None),
-            (11, HISHAM_EMAIL, 45, None),
+            (10, ALEX_PHONE, 45, None),
+            (11, ALEX_EMAIL, 45, None),
             (12, OTHER_PHONE, 45, None),
             (13, "chat123456", 43, "Qren crew"),
             (14, "22000", 45, None),
@@ -107,7 +107,7 @@ def _build_chat_db(path: Path) -> None:
         "INSERT INTO chat_handle_join (chat_id, handle_id) VALUES (?, ?)",
         [(10, 1), (11, 2), (12, 3), (13, 1), (13, 3), (13, 4)],
     )
-    # messages: 100-102 Hisham phone chat (one from me), 103 Hisham email,
+    # messages: 100-102 Alex phone chat (one from me), 103 Alex email,
     #           104-105 other chat, 106-107 group, 108 short-code
     conn.executemany(
         "INSERT INTO message (ROWID, handle_id, text, is_from_me, date) VALUES (?, ?, ?, ?, ?)",
@@ -119,7 +119,7 @@ def _build_chat_db(path: Path) -> None:
             (104, 3, "other person", 0, 5),
             (105, 0, "reply to other", 1, 6),
             (106, 3, "group msg from other", 0, 7),
-            (107, 1, "group msg from hisham", 0, 8),
+            (107, 1, "group msg from alex", 0, 8),
             (108, 0, "your code is 1234", 0, 9),
         ],
     )
@@ -139,7 +139,7 @@ def _build_chat_db(path: Path) -> None:
     )
     conn.executemany(
         "INSERT INTO attachment (ROWID, filename) VALUES (?, ?)",
-        [(200, "hisham.png"), (201, "other.png")],
+        [(200, "alex.png"), (201, "other.png")],
     )
     conn.executemany(
         "INSERT INTO message_attachment_join (message_id, attachment_id) VALUES (?, ?)",
@@ -157,10 +157,10 @@ ALLOWLIST_YAML = f"""
 imessage:
   access: allowlist
   allowed:
-    - name: Hisham
+    - name: Alex
       handles:
-        - "{HISHAM_PHONE}"
-        - "{HISHAM_EMAIL}"
+        - "{ALEX_PHONE}"
+        - "{ALEX_EMAIL}"
 """
 
 
@@ -214,9 +214,9 @@ def test_allowlist_loads_contacts(env):
     _write_config(cfg, ALLOWLIST_YAML)
     p = load_policy()
     assert p.is_restricted
-    assert [c.name for c in p.allowed] == ["Hisham"]
-    assert p.handles_for("hisham") == [HISHAM_PHONE, HISHAM_EMAIL]
-    assert p.name_for(HISHAM_PHONE) == "Hisham"
+    assert [c.name for c in p.allowed] == ["Alex"]
+    assert p.handles_for("alex") == [ALEX_PHONE, ALEX_EMAIL]
+    assert p.name_for(ALEX_PHONE) == "Alex"
     assert p.name_for(OTHER_PHONE) is None
 
 
@@ -247,7 +247,7 @@ def test_missing_section_or_access_key_fails_closed(env):
 @pytest.mark.parametrize(
     "handle",
     [
-        HISHAM_PHONE,
+        ALEX_PHONE,
         "4165550100",
         "+1 (416) 555-0100",
         "1-416-555-0100",
@@ -255,12 +255,12 @@ def test_missing_section_or_access_key_fails_closed(env):
     ],
 )
 def test_phone_normalization(handle):
-    p = Policy(access="allowlist", allowed=[scope.AllowedContact("H", [HISHAM_PHONE])])
+    p = Policy(access="allowlist", allowed=[scope.AllowedContact("H", [ALEX_PHONE])])
     assert p.handle_allowed(handle)
 
 
 def test_phone_different_number_denied():
-    p = Policy(access="allowlist", allowed=[scope.AllowedContact("H", [HISHAM_PHONE])])
+    p = Policy(access="allowlist", allowed=[scope.AllowedContact("H", [ALEX_PHONE])])
     assert not p.handle_allowed(OTHER_PHONE)
     assert not p.handle_allowed("4165550199")
 
@@ -273,9 +273,9 @@ def test_short_codes_must_match_exactly():
 
 
 def test_email_case_insensitive():
-    p = Policy(access="allowlist", allowed=[scope.AllowedContact("H", [HISHAM_EMAIL])])
-    assert p.handle_allowed("Hisham@Example.COM")
-    assert not p.handle_allowed("hisham@example.org")
+    p = Policy(access="allowlist", allowed=[scope.AllowedContact("H", [ALEX_EMAIL])])
+    assert p.handle_allowed("Alex@Example.COM")
+    assert not p.handle_allowed("alex@example.org")
 
 
 def test_email_and_phone_kinds_never_cross():
@@ -323,7 +323,7 @@ def test_allowlist_restricts_unqualified_queries_on_ro_connection(env, chat_db):
 
     assert _ids(conn, "SELECT ROWID FROM handle") == [1, 2]
     assert _ids(conn, "SELECT ROWID FROM chat") == [10, 11]
-    # from-me rows (handle_id 0) in Hisham's chat survive; other chat's do not
+    # from-me rows (handle_id 0) in Alex's chat survive; other chat's do not
     assert _ids(conn, "SELECT ROWID FROM message") == [100, 101, 102, 103]
     assert _ids(conn, "SELECT chat_id FROM chat_handle_join") == [10, 11]
     assert _ids(conn, "SELECT message_id FROM chat_message_join") == [
@@ -481,11 +481,11 @@ def test_send_refused_without_config(env):
 def test_send_allowed_restricted(env):
     cfg, _ = env
     _write_config(cfg, ALLOWLIST_YAML)
-    assert send_allowed(HISHAM_PHONE)
+    assert send_allowed(ALEX_PHONE)
     assert send_allowed("416-555-0100")
-    assert send_allowed("HISHAM@example.com")
+    assert send_allowed("ALEX@example.com")
     assert not send_allowed(OTHER_PHONE)
-    assert_send_allowed(HISHAM_PHONE)
+    assert_send_allowed(ALEX_PHONE)
     with pytest.raises(ScopeDenied) as exc:
         assert_send_allowed(OTHER_PHONE)
     assert OTHER_PHONE in str(exc.value)

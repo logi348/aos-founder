@@ -3,7 +3,7 @@ Migration 079: Add a first-class `short_id` column to the projects table.
 
 Background
 ----------
-A project's short-id (e.g. "dod" for "Deen Over Dunya") is the user-facing
+A project's short-id (e.g. "dod" for "Docs On Demand") is the user-facing
 handle used as the scoped task-id prefix (dod#1) and as an alias for
 `--project` resolution. It had no column: `work projects create --short-id dod`
 stored the value encoded in the project's `description` as the literal string

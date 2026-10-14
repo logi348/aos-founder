@@ -15,8 +15,8 @@ The policy lives in ``~/.aos/config/comms.yaml``::
       access: allowlist          # allowlist | all   (missing/invalid => empty allowlist)
       include_groups: false
       allowed:
-        - name: Hisham
-          handles: ["+14165550123", "hisham@example.com"]
+        - name: Alex
+          handles: ["+14165550123", "alex@example.com"]
 
 ``apply(conn)`` is called right after any connection to chat.db is opened.
 When the policy is an allowlist it installs SQLite **temp views** named

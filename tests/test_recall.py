@@ -79,19 +79,19 @@ _PEOPLE = [
 # Fake messages. content is invented; no real personal data.
 _MESSAGES = [
     # id, channel, direction, content, timestamp, person_id
-    ("m_open_1", "imessage", "inbound", "lets grab lunch about the ramadan plans",
+    ("m_open_1", "imessage", "inbound", "lets grab lunch about the holiday plans",
      "2026-07-10T12:00:00", "pers_open"),
-    ("m_open_2", "whatsapp", "outbound", "confirmed the ramadan iftar booking",
+    ("m_open_2", "whatsapp", "outbound", "confirmed the holiday lunch booking",
      "2026-07-12T09:30:00", "pers_open"),
     ("m_open_3", "imessage", "inbound", "unrelated chatter about the weather",
      "2026-05-01T08:00:00", "pers_open"),
-    ("m_limited_1", "imessage", "inbound", "secret ramadan surprise details",
+    ("m_limited_1", "imessage", "inbound", "secret holiday surprise details",
      "2026-07-11T15:00:00", "pers_limited"),
-    ("m_private_1", "email", "inbound", "confidential ramadan medical note",
+    ("m_private_1", "email", "inbound", "confidential holiday medical note",
      "2026-07-13T18:00:00", "pers_private"),
-    ("m_unknown_1", "sms", "inbound", "ramadan reminder from an unmapped number",
+    ("m_unknown_1", "sms", "inbound", "holiday reminder from an unmapped number",
      "2026-07-09T07:00:00", None),
-    ("m_long_1", "imessage", "outbound", "x" * 500 + " ramadan",
+    ("m_long_1", "imessage", "outbound", "x" * 500 + " holiday",
      "2026-07-14T20:00:00", "pers_open"),
 ]
 
@@ -161,7 +161,7 @@ def _assert_contract(row: dict):
 
 class TestContract:
     def test_search_rows_all_have_four_fields(self, engine):
-        rows = engine.search(query="ramadan")
+        rows = engine.search(query="holiday")
         assert rows
         for row in rows:
             _assert_contract(row)
@@ -172,7 +172,7 @@ class TestContract:
         _assert_contract(row)
 
     def test_verbatim_confidence_is_one(self, engine):
-        for row in engine.search(query="ramadan"):
+        for row in engine.search(query="holiday"):
             assert row["confidence"] == 1.0
 
     def test_source_ref_points_at_the_message(self, engine):
@@ -183,7 +183,7 @@ class TestContract:
         assert ref["date"] == "2026-07-10T12:00:00"
 
     def test_search_is_snippet_first(self, engine):
-        [row] = engine.search(query="ramadan", person="alice",
+        [row] = engine.search(query="holiday", person="alice",
                               since="2026-07-14", until="2026-07-14")
         e = row["entity"]
         assert e["truncated"] is True
@@ -200,29 +200,29 @@ class TestContract:
 
 class TestPrivacyFiltering:
     def test_private_and_limited_excluded_by_default(self, engine):
-        rows = engine.search(query="ramadan", limit=100)
+        rows = engine.search(query="holiday", limit=100)
         pids = {r["entity"]["person_id"] for r in rows}
         assert "pers_limited" not in pids
         assert "pers_private" not in pids
 
     def test_include_private_surfaces_restricted(self, engine):
-        rows = engine.search(query="ramadan", limit=100, include_private=True)
+        rows = engine.search(query="holiday", limit=100, include_private=True)
         pids = {r["entity"]["person_id"] for r in rows}
         assert "pers_limited" in pids
         assert "pers_private" in pids
 
     def test_open_contact_always_visible(self, engine):
-        rows = engine.search(query="ramadan", limit=100)
+        rows = engine.search(query="holiday", limit=100)
         pids = {r["entity"]["person_id"] for r in rows}
         assert "pers_open" in pids
 
     def test_unresolved_person_included_and_scoped_unknown(self, engine):
-        [row] = engine.search(query="ramadan", channel="sms")
+        [row] = engine.search(query="holiday", channel="sms")
         assert row["entity"]["person_id"] is None
         assert row["scope"] == "unknown"
 
     def test_scope_labels_reflect_privacy_level(self, engine):
-        rows = engine.search(query="ramadan", limit=100, include_private=True)
+        rows = engine.search(query="holiday", limit=100, include_private=True)
         by_pid = {r["entity"]["person_id"]: r["scope"] for r in rows}
         assert by_pid["pers_open"] == "open"
         assert by_pid["pers_limited"] == "limited"
@@ -239,7 +239,7 @@ class TestPrivacyFiltering:
 
     def test_person_scoped_query_on_private_contact_empty_by_default(self, engine):
         # Even asking for the person by name must not leak their messages.
-        assert engine.search(query="ramadan", person="carol") == []
+        assert engine.search(query="holiday", person="carol") == []
 
     def test_scope_for_helper(self):
         assert scope_for(1) == "open"
@@ -259,7 +259,7 @@ class TestResolverIntegration:
 
     def test_unresolvable_person_returns_empty(self, engine):
         # Never a silent unscoped dump of everyone.
-        assert engine.search(person="nobody-here", query="ramadan") == []
+        assert engine.search(person="nobody-here", query="holiday") == []
 
     def test_person_and_topic_combine(self, engine):
         rows = engine.search(person="alice", query="weather")
@@ -275,8 +275,8 @@ class TestFTS:
         assert {r["entity"]["message_id"] for r in rows} == {"m_open_3"}
 
     def test_multi_term_is_and(self, engine):
-        # both terms must be present -> only the iftar booking line
-        rows = engine.search(query="iftar booking")
+        # both terms must be present -> only the lunch booking line
+        rows = engine.search(query="lunch booking")
         assert {r["entity"]["message_id"] for r in rows} == {"m_open_2"}
 
     def test_punctuation_only_query_is_ignored_not_crash(self, engine):
@@ -286,7 +286,7 @@ class TestFTS:
 
     def test_quote_in_query_does_not_break_match(self, engine):
         # A stray double-quote must not raise an FTS syntax error.
-        rows = engine.search(query='ramadan"')
+        rows = engine.search(query='holiday"')
         assert isinstance(rows, list)
 
     def test_fts_query_builder(self):
@@ -300,23 +300,23 @@ class TestFTS:
 
 class TestTimeframe:
     def test_since_lower_bound(self, engine):
-        rows = engine.search(query="ramadan", since="2026-07-12", limit=100)
+        rows = engine.search(query="holiday", since="2026-07-12", limit=100)
         dates = [r["entity"]["timestamp"][:10] for r in rows]
         assert dates and all(d >= "2026-07-12" for d in dates)
 
     def test_until_upper_bound(self, engine):
-        rows = engine.search(query="ramadan", until="2026-07-10", limit=100)
+        rows = engine.search(query="holiday", until="2026-07-10", limit=100)
         dates = [r["entity"]["timestamp"][:10] for r in rows]
         assert dates and all(d <= "2026-07-10" for d in dates)
 
     def test_window_combines_both(self, engine):
-        rows = engine.search(query="ramadan", since="2026-07-10",
+        rows = engine.search(query="holiday", since="2026-07-10",
                              until="2026-07-12", limit=100)
         dates = [r["entity"]["timestamp"][:10] for r in rows]
         assert all("2026-07-10" <= d <= "2026-07-12" for d in dates)
 
     def test_results_ordered_recent_first(self, engine):
-        rows = engine.search(query="ramadan", limit=100)
+        rows = engine.search(query="holiday", limit=100)
         ts = [r["entity"]["timestamp"] for r in rows]
         assert ts == sorted(ts, reverse=True)
 
@@ -325,18 +325,18 @@ class TestTimeframe:
 
 class TestBounds:
     def test_limit_clamped_to_max(self, engine):
-        rows = engine.search(query="ramadan", limit=10_000)
+        rows = engine.search(query="holiday", limit=10_000)
         # cannot exceed MAX_LIMIT even if asked for more
         assert len(rows) <= recall.MAX_LIMIT
 
     def test_limit_floor_is_one(self, engine):
-        rows = engine.search(query="ramadan", limit=0)
+        rows = engine.search(query="holiday", limit=0)
         assert len(rows) <= 1
 
     def test_default_limit_applied(self, engine, monkeypatch):
         # Shrink the cap and prove the default is honoured.
         monkeypatch.setattr(recall, "DEFAULT_LIMIT", 2)
-        rows = engine.search(query="ramadan", limit=recall.DEFAULT_LIMIT)
+        rows = engine.search(query="holiday", limit=recall.DEFAULT_LIMIT)
         assert len(rows) == 2
 
 
@@ -347,13 +347,13 @@ class TestRobustness:
         eng = RecallEngine(comms_db=tmp_path / "nope.db",
                            people_db=tmp_path / "nope-people.db")
         with pytest.raises(FileNotFoundError):
-            eng.search(query="ramadan")
+            eng.search(query="holiday")
 
     def test_missing_people_db_allows_query_scope_unknown(self, tmp_path):
         comms = _build_comms(tmp_path / "comms.db")
         eng = RecallEngine(comms_db=comms, people_db=tmp_path / "absent.db",
                            resolver=_stub_resolver({}))
-        rows = eng.search(query="ramadan", limit=100)
+        rows = eng.search(query="holiday", limit=100)
         # No people.db -> no privacy signal -> everything scoped unknown,
         # nothing filtered (people.db absent is not a private flag).
         assert rows

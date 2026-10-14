@@ -115,7 +115,7 @@ Two top-level folders. No exceptions.
 ```
 ~/vault/
 ├── log/              WHAT HAPPENED (temporal, append-only)
-│   ├── YYYY-MM-DD.md   dailies (auto-compiled, hijri dates, comms, journal)
+│   ├── YYYY-MM-DD.md   dailies (auto-compiled, comms, journal)
 │   ├── YYYY-WNN.md     weekly reviews
 │   ├── sessions/       session exports
 │   └── friction/       friction reports

@@ -110,7 +110,7 @@ After each message (voice or text), show the running collection. Not a formal
 **Tasks:**
 1. Call Ahmed about the shipment → *nuchay*
 2. Review dashboard CSS before Friday → *aos*
-3. Set up the second Mac Mini for Ramadan
+3. Set up the second Mac Mini for Holiday
 
 **Ideas:**
 - Voice commands for the bridge — skip the keyboard entirely
@@ -203,13 +203,13 @@ When the bridge sends the morning prompt, it should be personalized. Here are te
 the bridge should rotate through, filled with real data from the operator's context.
 
 **Work-focused (use when they have active tasks):**
-- "Asalamualaikum {name}. You've got {count} things in motion — {top_task} is the most
+- "Good morning, {name}. You've got {count} things in motion — {top_task} is the most
   recent. What's on your mind this morning? Send a voice note."
 - "{name}, {project} had movement yesterday. Where do you want to push today?
   Talk to me."
 
 **Reflective (use on slower days or weekends):**
-- "Asalamualaikum {name}. No rush today. What's been sitting in the back of your mind?
+- "Good morning, {name}. No rush today. What's been sitting in the back of your mind?
   Sometimes the most important things are the ones you haven't said yet."
 - "Morning {name}. Before the day starts — what matters most right now?
   Not the urgent stuff. The important stuff."
@@ -220,7 +220,7 @@ the bridge should rotate through, filled with real data from the operator's cont
 - "Productive day yesterday. What's the one thing that would make today count?"
 
 **Fresh start (use on Mondays or after a gap):**
-- "Asalamualaikum {name}. New week. What are the 2-3 things that matter most
+- "Good morning, {name}. New week. What are the 2-3 things that matter most
   this week? Don't think too hard — just talk."
 - "It's been {gap_days} days since we last talked. What happened? What changed?
   What needs attention? Just ramble."

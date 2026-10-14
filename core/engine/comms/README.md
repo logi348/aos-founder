@@ -46,7 +46,7 @@ recall never mutates comms.db.
 ```python
 from recall import RecallEngine
 eng = RecallEngine()
-rows = eng.search(query="ramadan", person="my mom", since="2026-06-01", limit=20)
+rows = eng.search(query="holiday", person="my mom", since="2026-06-01", limit=20)
 full = eng.get("im-223330")
 ```
 
@@ -73,8 +73,8 @@ imessage:
   access: allowlist        # allowlist | all
   include_groups: false    # groups with an allowlisted member become visible
   allowed:
-    - name: Hisham
-      handles: ["+14165550123", "hisham@example.com"]
+    - name: Alex
+      handles: ["+14165550123", "alex@example.com"]
 ```
 
 Phones match on digits (`+1 416 555 0123` == `4165550123`); emails match

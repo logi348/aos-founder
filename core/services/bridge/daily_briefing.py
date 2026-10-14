@@ -649,7 +649,7 @@ def _build_morning_prompt() -> str:
     # Select prompt based on context
     if is_friday:
         prompts = [
-            f"Asalamualaikum {op_name}. Jumuah mubarak.\n\n"
+            f"Good morning, {op_name}. Happy Friday.\n\n"
             f"Before the day \u2014 what are you grateful for this week? And what's one thing "
             f"you want to carry into next week?\n\n"
             f"Send a voice note. I'll capture it.",
@@ -660,18 +660,18 @@ def _build_morning_prompt() -> str:
         ]
     elif is_monday or gap_days > 3:
         prompts = [
-            f"Asalamualaikum {op_name}. New week.\n\n"
+            f"Good morning, {op_name}. New week.\n\n"
             f"What are the 2-3 things that matter most this week? "
             f"Don't overthink it \u2014 just talk for a minute.\n\n"
             f"Send me a voice note.",
 
-            f"Asalamualaikum {op_name}. It's been {gap_days} days since we last talked.\n\n"
+            f"Good morning, {op_name}. It's been {gap_days} days since we last talked.\n\n"
             f"What happened? What changed? What needs your attention today?\n\n"
             f"Voice note \u2014 just ramble. I'll organize it.",
         ]
     elif done_yesterday >= 2:
         prompts = [
-            f"Asalamualaikum {op_name}. You finished {done_yesterday} tasks yesterday. "
+            f"Good morning, {op_name}. You finished {done_yesterday} tasks yesterday. "
             f"That's momentum.\n\n"
             f"What do you want to keep moving today? What's the one thing that would "
             f"make today count?\n\n"
@@ -682,7 +682,7 @@ def _build_morning_prompt() -> str:
         ]
     elif active_count > 3:
         prompts = [
-            f"Asalamualaikum {op_name}. You've got {active_count} things in motion"
+            f"Good morning, {op_name}. You've got {active_count} things in motion"
             + (f" \u2014 '{top_task}' is the most recent" if top_task else "") + ".\n\n"
             "What's actually important today? Not everything \u2014 just the real priorities.\n\n"
             "Voice note. 60 seconds. Go.",
@@ -693,7 +693,7 @@ def _build_morning_prompt() -> str:
         ]
     elif active_count == 0:
         prompts = [
-            f"Asalamualaikum {op_name}. Your plate is clear right now.\n\n"
+            f"Good morning, {op_name}. Your plate is clear right now.\n\n"
             f"What do you want this machine working on? What's been in the back "
             f"of your mind that you haven't started yet?\n\n"
             f"Send a voice note \u2014 even 30 seconds is enough.",
@@ -704,7 +704,7 @@ def _build_morning_prompt() -> str:
         ]
     else:
         prompts = [
-            f"Asalamualaikum {op_name}. What's on your mind this morning?\n\n"
+            f"Good morning, {op_name}. What's on your mind this morning?\n\n"
             + (f"'{top_task}' is still active" + (f" in {top_project}" if top_project else "") + ". " if top_task else "")
             + "Where do you want to push today?\n\n"
             "Send a voice note \u2014 I'll turn it into tasks and notes.",

@@ -150,17 +150,17 @@ The companion idle screen has a living atmospheric background.
 
 **Technique:** Canvas-drawn sine-wave ribbons. CSS `filter: blur(45px)`. Animation via `requestAnimationFrame` (not CSS keyframes — unreliable on Safari over Tailscale).
 
-**Colors shift by Islamic prayer period — within the charcoal system.**
+**Colors shift by time of day — within the charcoal system.**
 The aurora stays monochrome charcoal-and-bone; the shift is a subtle
 temperature move, not a burst of color. No orange, ever — sunset reads as
 a deep warm graphite, not a glow.
 
 | Period | Palette | Vibe |
 |--------|---------|------|
-| Fajr / Last Third | Faint indigo-charcoal | Pre-dawn (the one cool cast) |
-| Sunrise → Asr | Warm-neutral charcoal → soft bone | Day |
-| Maghrib | Deep warm graphite | Sunset (muted, no orange) |
-| Isha | Deepest charcoal | Night |
+| Pre-dawn | Faint indigo-charcoal | Before sunrise (the one cool cast) |
+| Morning → afternoon | Warm-neutral charcoal → soft bone | Day |
+| Sunset | Deep warm graphite | Dusk (muted, no orange) |
+| Night | Deepest charcoal | Night |
 
 Only on the companion idle screen. Active sessions use solid `bg`.
 
@@ -169,15 +169,15 @@ Only on the companion idle screen. Active sessions use solid `bg`.
 Glass pill centered at top of companion screen. Same vertical position as nav pill (`top: 12px`). Uses Inter (sans-serif). `text-[11px]`.
 
 ```
-11:47 AM · Tue, Apr 1 · Duha · Dhuhr in 1h 28m · 14° Overcast
+11:47 AM · Tue, Apr 1 · Morning · 14° Overcast
 ```
 
 - Time: `text-secondary`, tabular-nums
 - Date: `text-tertiary`
-- Prayer period: `accent` color
-- Countdown + weather: `text-tertiary`
+- Time-of-day period: `accent` color
+- Weather: `text-tertiary`
 
-Prayer via `adhan` library (local calculation). Weather via Open-Meteo (free, no key).
+Time-of-day period from local sunrise/sunset. Weather via Open-Meteo (free, no key).
 
 ## Typography Scale
 
@@ -249,11 +249,11 @@ The shared `EmptyState` primitive (`components/primitives/EmptyState.tsx`) encod
 2. **No stat dumps.** The qareen speaks in sentences, not metrics.
 3. **Sentence case.** "Transcript" not "TRANSCRIPT". No all-caps except tiny overline labels.
 4. **No generic empty states.** Context-specific guidance, not "No data available."
-5. **Real names.** "Hisham" not "operator." Always resolve against data.
+5. **Real names.** "Alex" not "operator." Always resolve against data.
 6. **Cursor pointer.** Every clickable element.
 7. **Animate open AND close.** No instant unmount.
 8. **No permanent chrome.** Chrome floats and overlays.
-9. **Prayer-period awareness.** Aurora, context bar, greeting reflect the current Islamic time period.
+9. **Time-of-day awareness.** Aurora, context bar and greeting reflect the current part of the day.
 10. **No hardcoded colors.** Always reference design tokens. Canvas/SVG contexts that can't use CSS vars must mirror the exact token hex.
 11. **Serif for content, sans for chrome.** EB Garamond speaks. Inter controls.
 12. **Dark text on accent fills.** The accent is light bone — solid `bg-accent` surfaces use `on-accent` (charcoal) text, never white.

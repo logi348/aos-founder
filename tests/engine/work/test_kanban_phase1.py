@@ -146,7 +146,7 @@ def test_hold_reverts_holder(populated_work_env):
 
 def test_bug_class_roundtrip_unflattened(work_env):
     eng = work_env["engine"]
-    eng.add_project("Quran Garden", short_id="qg", project_id="qg")
+    eng.add_project("Notes Garden", short_id="qg", project_id="qg")
 
     # A qg#1-shaped fixture with FAKE data: full islah richness on a bug task
     # sitting in awaiting-approval with an in-flight branch + fail-before test.
@@ -194,17 +194,17 @@ def test_apps_registry_instance_override(tmp_path, monkeypatch):
     cfg.write_text(
         "apps:\n"
         "  qg:\n"
-        "    name: Quran Garden\n"
-        "    repo: /Volumes/AOS-X/project/quran-garden\n"
-        "    scheme: QuranGarden\n"
-        "    bundle_id: com.fake.qurangarden\n"
+        "    name: Notes Garden\n"
+        "    repo: /Volumes/AOS-X/project/notes-garden\n"
+        "    scheme: NotesGarden\n"
+        "    bundle_id: com.fake.notesgarden\n"
     )
     monkeypatch.setenv("AOS_CONFIG_DIR", str(tmp_path))
 
     entry = apps_registry.get_app("qg")
     assert entry is not None
-    assert entry.repo == "/Volumes/AOS-X/project/quran-garden"
-    assert entry.scheme == "QuranGarden"
+    assert entry.repo == "/Volumes/AOS-X/project/notes-garden"
+    assert entry.scheme == "NotesGarden"
     # The framework template's example-app must NOT leak in when an instance
     # override is present (override replaces the map wholesale).
     assert apps_registry.get_app("example-app") is None

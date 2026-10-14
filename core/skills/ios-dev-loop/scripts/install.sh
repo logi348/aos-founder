@@ -92,8 +92,8 @@ if [[ ! -f "$APP/.xcodebuildmcp/config.yaml" || $FORCE -eq 1 ]]; then
     [[ -n "$SCH" ]] || SCH=$(cd "$APP" && { [[ "$PJ" == *.xcworkspace ]] && xcodebuild -workspace "$PJ" -list 2>/dev/null || xcodebuild -project "$PJ" -list 2>/dev/null; } | awk '/Schemes:/{f=1;next} f&&NF{print $1;exit}')
     # No .xcodeproj yet (fresh worktree, xcodegen not run): read project.yml. Prefer the
     # first target of `type: application`, then the one named like the project, then the
-    # first target — the first key is often a test/extension target (deenoverdunya listed
-    # DeenOverDunyaUITests first and the installer wrote that as the scheme).
+    # first target — the first key is often a test/extension target (docsondemand listed
+    # DocsOnDemandUITests first and the installer wrote that as the scheme).
     [[ -n "$SCH" || ! -f "$APP/project.yml" ]] || SCH=$(awk '
         /^name:/ && !pn { pn=$2; gsub(/["'"'"']/,"",pn) }
         /^targets:/ { f=1; next }

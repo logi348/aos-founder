@@ -104,7 +104,7 @@ Detection order — first match wins, and every match records citable evidence:
    ``file:line`` so the claim is checkable. Prose is excluded on purpose
    (``*.md``, ``*.txt``, ``docs/``): a design doc *mentioning* a path is a
    citation, not a dependency. Letting prose count here was measurably wrong on
-   live data — it bound ``qul`` and ``tafsir`` to projects that merely name them
+   live data — it bound ``qul`` and ``summary`` to projects that merely name them
    in a handoff note.
 9. **unclassified** — everything left, emitted with its full evidence bundle
    (git remote, branch, last commit, CLAUDE.md, session count, nested repos) so
@@ -183,7 +183,7 @@ PROJECT_ROOT = HOME / "project"
 CLAUDE_PROJECTS = HOME / ".claude" / "projects"
 
 # Bounded walk for nested repos. Depth is counted from PROJECT_ROOT, so
-# depth 3 reaches e.g. quran-tools/shared/quran-data.
+# depth 3 reaches e.g. notes-tools/shared/notes-data.
 MAX_NEST_DEPTH = 3
 SKIP_DIRS = {
     "node_modules", ".venv", "venv", "dist", "build", "__pycache__",
@@ -969,7 +969,7 @@ def reconcile(*, drift_only: bool = False,
         # 5. filesystem-evident non-project — an empty directory is a fact, not
         #    a guess. Checked BEFORE the reference rule: an empty directory
         #    cannot be a component no matter what a stale handoff note says
-        #    about it (live case: quran-tools-wt, named in a backup HANDOFF.md).
+        #    about it (live case: notes-tools-wt, named in a backup HANDOFF.md).
         if _is_empty(d):
             entries.append(Entry(
                 name=name, path=str(rp), disposition="not_a_project",

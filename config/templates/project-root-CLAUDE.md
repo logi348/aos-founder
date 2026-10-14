@@ -43,7 +43,7 @@ exists to fix.
 
 ## Naming
 
-Kebab-case: `quran-garden`, not `Quran_Garden`. Names starting with `_` are
+Kebab-case: `notes-garden`, not `Notes_Garden`. Names starting with `_` are
 reserved for zones. Names ending in `-wt` are refused — that was the old
 sibling-worktree convention and worktrees do not live there any more.
 
@@ -82,7 +82,7 @@ zone; projects that consume it say so in their manifest:
 
 ```yaml
 depends_on:
-  - quran-garden-data
+  - notes-garden-data
 ```
 
 By id, never by path. A path breaks the moment the dependency is archived.

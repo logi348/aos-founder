@@ -32,7 +32,7 @@ bash ~/aos/install.sh
 Idempotent — safe to re-run. Budget **20–30 minutes**: it provisions its own Python,
 builds service environments, and downloads local speech models.
 
-When it finishes it opens **cmux** and hands you to Sahib, who walks you through
+When it finishes it opens **cmux** and hands you to Skye, who walks you through
 setup: your profile, your tools, the agents, remote access, and a first task.
 
 ---

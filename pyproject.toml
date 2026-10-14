@@ -53,13 +53,6 @@ dependencies = [
     # Feed ingest (core/engine/intelligence/ingest/fetcher.py). Top-level
     # import — currently only survives because no feed sources are active.
     "feedparser>=6.0",
-
-    # Hijri calendar dates in the daily note compiler (compile-daily).
-    # Upstream renamed this to `hijridate`; hijri-converter is now a shim that
-    # emits a DeprecationWarning on import. Kept as-is so this PR stays a no-op
-    # on behaviour — the callers still `import hijri_converter`, and switching
-    # them is a separate, code-touching change.
-    "hijri-converter>=2.3",
 ]
 
 # Deliberately NOT declared:

@@ -229,7 +229,7 @@ def test_islah_shaped_story_reads_coherently_and_nothing_flattened(work_env):
     survive verbatim — never flattened into field diffs.
     """
     eng = work_env["engine"]
-    eng.add_project("Quran Garden", short_id="qg", project_id="qg")
+    eng.add_project("Notes Garden", short_id="qg", project_id="qg")
 
     # created — filed by the ASC crash intake (Phase 3's ascbuild), stage=new.
     bug = eng.add_task(

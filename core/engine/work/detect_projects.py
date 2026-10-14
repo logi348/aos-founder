@@ -61,17 +61,17 @@ USERNAME = getpass.getuser()
 
 # Slugs a generic normalize/prefix match can't derive on its own. Only add
 # an entry here when the mapping genuinely isn't discoverable mechanically —
-# most cases (hre -> hre-prototype, deenoverdunya -> deenoverdunya) are
+# most cases (hre -> hre-prototype, docsondemand -> docsondemand) are
 # handled by _normalize() + prefix matching without needing a table entry.
 KNOWN_ALIASES = {
-    # quran-garden-ios already has project.path set correctly (it's the ios/
-    # subdir of quran-tools) — kept here as documentation, not relied on.
-    "quran-garden-ios": "quran-tools",
+    # notes-garden-ios already has project.path set correctly (it's the ios/
+    # subdir of notes-tools) — kept here as documentation, not relied on.
+    "notes-garden-ios": "notes-tools",
 }
 
 
 def _normalize(s: str) -> str:
-    """Lowercase, alnum-only. Makes 'Deen Over Dunya' == 'deenoverdunya'."""
+    """Lowercase, alnum-only. Makes 'Docs On Demand' == 'docsondemand'."""
     return re.sub(r'[^a-z0-9]', '', (s or "").lower())
 
 
@@ -298,7 +298,7 @@ def match_projects_to_repos() -> list[dict]:
             results.append(_row(p, reason="no matching directory under ~/project/"))
 
     # Flag collisions: two projects proposed for the same path is a sign of
-    # a duplicate project record (see "dod" vs "deenoverdunya" — same repo,
+    # a duplicate project record (see "dod" vs "docsondemand" — same repo,
     # same title, 93 tasks vs 3). Never auto-resolve; just surface it so a
     # human decides which project record is canonical.
     by_path: dict[str, list[dict]] = {}
@@ -359,9 +359,9 @@ def detect() -> list[dict]:
     """Run full detection, return suggestions for new projects."""
     existing = get_existing_projects()
     # Normalized (lowercase, alnum-only) titles AND ids. Plain lowercase
-    # substring matching used to miss things like "deenoverdunya" (dir name,
-    # no spaces) against "Deen Over Dunya" (title, has spaces) — that gap is
-    # exactly how the "deenoverdunya" project ended up as a duplicate of
+    # substring matching used to miss things like "docsondemand" (dir name,
+    # no spaces) against "Docs On Demand" (title, has spaces) — that gap is
+    # exactly how the "docsondemand" project ended up as a duplicate of
     # "dod" in the live data. Normalizing both sides before comparing closes
     # it.
     existing_norm = {_normalize(p.get("title", "")) for p in existing.values()}
@@ -382,7 +382,7 @@ def detect() -> list[dict]:
     for sess in session_data:
         name = sess["name"]
 
-        # Skip if already tracked (normalized: "deenoverdunya" == "Deen Over Dunya")
+        # Skip if already tracked (normalized: "docsondemand" == "Docs On Demand")
         if _normalize(name) in existing_norm:
             continue
         # Skip worktree sessions

@@ -31,7 +31,7 @@ person record is not a private flag), never silently dropped.
 Usage (Python):
     from recall import RecallEngine
     eng = RecallEngine()
-    rows = eng.search(query="ramadan", person="my mom", limit=20)
+    rows = eng.search(query="holiday", person="my mom", limit=20)
     row  = eng.get("im_12345")
 
 The CLI wrapper is core/bin/cli/comms-recall.

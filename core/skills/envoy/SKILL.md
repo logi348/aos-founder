@@ -58,7 +58,7 @@ and walk him through installing the build" = already a go).
 ```bash
 ~/aos/core/bin/cli/envoy start \
   --to "<E.164-number>" --name "Firstname" \
-  --mission "Help him get the Quran Garden TestFlight build installed. Context: ..." \
+  --mission "Help him get the Notes Garden TestFlight build installed. Context: ..." \
   --success "He confirms the app is on his home screen" \
   --constraints "Don't promise release dates"
 ```

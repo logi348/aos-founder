@@ -51,7 +51,7 @@ def test_legit_payment_message_not_flagged():
 
 
 def test_normal_chat_not_flagged():
-    assert not is_spam(msg("m1", "want to grab iftar tonight?", ts="2026-03-09T18:00:00"))[0]
+    assert not is_spam(msg("m1", "want to grab lunch tonight?", ts="2026-03-09T18:00:00"))[0]
 
 
 def test_malformed_metadata_survives():

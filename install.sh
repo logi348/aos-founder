@@ -280,10 +280,6 @@ _banner() {
     tput civis 2>/dev/null  # hide cursor during install
 
     echo ""
-    # U+FDFD ARABIC LIGATURE BISMILLAH. Printed as raw bytes so the glyph
-    # survives any editor or locale that would mangle the literal character.
-    printf "  ${BRAND}\xef\xb7\xbd${RESET}\n"
-    echo ""
     echo "${BRAND}${BOLD}"
     cat << 'BANNER'
        █████╗  ██████╗ ███████╗
@@ -2836,7 +2832,7 @@ except: print('Operator')
 
     if command -v cld &>/dev/null || command -v claude &>/dev/null; then
         if [[ "$onboarded" == false ]]; then
-            echo "  ${BOLD}Next:${RESET}  ${BRAND}${BOLD}aos start${RESET}  ${MUTED}— Sahib will walk you through setup in cmux.${RESET}"
+            echo "  ${BOLD}Next:${RESET}  ${BRAND}${BOLD}aos start${RESET}  ${MUTED}— Skye will walk you through setup in cmux.${RESET}"
         else
             echo "  ${BOLD}Start a session:${RESET}  ${BRAND}${BOLD}aos start${RESET}"
         fi
@@ -2861,9 +2857,7 @@ except: print('Operator')
     echo ""
     echo "  ${MUTED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
     echo ""
-    # Closes the ceremony in the same script it opened in: الحمد لله.
-    # Raw bytes, same reasoning as the bismillah in _banner.
-    printf "  ${BRAND}\xd8\xa7\xd9\x84\xd8\xad\xd9\x85\xd8\xaf \xd9\x84\xd9\x84\xd9\x87${RESET}\n"
+    echo "  ${BRAND}${BOLD}Setup complete.${RESET}"
     echo ""
 }
 

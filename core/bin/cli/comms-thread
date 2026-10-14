@@ -10,13 +10,13 @@ Usage:
     comms-thread <name-or-handle> [--days N] [--limit N] [--json]
 
 Examples:
-    comms-thread Hisham
-    comms-thread Hisham --days 30 --limit 200
+    comms-thread Alex
+    comms-thread Alex --days 30 --limit 200
     comms-thread "+14165550100" --json
 
 Output (oldest first):
-    Hisham (+14165550100) — 3 messages, last 7 days
-    YYYY-MM-DD HH:MM  Hisham: pr is up
+    Alex (+14165550100) — 3 messages, last 7 days
+    YYYY-MM-DD HH:MM  Alex: pr is up
     YYYY-MM-DD HH:MM  Me: looking now
 
 Exit codes:

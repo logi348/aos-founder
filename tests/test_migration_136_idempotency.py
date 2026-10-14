@@ -28,7 +28,7 @@ imessage:
   access: allowlist
   include_groups: false
   allowed:
-    - name: Hisham
+    - name: Alex
       handles: ["+14165550142"]
 """
 
@@ -103,7 +103,7 @@ def test_existing_operator_file_untouched(m, home):
 
     cfg = yaml.safe_load(dest.read_text())
     assert cfg["imessage"]["access"] == "allowlist"
-    assert cfg["imessage"]["allowed"][0]["name"] == "Hisham"
+    assert cfg["imessage"]["allowed"][0]["name"] == "Alex"
 
 
 # ── (d) template missing → inline fallback, still valid ──────────────────────

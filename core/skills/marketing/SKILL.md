@@ -122,19 +122,19 @@ AWARENESS → INTEREST → CONSIDERATION → CONVERSION → RETENTION → ADVOCA
 - CAC exceeding LTV → stop paid acquisition immediately
 - Unsubscribe rate above 0.5% per campaign → frequency or relevance problem
 
-## Values-Based Marketing (Islamic Brand Context)
+## Values-Based Marketing (community brands)
 
 ### Do
 - Lead with values alignment (69% of buyers choose based on values)
-- Use community networks (mosque partnerships, events, word-of-mouth)
-- Show confidence in Islamic identity — differentiator, not limitation
+- Use community networks (local organisations, events, word-of-mouth)
+- Show confidence in the brand's identity — differentiator, not limitation
 - Use authentic storytelling (founder story, customer stories)
 - Include product insert cards with deeper messaging in every order
 
 ### Don't
-- Use "halal" as a gimmick without substance
-- Exploit religious imagery for sales
-- Use haram marketing tactics (exploitative imagery, false scarcity)
+- Use a values label or certification as a gimmick without substance
+- Exploit cultural or religious imagery for sales
+- Use manipulative tactics (exploitative imagery, false scarcity)
 - Copy mainstream beauty marketing language
 - Compromise brand voice for broader appeal
 

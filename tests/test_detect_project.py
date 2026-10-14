@@ -57,20 +57,20 @@ def seed(work_env):
 # ---------------------------------------------------------------------------
 
 def test_exact_path_match(tmp_path, seed):
-    proj = tmp_path / "quran-tools"
+    proj = tmp_path / "notes-tools"
     proj.mkdir()
-    eng = seed([("quran-garden-ios", str(proj))])
+    eng = seed([("notes-garden-ios", str(proj))])
 
-    assert eng.detect_project_from_cwd(str(proj)) == "quran-garden-ios"
+    assert eng.detect_project_from_cwd(str(proj)) == "notes-garden-ios"
 
 
 def test_nested_subdir_match(tmp_path, seed):
-    proj = tmp_path / "quran-tools"
+    proj = tmp_path / "notes-tools"
     deep = proj / "ios" / "Sources"
     deep.mkdir(parents=True)
-    eng = seed([("quran-garden-ios", str(proj))])
+    eng = seed([("notes-garden-ios", str(proj))])
 
-    assert eng.detect_project_from_cwd(str(deep)) == "quran-garden-ios"
+    assert eng.detect_project_from_cwd(str(deep)) == "notes-garden-ios"
 
 
 def test_longest_match_wins_when_projects_nest(tmp_path, seed):

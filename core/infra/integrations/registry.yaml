@@ -6,7 +6,7 @@
 #   1. auto    — Apple native apps, already on macOS. Just need permission grant.
 #   2. builtin — Ship with AOS, have setup scripts. Core to the system.
 #   3. catalog — Common SaaS tools. Templates provided, operator activates.
-#   4. custom  — Anything else. Operator names it, Sahib helps configure.
+#   4. custom  — Anything else. Operator names it, Skye helps configure.
 #
 # Setup interface (all setup.sh scripts follow this):
 #   setup.sh              — interactive setup (prompts for input)
@@ -170,7 +170,7 @@ builtin:
 
 # ─── Tier 3: Catalog ──────────────────────────────────────
 # Common SaaS tools. We provide config templates.
-# Operator picks what they use, Sahib helps connect.
+# Operator picks what they use, Skye helps connect.
 
 catalog:
 
@@ -289,7 +289,7 @@ catalog:
     setup_hint: "Install SuperWhisper, configure hotkey in System Settings"
 
 # ─── Tier 4: Custom ───────────────────────────────────────
-# Not predefined. Operator says "I also use X" and Sahib
+# Not predefined. Operator says "I also use X" and Skye
 # helps configure it. Stored in ~/.aos/config/custom_integrations.yaml
 #
 # Custom integrations follow one of these patterns:

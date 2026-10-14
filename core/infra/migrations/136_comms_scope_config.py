@@ -89,10 +89,10 @@ imessage:
   include_groups: false
   allowed: []
   # allowed:
-  #   - name: Hisham
+  #   - name: Alex
   #     handles:
   #       - "+14165550123"
-  #       - "hisham@example.com"
+  #       - "alex@example.com"
 """
 
 

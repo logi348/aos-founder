@@ -163,10 +163,10 @@ def test_ten_session_ends_across_worktrees_and_the_release_target_make_one_threa
 
 def test_worktree_and_project_root_share_a_thread(work_env, tmp_path):
     eng = work_env["engine"]
-    root = tmp_path / "project" / "quran-garden"
+    root = tmp_path / "project" / "notes-garden"
     wt = root / ".claude" / "worktrees" / "feat-x"
     wt.mkdir(parents=True)
-    _seed_project(work_env, "quran-garden", root)
+    _seed_project(work_env, "notes-garden", root)
 
     a = eng.get_or_create_thread_for_cwd(str(root), "s1")
     b = eng.get_or_create_thread_for_cwd(str(wt), "s2")

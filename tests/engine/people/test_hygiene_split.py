@@ -29,7 +29,7 @@ from core.engine.people.hygiene import (
             "Sheikh Abdur Rahman Ibn Faisal Al Askari",
         ),
         # Dot-joined title
-        ("Dr.BadarUlIslam", "Dr. Badar Ul Islam"),
+        ("Dr.JohnSmithJones", "Dr. John Smith Jones"),
         ("Dr.FarazUlHaq", "Dr. Faraz Ul Haq"),
         # Rejected: no transition
         ("Ahmed", None),
@@ -136,7 +136,7 @@ def _seed_person(conn, pid, canonical, display=None):
 def test_run_tier1_splits_dirty_names():
     conn = _bootstrap_db()
     _seed_person(conn, "p_1", "AbdusSamadRashid")
-    _seed_person(conn, "p_2", "Dr.BadarUlIslam")
+    _seed_person(conn, "p_2", "Dr.JohnSmithJones")
     _seed_person(conn, "p_3", "KhaleeqUrRehman")
     _seed_person(conn, "p_4", "Ahmed Ali")  # already clean
     _seed_person(conn, "p_5", "SamCOUSIN/OHIO")  # rejected
@@ -151,7 +151,7 @@ def test_run_tier1_splits_dirty_names():
         for r in conn.execute("SELECT id, canonical_name FROM people").fetchall()
     }
     assert rows["p_1"] == "Abdus Samad Rashid"
-    assert rows["p_2"] == "Dr. Badar Ul Islam"
+    assert rows["p_2"] == "Dr. John Smith Jones"
     assert rows["p_3"] == "Khaleeq Ur Rehman"
     assert rows["p_4"] == "Ahmed Ali"  # untouched
     assert rows["p_5"] == "SamCOUSIN/OHIO"  # untouched
@@ -161,7 +161,7 @@ def test_run_tier1_splits_dirty_names():
         for r in conn.execute("SELECT alias, type FROM aliases").fetchall()
     }
     assert aliases["abdussamadrashid"] == "pre_split"
-    assert aliases["dr.badarulislam"] == "pre_split"
+    assert aliases["dr.johnsmithjones"] == "pre_split"
     assert aliases["khaleequrrehman"] == "pre_split"
 
 

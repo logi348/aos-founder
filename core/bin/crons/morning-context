@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""morning-context — fetches weather and prayer times for the day.
+"""morning-context — fetches the weather and today's people nudges.
 
 Runs at 06:30 daily. Writes to ~/.aos/work/morning-context.yaml.
 Uses only stdlib — no pip dependencies.
@@ -9,7 +9,6 @@ import datetime
 import json
 import os
 import sys
-import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -18,7 +17,6 @@ OUTPUT_FILE = Path.home() / ".aos" / "work" / "morning-context.yaml"
 # Configurable via environment
 CITY = os.environ.get("AOS_CITY", "Houston")
 COUNTRY = os.environ.get("AOS_COUNTRY", "US")
-PRAYER_METHOD = os.environ.get("AOS_PRAYER_METHOD", "2")
 
 REQUEST_TIMEOUT = 10
 
@@ -67,33 +65,6 @@ def _get_weather() -> dict:
     except (KeyError, IndexError, TypeError) as e:
         print(f"Warning: Weather parse failed: {e}")
         return {"condition": "parse error", "summary": "Weather parse failed"}
-
-
-def _get_prayer_times() -> dict:
-    date_str = datetime.date.today().strftime("%d-%m-%Y")
-    url = (
-        f"https://api.aladhan.com/v1/timingsByCity/{date_str}"
-        f"?city={urllib.parse.quote(CITY)}&country={urllib.parse.quote(COUNTRY)}"
-        f"&method={PRAYER_METHOD}"
-    )
-
-    data = _fetch_url(url)
-    if not data:
-        return {}
-
-    try:
-        timings = data["data"]["timings"]
-        return {
-            "fajr": timings.get("Fajr", "?"),
-            "sunrise": timings.get("Sunrise", "?"),
-            "dhuhr": timings.get("Dhuhr", "?"),
-            "asr": timings.get("Asr", "?"),
-            "maghrib": timings.get("Maghrib", "?"),
-            "isha": timings.get("Isha", "?"),
-        }
-    except (KeyError, TypeError) as e:
-        print(f"Warning: Prayer times parse failed: {e}")
-        return {}
 
 
 def _write_yaml(data: dict, path: Path):
@@ -178,9 +149,6 @@ def main():
     print(f"Fetching weather ({CITY}, {COUNTRY})...")
     weather = _get_weather()
 
-    print(f"Fetching prayer times ({CITY}, {COUNTRY}, method {PRAYER_METHOD})...")
-    prayer_times = _get_prayer_times()
-
     print("Refreshing people nudges...")
     people_today = _get_people_nudges()
 
@@ -188,7 +156,6 @@ def main():
         "date": today,
         "generated": now,
         "weather": weather,
-        "prayer_times": prayer_times,
         "people_today": people_today,
     }
 
@@ -197,8 +164,6 @@ def main():
 
     if weather.get("summary"):
         print(f"  Weather: {weather['summary']}")
-    if prayer_times.get("fajr"):
-        print(f"  Fajr: {prayer_times['fajr']}, Maghrib: {prayer_times.get('maghrib', '?')}")
     if people_today:
         print(f"  People nudges: {len(people_today)} live")
 

@@ -191,7 +191,7 @@ with the audit named in the description. If no `script/gate` → skip the ratche
 | Class | Trigger | Rule |
 |---|---|---|
 | **Expedite** | crash · data-loss · privacy/security leak · store-takedown risk | **Cap = 1.** Jumps the queue, may break WIP. |
-| **Fixed-date** | Hijri/Ramadan tie-in · Apple deadline · submission slot | Schedule backward from the date. |
+| **Fixed-date** | Seasonal/holiday tie-in · Apple deadline · submission slot | Schedule backward from the date. |
 | **Standard** | normal features/bugs | FIFO within priority; respects WIP=1 build. |
 | **Intangible** | refactor · tests · tech-debt · deprecation | Needs reserved capacity (a % per cycle) or it never happens. |
 

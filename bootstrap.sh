@@ -38,8 +38,7 @@ STAGE="$(mktemp -d "${TMPDIR:-/tmp}/aos-bootstrap.XXXXXX")"
 # life of the installer.
 trap 'rm -rf "$STAGE"' EXIT
 
-printf '\n  \xef\xb7\xbd\n\n'
-printf '  Bootstrapping AOS...\n\n'
+printf '\n  Bootstrapping AOS...\n\n'
 
 if ! curl -fsSL ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} "$REPO_TARBALL" | tar -xz -C "$STAGE" --strip-components=1; then
     printf '  Could not download AOS.\n' >&2

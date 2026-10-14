@@ -288,16 +288,9 @@ modules:
 # The panel shows these read-only, under "Unmanaged", so that nothing running
 # on the machine is invisible. The engine must NEVER start, stop, install or
 # remove anything listed here — it does not own them and they are not arms.
-foreign:
-  - label: am.hish.adhan.audio
-    name: Adhan — audio server
-    note: "Operator's prayer-audio system. Sonos playback. Not AOS."
-  - label: am.hish.adhan.dashboard
-    name: Adhan — dashboard
-    note: "Operator's prayer-audio dashboard on :8081. Not AOS."
-  - label: am.hish.adhan.scheduler
-    name: Adhan — scheduler
-    note: "Triggers prayer-time playback. Authoritative on this Mac. Not AOS."
-  - label: am.hish.superwhisper-launcher
-    name: SuperWhisper launcher
-    note: "Third-party dictation. Redundant once voice-dictation lands. Not AOS."
+# Hardened fork: upstream listed its author's personal LaunchAgents here.
+# Add your own, e.g.:
+#   - label: com.example.backup
+#     name: Backup agent
+#     note: "Not AOS."
+foreign: []

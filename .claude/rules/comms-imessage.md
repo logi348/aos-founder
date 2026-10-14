@@ -6,19 +6,19 @@ Two tools. Both only work for contacts listed in `~/.aos/config/comms.yaml`.
 
 When the operator says any of these:
 
-- "message Hisham: running 10 min late"
-- "text Hisham …" / "tell Hisham …" / "iMessage Hisham …"
+- "message Alex: running 10 min late"
+- "text Alex …" / "tell Alex …" / "iMessage Alex …"
 
 run:
 
 ```bash
-python3 ~/aos/core/bin/cli/comms-send "Hisham" "running 10 min late"
+python3 ~/aos/core/bin/cli/comms-send "Alex" "running 10 min late"
 ```
 
 Rules:
 
 - Send the text **exactly as the operator wrote it**. Never rephrase, never add.
-- If the operator gives intent instead of text ("tell Hisham I'm late"), draft
+- If the operator gives intent instead of text ("tell Alex I'm late"), draft
   one message, show it, and send only after they confirm.
 - `--dry-run` shows who it would go to without sending. Use it if the name is
   ambiguous.
@@ -29,11 +29,11 @@ Rules:
 
 ## Read
 
-When the operator asks "what did Hisham say", "show my thread with Hisham",
-"any reply from Hisham":
+When the operator asks "what did Alex say", "show my thread with Alex",
+"any reply from Alex":
 
 ```bash
-python3 ~/aos/core/bin/cli/comms-thread "Hisham" --days 7
+python3 ~/aos/core/bin/cli/comms-thread "Alex" --days 7
 ```
 
 `--days N` and `--limit N` widen the window; `--json` for machine output.

@@ -68,7 +68,7 @@ def derive_display_name(label: str) -> str:
 
     com.aos.work-runner -> "AOS Work Runner"
     com.aos.ios-deploy  -> "AOS iOS Deploy"
-    am.hish.adhan.audio -> "Adhan Audio"
+    com.example.foo-bar -> "Foo Bar"
     """
     parts = label.split(".")
     # Drop reverse-DNS prefix (com/org/am + vendor) when present.

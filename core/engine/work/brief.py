@@ -1638,7 +1638,7 @@ def _discover_artifacts(project_id, short_id, initiative, tasks, sessions,
              f"in {commit['repo']}/" if commit.get("repo") else None)
 
     # 4b — the nested repos themselves, with their remotes. The operator should
-    # be able to see github.com/…/ahhs-quran from the project page.
+    # be able to see github.com/…/ahhs-notes from the project page.
     for label, path in nested_repos:
         remote = _git_remote(path)
         push("repo", f"{label}/ — {remote}" if remote else f"{label}/",

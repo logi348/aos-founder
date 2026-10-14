@@ -67,13 +67,12 @@ def test_people_db_present_but_empty_schema_returns_empty_list_not_raise(tmp_pat
 
 
 def test_main_writes_context_even_when_nudges_fail(tmp_path, monkeypatch):
-    """End-to-end: main() must still write morning-context.yaml with weather/
-    prayer sections when the people-nudges step finds nothing to report."""
+    """End-to-end: main() must still write morning-context.yaml with the
+    weather section when the people-nudges step finds nothing to report."""
     mc = _load_morning_context()
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setattr(mc, "OUTPUT_FILE", tmp_path / ".aos" / "work" / "morning-context.yaml")
     monkeypatch.setattr(mc, "_get_weather", lambda: {"summary": "test weather"})
-    monkeypatch.setattr(mc, "_get_prayer_times", lambda: {"fajr": "05:00"})
     # No people.db at all.
 
     mc.main()

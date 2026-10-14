@@ -4,7 +4,8 @@ Migration 096: hand Python ownership to uv and install the runtime deps.
 WHAT WAS WRONG
 ``core/engine/**`` and the cron scripts in ``core/bin/**`` import ten
 third-party packages at runtime — pyyaml, rapidfuzz, phonenumbers, metaphone,
-networkx, pyjwt, requests, httpx, feedparser, hijri_converter. Until this
+networkx, pyjwt, requests, httpx, feedparser (plus one calendar package this fork removed
+with the feature that used it). Until this
 change none of them were declared anywhere a machine would install from. They
 appeared only in ``tests/requirements.txt``, which CI installs and no instance
 ever reads.
@@ -73,7 +74,6 @@ RUNTIME_MODULES = [
     "requests",
     "httpx",
     "feedparser",
-    "hijri_converter",
 ]
 
 

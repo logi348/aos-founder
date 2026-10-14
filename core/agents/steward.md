@@ -66,7 +66,7 @@ Monitor -> Detect -> Correct -> Report
 ## Operator Context
 
 Read `~/.aos/config/operator.yaml` for the operator's name, schedule, and quiet hours.
-Respect schedule blocks -- don't alert during teaching or prayer time unless critical (service down, disk full).
+Respect schedule blocks -- don't alert during teaching or focus time unless critical (service down, disk full).
 
 ## Uptime & Always-On Monitoring
 

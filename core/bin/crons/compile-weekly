@@ -15,12 +15,6 @@ import yaml
 from datetime import datetime, date, timedelta
 from pathlib import Path
 
-try:
-    from hijri_converter import Gregorian
-    HAS_HIJRI = True
-except ImportError:
-    HAS_HIJRI = False
-
 VAULT_LOG = Path.home() / "vault" / "log"
 
 
@@ -106,9 +100,6 @@ def compile_weekly(target_date: date) -> str:
     fm_lines.append(f'title: "Week {monday.isocalendar()[1]} Review"')
     fm_lines.append('type: review')
     fm_lines.append(f'date: "{sunday.isoformat()}"')
-    if HAS_HIJRI:
-        h = Gregorian(sunday.year, sunday.month, sunday.day).to_hijri()
-        fm_lines.append(f'hijri_date: "{h.day} {h.month_name()} {h.year}"')
     fm_lines.append(f'period: week')
     fm_lines.append(f'range: "{monday.isoformat()}/{sunday.isoformat()}"')
     fm_lines.append(f'tags: [review, weekly]')
