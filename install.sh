@@ -12,6 +12,14 @@
 #    bash ~/aos/install.sh
 #
 #  Idempotent. Safe to re-run. Resumes from where it left off.
+#
+#  Options (hardened fork — everything below is OFF unless you pass it):
+#    --always-on          never sleep, restart after power loss, Wake on LAN
+#    --with-superwhisper  install SuperWhisper (dictation) + login item
+#    --with-obsidian      install Obsidian
+#    --with-theming       change Dock layout, wallpaper and Terminal profile
+#    --with-ytdlp-pot     yt-dlp PO-token plugin + bgutil clone (YouTube)
+#    --dry-run            walk the stages without changing anything
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 set -uo pipefail
@@ -34,15 +42,9 @@ _EARLY_DRY_RUN=false
 [[ "${INSTALL_DRY_RUN:-0}" == "1" ]] && _EARLY_DRY_RUN=true
 for _arg in "$@"; do [[ "$_arg" == "--dry-run" ]] && _EARLY_DRY_RUN=true; done
 
-# Cache sudo upfront — one password prompt, then it's good for the whole install
-if [[ "$_EARLY_DRY_RUN" != true ]]; then
-    echo "AOS needs admin access for Homebrew, SSH, and system config."
-    echo ""
-    if ! sudo true; then
-        echo "  Failed to get admin access. Some steps may fail."
-        echo ""
-    fi
-fi
+# Hardened fork: no up-front sudo and no keep-alive loop. Steps that need
+# admin rights (Command Line Tools, Homebrew, --always-on) ask for the
+# password at that moment via _need_sudo.
 
 # ── Version ──────────────────────────────────────────
 # Prefer an already-installed ~/aos (upgrade path). On a fresh install that
@@ -87,6 +89,15 @@ CHECKPOINT_FILE="$HOME/.aos/.install-checkpoint"
 #   --always-on   never sleep, restart after power loss, Wake on LAN, no
 #                 auto-logout (Mac mini kept on 24/7). Off by default.
 ALWAYS_ON=false
+# Optional extras, all OFF unless asked for:
+#   --with-superwhisper  SuperWhisper dictation app + login item
+#   --with-obsidian      Obsidian app
+#   --with-theming       Dock layout, wallpaper, Terminal profile
+#   --with-ytdlp-pot     yt-dlp PO-token plugin (pip into yt-dlp's Python) + bgutil clone
+WITH_SUPERWHISPER=false
+WITH_OBSIDIAN=false
+WITH_THEMING=false
+WITH_YTDLP_POT=false
 
 for arg in "$@"; do
     case "$arg" in
@@ -94,6 +105,10 @@ for arg in "$@"; do
         --resume)   ;; # default behavior — checkpoints handle resume
         --clean)    rm -f "$HOME/.aos/.install-checkpoint" 2>/dev/null ;;
         --always-on) ALWAYS_ON=true ;;
+        --with-superwhisper) WITH_SUPERWHISPER=true ;;
+        --with-obsidian)     WITH_OBSIDIAN=true ;;
+        --with-theming)      WITH_THEMING=true ;;
+        --with-ytdlp-pot)    WITH_YTDLP_POT=true ;;
     esac
 done
 
@@ -452,7 +467,8 @@ prereq_homebrew() {
     fi
 
     _step "Installing Homebrew..."
-    # sudo is already active from main() — NONINTERACTIVE skips Homebrew's own prompts
+    # NONINTERACTIVE skips Homebrew's own prompts, so it needs a sudo ticket now.
+    _need_sudo "install Homebrew (creates /opt/homebrew)" || _die "Homebrew needs an administrator password"
     NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 
     # Add to PATH for this session (Apple Silicon vs Intel)
@@ -609,6 +625,7 @@ prereq_xcode_clt() {
     # This is the same method Homebrew uses. Works over SSH, no GUI.
     local clt_placeholder="/tmp/.com.apple.dt.CommandLineTools.installondemand.in-progress"
 
+    _need_sudo "install the Xcode Command Line Tools" || _warn "No admin password — Command Line Tools install may fail"
     # Reset ignored updates (CLT might have been previously dismissed)
     sudo /usr/sbin/softwareupdate --reset-ignored 2>/dev/null || true
     sudo touch "${clt_placeholder}" 2>/dev/null
@@ -956,6 +973,13 @@ prereq_ytdlp() {
         _ok "yt-dlp"
     fi
 
+    # PO Token plugin + bgutil server: opt-in (--with-ytdlp-pot). It pip-installs
+    # into yt-dlp's own Python and clones a third-party repo into ~.
+    if [[ "$WITH_YTDLP_POT" != true ]]; then
+        _skip "yt-dlp PO Token plugin (opt-in: --with-ytdlp-pot)"
+        return 0
+    fi
+
     # PO Token plugin — required for YouTube since 2025
     local ytdlp_python
     ytdlp_python="$(head -1 "$(which yt-dlp)" | sed 's/^#!//')"
@@ -979,29 +1003,11 @@ prereq_ytdlp() {
     fi
 }
 
-prereq_youtube_transcript_api() {
-    if python3 -c "import youtube_transcript_api" &>/dev/null; then
-        _skip "youtube-transcript-api"
-        return 0
-    fi
-
-    _step "Installing youtube-transcript-api..."
-    pip3 install --break-system-packages youtube-transcript-api 2>&1 | tail -1
-    python3 -c "import youtube_transcript_api" &>/dev/null || { _warn "youtube-transcript-api — install failed (YouTube captions won't work until fixed)"; return 0; }
-    _ok "youtube-transcript-api"
-}
-
-prereq_surya_ocr() {
-    if python3 -c "from surya.recognition import RecognitionPredictor" &>/dev/null; then
-        _skip "surya-ocr"
-        return 0
-    fi
-
-    _step "Installing surya-ocr + imagehash (video OCR)..."
-    pip3 install --break-system-packages "surya-ocr" "imagehash" "transformers>=4.40,<5" 2>&1 | tail -1
-    python3 -c "from surya.recognition import RecognitionPredictor" &>/dev/null || { _warn "surya-ocr — install failed (video OCR won't work until fixed)"; return 0; }
-    _ok "surya-ocr"
-}
+# Hardened fork: the `pip3 install --break-system-packages` steps for
+# youtube-transcript-api and surya-ocr/imagehash/transformers are gone. Only
+# the optional apps/content-engine uses them, and it already degrades without
+# them (no YouTube-caption tier, no video OCR). To add them deliberately, see
+# HARDENING.md ("content-engine extras") — into a venv, not system Python.
 
 prereq_mlx_whisper() {
     # mlx-whisper is now part of the transcriber service (core/services/transcriber).
@@ -1151,14 +1157,12 @@ run_prereqs() {
     prereq_jq
     prereq_ffmpeg
     prereq_ytdlp
-    prereq_youtube_transcript_api
-    prereq_surya_ocr
     prereq_mlx_whisper
     prereq_gh
     prereq_editor
     prereq_chrome
-    prereq_superwhisper
-    prereq_obsidian
+    [[ "$WITH_SUPERWHISPER" == true ]] && prereq_superwhisper
+    [[ "$WITH_OBSIDIAN" == true ]] && prereq_obsidian
     prereq_claude
     prereq_claude_auth
 
@@ -2416,9 +2420,13 @@ if settings_path.exists():
 }
 
 run_provisioning() {
-    configure_dock
-    configure_desktop
-    configure_terminal
+    if [[ "$WITH_THEMING" == true ]]; then
+        configure_dock
+        configure_desktop
+        configure_terminal
+    else
+        _info "Dock, wallpaper and Terminal left as they are (opt-in: --with-theming)"
+    fi
     configure_macos
     setup_statusline
     return 0
@@ -2697,8 +2705,8 @@ for name, job in (data.get('jobs') or {}).items():
     _step "Applications"
     _check "cmux"           "[[ -d '/Applications/cmux.app' ]]"
     _check "Google Chrome"  "[[ -d '/Applications/Google Chrome.app' ]]"
-    _check "SuperWhisper"   "[[ -d '/Applications/superwhisper.app' ]]"
-    _check "Obsidian"       "[[ -d '/Applications/Obsidian.app' ]]"
+    [[ "$WITH_SUPERWHISPER" == true ]] && _check "SuperWhisper"   "[[ -d '/Applications/superwhisper.app' ]]"
+    [[ "$WITH_OBSIDIAN" == true ]] && _check "Obsidian"       "[[ -d '/Applications/Obsidian.app' ]]"
 
     # ── Always-on ─────────────────────────────────────────────
     _step "Always-on configuration"
@@ -2721,7 +2729,7 @@ for name, job in (data.get('jobs') or {}).items():
 
     # ── Remote access ──────────────────────────────────────────
     _step "Remote access"
-    _check "SSH"            "sudo -n systemsetup -getremotelogin 2>/dev/null | grep -qi on"
+    _check "SSH (optional)" "nc -z localhost 22 2>/dev/null"
     _check "Tailscale"      "command -v tailscale"
     _check "Claude Remote"  "launchctl list 2>/dev/null | grep -q claude-remote"
 
@@ -2899,10 +2907,8 @@ main() {
     # The only questions we ask, asked once, before the calm ceremony begins.
     _collect_identity
 
-    # Keep sudo alive — install can take 20+ minutes, ticket expires in 5
-    ( while true; do sudo -n true 2>/dev/null; sleep 50; done ) &
-    SUDO_KEEPALIVE_PID=$!
-    trap '_spinner_stop; tput cnorm 2>/dev/null >&3; kill $SUDO_KEEPALIVE_PID 2>/dev/null' EXIT
+    # Hardened fork: no background `sudo -n true` keep-alive. Each step that
+    # needs admin rights asks when it runs (_need_sudo).
 
     echo "" >&3
 
