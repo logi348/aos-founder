@@ -7,6 +7,14 @@
 
 agents: {}
 
+# Level used when an agent, capability or person has no explicit entry.
+# Hardened fork: everything starts at 0 (SHADOW — observe and propose only).
+# Raising a level is done by the operator with `aos trust promote` in a
+# terminal (see HARDENING.md); agents cannot do it.
+defaults:
+  agent_level: 0
+  comms_level: 0
+
 graduation:
   0_to_1:
     min_observations: 20

@@ -25,6 +25,14 @@ LEVEL_NAMES = {0: "SHADOW", 1: "APPROVAL", 2: "SEMI-AUTO", 3: "FULL-AUTO"}
 LEVEL_ICONS = {0: "👁", 1: "✋", 2: "⚡", 3: "🤖"}
 
 
+def default_level(config: dict) -> int:
+    """Level for an agent with no explicit trust_level (hardened fork: 0)."""
+    try:
+        return int((config.get("defaults") or {}).get("agent_level", 0))
+    except (TypeError, ValueError):
+        return 0
+
+
 def load_config() -> dict:
     if not TRUST_CONFIG.exists():
         return {"agents": {}, "graduation": {}, "promotions": []}
@@ -124,7 +132,7 @@ def review(args):
     recommendations = []
 
     for name, info in agents.items():
-        level = info.get("trust_level", 1)
+        level = info.get("trust_level", default_level(config))
         icon = LEVEL_ICONS.get(level, "?")
         level_name = LEVEL_NAMES.get(level, "?")
         caps = info.get("capabilities", {})
@@ -224,7 +232,7 @@ def promote(args):
         # Update overall trust_level to max of capabilities
         agent["trust_level"] = max(caps.values())
     else:
-        old_level = agent.get("trust_level", 1)
+        old_level = agent.get("trust_level", default_level(config))
         new_level = args.to if args.to is not None else old_level + 1
         if new_level > 3:
             new_level = 3
@@ -265,7 +273,7 @@ def demote(args):
         agent["capabilities"] = caps
         agent["trust_level"] = max(caps.values()) if caps else new_level
     else:
-        old_level = agent.get("trust_level", 1)
+        old_level = agent.get("trust_level", default_level(config))
         new_level = args.to if args.to is not None else max(0, old_level - 1)
         agent["trust_level"] = new_level
 
