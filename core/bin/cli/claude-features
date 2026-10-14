@@ -1,0 +1,55 @@
+#!/usr/bin/env python3
+"""claude-features — opt in to (or out of) always-on Claude Code features.
+
+Usage:
+  aos claude-features                      show current state
+  aos claude-features enable remote-control
+  aos claude-features disable remote-control
+  aos claude-features enable chrome
+  aos claude-features disable chrome
+
+Both are OFF by default in this hardened fork. The choice is stored in
+~/.aos/config/claude-features.json and applied to ~/.claude.json and
+~/.claude/settings.json now; reconcile keeps it that way. Restart running
+Claude sessions (and the bridge: `aos deploy bridge`) for it to take effect.
+
+For a single session instead: `claude --remote-control` (or /remote-control
+inside a session), `claude --chrome` (or /chrome).
+"""
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "infra"))
+from lib import claude_features as cf  # noqa: E402
+
+
+def show() -> None:
+    state = cf.load()
+    for name, desc in cf.FEATURES.items():
+        print(f"  {name:<15} {'ON ' if state[name] else 'off'}  {desc}")
+    d = cf.drift()
+    if d:
+        print("\n  Not applied yet (run again, or `aos reconcile`):")
+        for line in d:
+            print(f"    {line}")
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) == 1 or argv[1] in ("status", "list"):
+        show()
+        return 0
+    if len(argv) != 3 or argv[1] not in ("enable", "disable") or argv[2] not in cf.FEATURES:
+        print(__doc__.strip().split("\n\n")[1], file=sys.stderr)
+        return 2
+    state = cf.load()
+    state[argv[2]] = argv[1] == "enable"
+    cf.save(state)
+    cf.apply()
+    print(f"{argv[2]}: {'enabled' if state[argv[2]] else 'disabled'}. Restart Claude sessions to pick it up.")
+    if argv[2] == "remote-control" and state[argv[2]]:
+        print("Note: anyone signed in to your Claude account can now drive sessions on this Mac.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

@@ -17,7 +17,7 @@ except the one file it is allowed to write:
      read-only sqlite query; this cron never writes to work.db).
   2. Dispatch the Advisor headlessly (Sentinel-shaped spawn — see
      core/engine/comms/sentinel/spawner.py._invoke_claude, which already
-     runs `claude --print --agent <name> --dangerously-skip-permissions`;
+     runs `claude --print --agent <name> --permission-mode dontAsk`;
      this copies that pattern rather than inventing a second one. The work
      runner was the other place until v0.7.7 deleted it) with a prompt
      asking it to propose promotions: which log
@@ -323,8 +323,10 @@ def build_prompt(log_entries: list[dict], closed_tasks: list[dict], today: date 
 def dispatch_advisor(prompt: str, model: str = DEFAULT_MODEL, timeout: int = DEFAULT_TIMEOUT_S) -> str:
     """Run the Advisor headlessly — the Sentinel-shaped spawn (same pattern
     as core/engine/comms/sentinel/spawner.py._invoke_claude): `claude
-    --print --agent advisor --dangerously-skip-permissions`, a bounded
-    read-only tool set, prompt on stdin. Returns raw stdout text.
+    --print --agent advisor --permission-mode dontAsk`, a bounded read-only
+    tool set (--tools limits what exists, --allowedTools pre-approves it;
+    anything else is refused, never waits for a prompt), prompt on stdin.
+    Returns raw stdout text.
 
     This is the one function tests stub out — it is the only place this
     module shells out to another process."""
@@ -333,7 +335,8 @@ def dispatch_advisor(prompt: str, model: str = DEFAULT_MODEL, timeout: int = DEF
         "--print",
         "--agent", "advisor",
         "--model", model,
-        "--dangerously-skip-permissions",
+        "--permission-mode", "dontAsk",
+        "--tools", "Read,Grep,Glob,Bash",
         "--allowedTools", "Read,Grep,Glob,Bash",
     ]
     if claude_lanes is not None:

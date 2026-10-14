@@ -17,29 +17,28 @@ These have been tested and confirmed working:
 
 | Feature | Key | File | Verified |
 |---------|-----|------|----------|
-| Chrome always on | `"chrome": true` | `~/.claude/settings.json` | 2026-03-26 |
-| Remote Control all sessions | `"remoteControlAtStartup": true` | `~/.claude.json` | 2026-03-26 |
+| Chrome on by default | `"claudeInChromeDefaultEnabled"` | `~/.claude.json` | docs, 2026-10 |
+| Remote Control all sessions | `"remoteControlAtStartup"` | `~/.claude/settings.json` (docs); upstream AOS also wrote `~/.claude.json` | docs, 2026-10 |
 | Default agent | `"agent": "chief"` | `~/.claude/settings.json` | confirmed |
-| Bypass permissions | `"permissions.defaultMode": "bypassPermissions"` | `~/.claude/settings.json` | confirmed |
+| Claude Code auto-update off | `"env": {"DISABLE_AUTOUPDATER": "1"}` | `~/.claude/settings.json` | docs, 2026-10 |
 
-## AOS Defaults
+## AOS Defaults (hardened fork)
 
-Every AOS installation must have both:
-
-```jsonc
-// ~/.claude/settings.json
-{
-  "chrome": true,
-  "agent": "chief"
-}
-
-// ~/.claude.json (written during onboarding or via /config)
-{
-  "remoteControlAtStartup": true
-}
-```
-
-Onboarding must write to **both** files.
+- **Remote Control and Claude in Chrome are OFF** and opt-in. Never set
+  `remoteControlAtStartup`, `claudeInChromeDefaultEnabled` or `"chrome"`
+  directly: the operator turns them on with
+  `aos claude-features enable remote-control|chrome`, and the
+  `claude_defaults` reconcile check enforces that choice
+  (`core/infra/lib/claude_features.py`).
+- **No permission bypass by default.** `cld` runs under the rules in
+  `settings.json`; only `cld-unsafe` passes `--dangerously-skip-permissions`.
+  Do not set `permissions.defaultMode` to `bypassPermissions`.
+- **Permissions** come from `core/infra/lib/claude_permissions.py` (scoped
+  Read/Edit allows, deny rules) and the Bash guard hook
+  `core/hooks/guard_bash.py`; reconcile restores both. Change the module, not
+  the live file.
+- `~/.claude/` is protected by Claude Code itself: no allow rule lets an
+  agent edit it outside bypass mode. That is intended.
 
 ## The Rule: Don't Assume, Verify
 

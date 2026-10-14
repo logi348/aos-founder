@@ -103,7 +103,7 @@ Subsystem details load on demand via `.claude/rules/` — see `comms-pipeline.md
 - Hooks must NEVER crash — always output valid JSON and exit 0
 - Runtime data goes in `~/.aos/`, never in `~/aos/`
 - Skills are symlinked from `~/aos/core/skills/` — edits in framework propagate
-- Settings.json harness files need explicit `allow` permissions (bypassPermissions doesn't cover them)
+- Permissions in ~/.claude/settings.json come from `core/infra/lib/claude_permissions.py` (hardened fork: scoped allows, deny rules, Bash guard hook); `cld` does not bypass them, `cld-unsafe` does
 - Test with both Homebrew Python and system Python 3.9 (some users only have 3.9)
 - **Never hardcode lists the filesystem declares.** When checking for services, skills, agents, or LaunchAgents — discover from the filesystem. Lists drift. Directories don't. ship-check enforces this.
 - **Destructive operations require operator approval.** Any operation that deletes files, removes services, or drops data must present what it will do and get explicit approval. No auto-delete. No "cleanup on fix." Report, then ask.

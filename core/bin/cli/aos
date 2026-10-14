@@ -1188,6 +1188,7 @@ PYEOF
         echo "  hygiene         Find orphaned instance artifacts (services, plists, caches)"
         echo "  version         Show current version"
         echo "  claude-profile  Isolated Claude Code login profiles (add/list/remove/path)"
+        echo "  claude-features Opt in/out: remote-control, chrome (aos claude-features enable chrome)"
         echo ""
         ;;
 
@@ -1292,6 +1293,12 @@ if dismiss_list:
         # Isolated Claude Code login profiles — add/list/remove/path.
         shift
         exec "$AOS_DIR/core/bin/cli/claude-profile" "$@"
+        ;;
+
+    claude-features)
+        # Opt in/out of Remote Control and Claude in Chrome (both off by default).
+        shift
+        exec "$AOS_DIR/core/bin/internal/aos-python" "$AOS_DIR/core/bin/cli/claude-features" "$@"
         ;;
 
     snapshot)

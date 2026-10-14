@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# cld — Claude Code with bypassed permissions, loads the main orchestrator agent
+# cld — Claude Code with the main orchestrator agent, under the normal
+# permission rules in ~/.claude/settings.json (hardened fork: no bypass).
+# `cld-unsafe` is the same launcher with --dangerously-skip-permissions.
 #
 # Usage:
 #   cld                    — start interactive session
@@ -57,4 +59,12 @@ if [[ -n "$PROFILE_NAME" ]]; then
     export CLAUDE_CONFIG_DIR="$profile_dir"
 fi
 
-exec claude --dangerously-skip-permissions --agent "$AGENT_NAME" "$@"
+# Only `cld-unsafe` sets AOS_CLD_UNSAFE=1. It is cleared before exec so the
+# session (and anything it spawns) never inherits it.
+CLD_FLAGS=()
+if [[ "${AOS_CLD_UNSAFE:-}" == "1" ]]; then
+    CLD_FLAGS=(--dangerously-skip-permissions)
+fi
+unset AOS_CLD_UNSAFE
+
+exec claude ${CLD_FLAGS[@]+"${CLD_FLAGS[@]}"} --agent "$AGENT_NAME" "$@"

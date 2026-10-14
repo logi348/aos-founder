@@ -1229,17 +1229,21 @@ setup_path() {
     # Make aos executable
     chmod +x "$aos_bin"
 
-    # Symlink cld (claude with bypassed permissions)
-    local cld_bin="$AOS_DIR/core/bin/cli/cld"
-    local cld_target="$HOME/.local/bin/cld"
-    chmod +x "$cld_bin" 2>/dev/null
-
-    if [[ -L "$cld_target" ]] && [[ "$(readlink "$cld_target")" == "$cld_bin" ]]; then
-        _skip "cld on PATH"
-    else
-        ln -sf "$cld_bin" "$cld_target"
-        _ok "cld on PATH (claude --dangerously-skip-permissions)"
-    fi
+    # Symlink cld (Claude with the orchestrator agent, normal permission
+    # rules) and cld-unsafe (same, with --dangerously-skip-permissions and a
+    # warning). Hardened fork: plain cld no longer bypasses permissions.
+    local name
+    for name in cld cld-unsafe; do
+        local cld_bin="$AOS_DIR/core/bin/cli/$name"
+        local cld_target="$HOME/.local/bin/$name"
+        chmod +x "$cld_bin" 2>/dev/null
+        if [[ -L "$cld_target" ]] && [[ "$(readlink "$cld_target")" == "$cld_bin" ]]; then
+            _skip "$name on PATH"
+        else
+            ln -sf "$cld_bin" "$cld_target"
+            _ok "$name on PATH"
+        fi
+    done
 
     # Also add to current session
     export PATH="$HOME/.local/bin:$PATH"
@@ -1402,9 +1406,8 @@ OPERATOR
         cat > "$settings_file" << 'SETTINGS'
 {
   "agent": "chief",
-  "chrome": true,
   "permissions": {
-    "allow": ["Bash(*)", "Read(*)", "Write(*)", "Edit(*)", "Glob(*)", "Grep(*)"],
+    "allow": [],
     "deny": []
   },
   "env": {
@@ -1427,9 +1430,6 @@ changed = False
 if not s.get('agent'):
     s['agent'] = 'chief'
     changed = True
-if not s.get('chrome'):
-    s['chrome'] = True
-    changed = True
 if 'env' not in s:
     s['env'] = {}
 if 'CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS' not in s.get('env', {}):
@@ -1449,6 +1449,14 @@ else:
     print('ok')
 " 2>/dev/null
     fi
+
+    # Permissions — the hardened set (scoped Read/Edit allows, deny rules for
+    # secrets, sudo, the keychain CLI, curl|sh, rm -rf of home). Applied to
+    # whichever settings.json exists now (migrations usually created it);
+    # the settings_config reconcile check keeps it that way.
+    python3 "$AOS_DIR/core/infra/lib/claude_permissions.py" apply "$settings_file" 2>/dev/null \
+        && _ok "Claude permissions (scoped allows + deny rules)" \
+        || _warn "Claude permissions — run 'aos reconcile' after install"
 
     # Repair hooks — fix flat format ({"command": "..."}) to correct nested format ({"hooks": [{"type": "command", ...}]})
     python3 -c "
@@ -1507,7 +1515,9 @@ assert s.get('hooks', {}).get('SessionStart')
     # projects dir — Claude Code per-project memory
     mkdir -p "$HOME/.claude/projects"
 
-    # Pre-accept trust dialog for ~ and ~/aos (prevents interactive prompt on first run)
+    # Pre-accept the trust dialog for ~/aos only (hardened fork: never for the
+    # home directory — a session started in ~ asks first). Remote Control and
+    # Claude in Chrome are opt-in: `aos claude-features enable <feature>`.
     python3 -c "
 import json
 from pathlib import Path
@@ -1517,19 +1527,15 @@ d = json.loads(p.read_text()) if p.exists() else {}
 if 'projects' not in d:
     d['projects'] = {}
 
-for path in [str(Path.home()), str(Path.home() / 'aos')]:
+for path in [str(Path.home() / 'aos')]:
     if path not in d['projects']:
         d['projects'][path] = {}
     d['projects'][path]['hasTrustDialogAccepted'] = True
     d['projects'][path]['hasTrustDialogHooksAccepted'] = True
 
-# AOS defaults: always-on features (verified keys — see rules/claude-code-config.md)
-# remoteControlAtStartup: enables Remote Control for all sessions (stored in ~/.claude.json, not settings.json)
-# claudeInChromeDefaultEnabled: enables Chrome MCP for all sessions
-if not d.get('remoteControlAtStartup'):
-    d['remoteControlAtStartup'] = True
-if not d.get('claudeInChromeDefaultEnabled'):
-    d['claudeInChromeDefaultEnabled'] = True
+# Opt-in features default off (core/infra/lib/claude_features.py).
+d['remoteControlAtStartup'] = False
+d['claudeInChromeDefaultEnabled'] = False
 
 p.write_text(json.dumps(d, indent=2) + '\n')
 print('ok')
@@ -2338,6 +2344,14 @@ hook_defs = {
         {'hooks': [
             {'type': 'command', 'command': 'python3 ~/aos/core/engine/work/session_close.py', 'async': True},
             {'type': 'command', 'command': 'python3 ~/aos/core/bin/crons/reconcile-sessions --hook --quiet', 'async': True},
+        ]},
+    ],
+    # Hardened fork: parse every Bash command before it runs
+    # (core/hooks/guard_bash.py). Also enforced by the settings_config
+    # reconcile check.
+    'PreToolUse': [
+        {'matcher': 'Bash', 'hooks': [
+            {'type': 'command', 'command': 'python3 ~/aos/core/hooks/guard_bash.py'},
         ]},
     ],
     # aos#236.4: automatic trust-log entries for catalog dispatch — matcher

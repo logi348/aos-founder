@@ -4,13 +4,15 @@ Invariant: settings.json has correct hooks, paths, and permissions.
 Checks:
 1. Hook commands reference valid ~/aos/ paths (not stale prefixes)
 2. Required hooks are registered
-3. Permissions use blanket tool-level allows (Bash, Read, Edit, Write)
+3. Permissions match the hardened set in core/infra/lib/claude_permissions.py
+   (scoped Read/Edit allows, deny rules for secrets/sudo/keychain/curl|sh),
+   and upstream's blanket Bash(*)/Read/Edit/Write allows are removed.
 
-Note on permissions: Claude Code 2.1.78+ protects .claude/, .git/, .vscode/,
-and .idea/ directories even in bypassPermissions mode. Path-specific allows
-like "Edit ~/.claude/**" no longer override this. Blanket tool allows ("Edit",
-"Write") DO override it. We enforce blanket allows and clean up old-format
-path-specific rules left over from earlier versions.
+Hardened fork: this check used to re-add blanket "Read"/"Edit"/"Write"
+allows on every pass, which silently undid any narrowing. It now enforces the
+shared permission set instead. (Claude Code's protection of ~/.claude is not
+lifted by any allow rule in current versions, so nothing relied on the
+blanket allows for that.)
 """
 
 import json
@@ -19,6 +21,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from base import CheckResult, ReconcileCheck, Status
+
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+from lib import claude_permissions
 
 
 class HooksPathCheck(ReconcileCheck):
@@ -54,24 +59,14 @@ class HooksPathCheck(ReconcileCheck):
             "matcher": "Agent",
             "async": True,
         },
+        # Hardened fork: parses every Bash command before it runs (sudo,
+        # security, curl|sh, rm -rf outside AOS dirs, secret paths).
+        claude_permissions.GUARD_HOOK["event"]: {
+            "command": claude_permissions.GUARD_HOOK["command"],
+            "matcher": claude_permissions.GUARD_HOOK["matcher"],
+        },
     }
 
-    # Required permissions — blanket tool-level allows.
-    # Claude Code 2.1.78+ protects .claude/ even in bypassPermissions mode.
-    # Path-specific rules ("Edit ~/.claude/**") no longer work. Blanket
-    # tool allows ("Edit") override the protection correctly.
-    REQUIRED_PERMISSIONS = [
-        "Bash",
-        "Read",
-        "Edit",
-        "Write",
-    ]
-
-    # Old-format permissions to remove (superseded by blanket allows)
-    STALE_PERMISSIONS = [
-        "Edit ~/.claude/**",
-        "Write ~/.claude/**",
-    ]
 
     def check(self) -> bool:
         if not self.SETTINGS.exists():
@@ -94,16 +89,9 @@ class HooksPathCheck(ReconcileCheck):
             if not self._hook_exists(hooks, event, spec["command"]):
                 return False
 
-        # Check required permissions exist
-        allow = settings.get("permissions", {}).get("allow", [])
-        for perm in self.REQUIRED_PERMISSIONS:
-            if perm not in allow:
-                return False
-
-        # Check for stale permissions that should be removed
-        for perm in self.STALE_PERMISSIONS:
-            if perm in allow:
-                return False
+        # Permissions must match the hardened set
+        if claude_permissions.needs_update(settings):
+            return False
 
         return True
 
@@ -156,21 +144,10 @@ class HooksPathCheck(ReconcileCheck):
 
         settings["hooks"] = hooks
 
-        # Remove stale old-format permissions
-        perms = settings.setdefault("permissions", {})
-        allow = perms.setdefault("allow", [])
-        for perm in self.STALE_PERMISSIONS:
-            if perm in allow:
-                allow.remove(perm)
-                actions.append(f"removed stale permission: {perm}")
-
-        # Add missing blanket permissions
-        for perm in self.REQUIRED_PERMISSIONS:
-            if perm not in allow:
-                allow.append(perm)
-                actions.append(f"added permission: {perm}")
-
-        settings["permissions"]["allow"] = allow
+        # Hardened permission set (scoped allows, deny rules, no blanket allows)
+        perm_changes = claude_permissions.apply(settings)
+        if perm_changes:
+            actions.append(f"permissions: {len(perm_changes)} change(s)")
         self.SETTINGS.write_text(json.dumps(settings, indent=2) + "\n")
 
         if actions:

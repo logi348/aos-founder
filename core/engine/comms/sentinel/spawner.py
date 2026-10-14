@@ -266,7 +266,8 @@ class SentinelSpawner:
             CLAUDE_BIN,
             "--print",
             "--agent", "Sentinel",
-            "--dangerously-skip-permissions",
+            "--permission-mode", "dontAsk",
+            "--tools", "WebSearch,WebFetch,Read,Write,Glob,Grep,Bash",
             "--allowedTools", "WebSearch,WebFetch,Read,Write,Glob,Grep,Bash",
         ]
         log.info("Invoking claude (trigger=%s, log=%s)", trigger_id, log_file)

@@ -343,12 +343,14 @@ class TestWiredCallSitesArgvUnchanged:
 
     def test_memory_curate_shape(self, mod, sandbox):
         cmd = ["claude", "--print", "--agent", "advisor", "--model", "sonnet",
-               "--dangerously-skip-permissions", "--allowedTools", "Read,Grep,Glob,Bash"]
+               "--permission-mode", "dontAsk", "--tools", "Read,Grep,Glob,Bash",
+               "--allowedTools", "Read,Grep,Glob,Bash"]
         result = mod.run(cmd, stdin="the prompt text", timeout=900)
         assert result.returncode == 0
 
     def test_sentinel_spawner_shape_with_extra_env(self, mod, sandbox):
-        cmd = ["claude", "--print", "--agent", "Sentinel", "--dangerously-skip-permissions",
+        cmd = ["claude", "--print", "--agent", "Sentinel", "--permission-mode", "dontAsk",
+               "--tools", "WebSearch,WebFetch,Read,Write,Glob,Grep,Bash",
                "--allowedTools", "WebSearch,WebFetch,Read,Write,Glob,Grep,Bash"]
         result = mod.run(cmd, stdin="prompt", timeout=60, env={"SENTINEL_TRIGGER_ID": "t1"})
         assert result.returncode == 0
