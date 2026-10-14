@@ -294,14 +294,20 @@ def _session_workspace(session_id: str) -> Path:
 
 def build_command(session: "models.ConversationSession", claude_bin: str | None = None) -> list[str]:
     profile = TOOL_PROFILES.get(session.tools, TOOL_PROFILES[models.TOOLS_NONE])
+    tools = profile["allowed_tools"]
+    # Hardened fork: --tools limits which built-in tools exist for the turn,
+    # --allowedTools pre-approves them, and dontAsk refuses anything else
+    # instead of waiting on a prompt nobody will answer. (Under the old
+    # --dangerously-skip-permissions, --allowedTools restricted nothing.)
+    perm_args = ["--permission-mode", "dontAsk", "--tools", tools]
+    if tools:
+        perm_args += ["--allowedTools", tools]
     return [
         claude_bin or _CLAUDE_BIN,
         "--print",
         "--model",
         "sonnet",
-        "--dangerously-skip-permissions",
-        "--allowedTools",
-        profile["allowed_tools"],
+        *perm_args,
         "--output-format",
         "json",
         *profile["extra_args"],

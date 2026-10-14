@@ -28,7 +28,7 @@ imessage:
   access: allowlist
   include_groups: false
   allowed:
-    - name: Hisham
+    - name: Alex
       handles: ["+14165550142"]
 """
 
@@ -69,7 +69,8 @@ def test_absent_file_is_seeded_from_template(m, home):
     assert dest.read_bytes() == TEMPLATE.read_bytes()
 
     cfg = yaml.safe_load(dest.read_text())
-    assert cfg["imessage"]["access"] == "all"
+    assert cfg["imessage"]["access"] == "allowlist"  # hardened default
+    assert cfg["imessage"]["allowed"] == []
     assert cfg["imessage"]["include_groups"] is False
 
 
@@ -102,7 +103,7 @@ def test_existing_operator_file_untouched(m, home):
 
     cfg = yaml.safe_load(dest.read_text())
     assert cfg["imessage"]["access"] == "allowlist"
-    assert cfg["imessage"]["allowed"][0]["name"] == "Hisham"
+    assert cfg["imessage"]["allowed"][0]["name"] == "Alex"
 
 
 # ── (d) template missing → inline fallback, still valid ──────────────────────
@@ -117,7 +118,8 @@ def test_missing_template_uses_inline_fallback(m, home, monkeypatch):
     assert dest.is_file()
 
     cfg = yaml.safe_load(dest.read_text())
-    assert cfg["imessage"]["access"] == "all"
+    assert cfg["imessage"]["access"] == "allowlist"  # hardened default
+    assert cfg["imessage"]["allowed"] == []
     assert cfg["imessage"]["include_groups"] is False
     # The inline copy must not drift from the shipped template.
     assert dest.read_text() == TEMPLATE.read_text()

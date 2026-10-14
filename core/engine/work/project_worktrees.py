@@ -11,7 +11,7 @@ looks like a mess:
   * ``<project>/.claude/worktrees/agent-<hash>/`` — the right *place* (inside the
     project) but named by opaque agent hash, so no human can tell what any of
     them is without asking git.
-  * top-level siblings (``quran-tools-islah-qg1``, ``deenoverdunya-falak``) —
+  * top-level siblings (``notes-tools-islah-qg1``, ``docsondemand-falak``) —
     correct-ish and durable, but they pollute ``~/project/`` and break the
     one-directory-one-project model the disposition table assumes.
 

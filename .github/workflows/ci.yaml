@@ -78,7 +78,7 @@ jobs:
         run: |
           uv run --frozen python -c "
           import yaml, rapidfuzz, phonenumbers, metaphone, networkx
-          import jwt, requests, httpx, feedparser, hijri_converter
+          import jwt, requests, httpx, feedparser
           print('all runtime dependencies import OK')
           "
 

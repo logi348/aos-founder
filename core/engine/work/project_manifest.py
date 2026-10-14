@@ -47,8 +47,8 @@ visible on the project page next to ``status_disagreement``.
 Safety by schema, not by discipline
 -----------------------------------
 
-Manifests are committed to git, and ``aos``, ``deenoverdunya``, ``quran-tools``
-and ``hre/app`` all have GitHub remotes — ``ahhs-quran`` is public-facing. So the
+Manifests are committed to git, and ``aos``, ``docsondemand``, ``notes-tools``
+and ``hre/app`` all have GitHub remotes — ``ahhs-notes`` is public-facing. So the
 schema is built so there is nowhere for sensitive data to go:
 
   * **Closed key set.** Unknown keys are *rejected*, not ignored, so nobody can
@@ -792,7 +792,7 @@ def plan_adoption_for_directory(directory: Path, *,
 
     The id defaults to the directory name. That is a real assumption rather than
     a neutral one, so it is stated in the plan's findings — the operator is the
-    one who knows whether ``tafsir`` is a project id or two projects sharing a
+    one who knows whether ``summary`` is a project id or two projects sharing a
     name (it is the latter; see the initiative doc).
 
     Writes nothing. ``write_manifest()`` is still the only write path.

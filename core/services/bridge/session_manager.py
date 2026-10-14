@@ -14,6 +14,7 @@ from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from pathlib import Path
 
+import bridge_permissions
 from bridge_events import bridge_event
 
 logger = logging.getLogger("aos.bridge.session_manager")
@@ -458,7 +459,7 @@ def get_persistent_session() -> "PersistentSession":  # noqa: F821
     global _persistent
     if _persistent is None:
         from persistent_session import PersistentSession
-        _persistent = PersistentSession(cwd=str(Path.home()))
+        _persistent = PersistentSession(cwd=bridge_permissions.working_dir())
     return _persistent
 
 
@@ -540,8 +541,7 @@ async def stream_claude(
         "stream-json",
         "--verbose",
         "--include-partial-messages",
-        "--permission-mode",
-        "bypassPermissions",
+        *bridge_permissions.args(),
         "--max-turns",
         str(max_turns),
         "--max-budget-usd",
@@ -583,7 +583,7 @@ async def stream_claude(
             "When the operator references a person or topic from a past conversation, recall "
             "it with `comms-recall search \"<topic>\"` or `comms-recall person \"<name>\"` "
             "rather than asking them to re-explain. "
-            "You have full tool access." + _ambient,
+            + bridge_permissions.PROMPT_NOTE + _ambient,
         ])
 
     # Session resumption (not for agent dispatches — they get fresh context)
@@ -601,7 +601,7 @@ async def stream_claude(
     if agent_name:
         cmd.extend(["--agent", agent_name])
 
-    work_dir = cwd or str(Path.home())
+    work_dir = cwd or bridge_permissions.working_dir()
 
     async def _generate():
         nonlocal session_id, is_resumed
@@ -728,8 +728,7 @@ async def _retry_fresh(
         "stream-json",
         "--verbose",
         "--include-partial-messages",
-        "--permission-mode",
-        "bypassPermissions",
+        *bridge_permissions.args(),
         "--max-turns",
         str(max_turns),
         "--max-budget-usd",

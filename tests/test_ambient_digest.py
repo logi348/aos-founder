@@ -30,7 +30,7 @@ class TestDurability:
         assert _is_durable(None, _days_ago(30)) is False
 
     def test_dated_nonimmediate_rides(self):
-        assert _is_durable("before Maghrib on Friday", _days_ago(40)) is True
+        assert _is_durable("before dinner on Friday", _days_ago(40)) is True
         assert _is_durable("2026-08-20", _days_ago(60)) is True
 
     def test_bad_timestamp_failsafe(self):

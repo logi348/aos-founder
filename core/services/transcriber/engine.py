@@ -417,7 +417,8 @@ def _transcribe_bilingual(engine, audio_path: str, timestamps: bool, t0: float) 
     ar_kwargs = {
         **base_kwargs,
         "language": "ar",
-        "initial_prompt": "\u0628\u0633\u0645 \u0627\u0644\u0644\u0647 \u0627\u0644\u0631\u062d\u0645\u0646 \u0627\u0644\u0631\u062d\u064a\u0645",
+        # Neutral Arabic priming ("Hello. This is a voice recording.").
+        "initial_prompt": "\u0645\u0631\u062d\u0628\u0627. \u0647\u0630\u0627 \u062a\u0633\u062c\u064a\u0644 \u0635\u0648\u062a\u064a.",
     }
     logger.info("  Pass 2/2: Arabic...")
     ar_result = engine.transcribe(audio_path, **ar_kwargs)

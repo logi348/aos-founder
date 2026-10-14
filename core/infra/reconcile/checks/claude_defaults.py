@@ -1,68 +1,42 @@
 """
-Invariant: ~/.claude.json has AOS always-on defaults.
+Invariant: Remote Control and Claude in Chrome match the operator's choice.
 
-Claude Code stores some preferences in ~/.claude.json (NOT settings.json).
-These are runtime flags typically set via /config UI. AOS requires certain
-features always enabled for all users.
+Hardened fork. Upstream forced remoteControlAtStartup and
+claudeInChromeDefaultEnabled to true in ~/.claude.json on every reconcile
+pass. Both are now opt-in: the source of truth is
+~/.aos/config/claude-features.json (absent → both off), changed only via
+`aos claude-features enable|disable <remote-control|chrome>`. This check
+enforces that file in ~/.claude.json and ~/.claude/settings.json, so an
+upstream merge or a stray edit can't silently turn them back on.
 
-Verified keys (see rules/claude-code-config.md):
-  - remoteControlAtStartup: true  (Remote Control for all sessions)
-  - claudeInChromeDefaultEnabled: true  (Chrome MCP for all sessions)
-
-These keys are NOT in settings.json — they live in ~/.claude.json.
-Don't assume key names; they were discovered by toggling /config and
-diffing the file. If new keys are needed, verify the same way.
+Logic lives in core/infra/lib/claude_features.py (shared with the CLI).
 """
 
-import json
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from base import CheckResult, ReconcileCheck, Status
 
-# Keys that must be true in ~/.claude.json for AOS
-# Format: {key: expected_value}
-REQUIRED_DEFAULTS = {
-    "remoteControlAtStartup": True,
-    "claudeInChromeDefaultEnabled": True,
-}
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+from lib import claude_features
 
 
 class ClaudeDefaultsCheck(ReconcileCheck):
     name = "claude_defaults"
-    description = "~/.claude.json has AOS always-on defaults (remote control, chrome)"
-
-    target = Path.home() / ".claude.json"
+    # Hardened fork: repair on the 30-minute periodic run too, not only on
+    # deploy, so tampering (an agent loosening its own permissions, flags or
+    # code) is undone within half an hour.
+    periodic_fix = True
+    description = "Remote Control / Chrome match ~/.aos/config/claude-features.json (default off)"
 
     def check(self) -> bool:
-        if not self.target.exists():
-            return False
-        try:
-            data = json.loads(self.target.read_text())
-        except (json.JSONDecodeError, OSError):
-            return False
-        for key, expected in REQUIRED_DEFAULTS.items():
-            if data.get(key) != expected:
-                return False
-        return True
+        return not claude_features.drift()
 
     def fix(self) -> CheckResult:
-        try:
-            data = json.loads(self.target.read_text()) if self.target.exists() else {}
-        except (json.JSONDecodeError, OSError):
-            data = {}
-
-        fixed = []
-        for key, expected in REQUIRED_DEFAULTS.items():
-            if data.get(key) != expected:
-                data[key] = expected
-                fixed.append(key)
-
-        if fixed:
-            self.target.write_text(json.dumps(data, indent=2) + "\n")
-            return CheckResult(
-                self.name, Status.FIXED,
-                f"Set {', '.join(fixed)} in ~/.claude.json"
-            )
+        changed = claude_features.apply()
+        if changed:
+            state = claude_features.load()
+            summary = ", ".join(f"{k}={'on' if v else 'off'}" for k, v in state.items())
+            return CheckResult(self.name, Status.FIXED, f"Applied {summary} to {', '.join(changed)}")
         return CheckResult(self.name, Status.OK, "ok")

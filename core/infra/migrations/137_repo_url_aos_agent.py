@@ -1,12 +1,13 @@
 """
-Migration 137: point instance git remotes at AOS-Agent/aos.
+Migration 137: point instance git remotes at logi348/aos-hardened.
 
 Background
 ----------
-The repository was renamed from `hishamalhadi/aos` to `AOS-Agent/aos` (same
-repository — GitHub id 1188268574, confirmed by the API redirect). This
-release rewrites the framework's own references: `install.sh`, `bootstrap.sh`,
-`README.md` and `core/engine/work/backend.py`.
+Upstream renamed its repository from `hishamalhadi/aos` to `AOS-Agent/aos`.
+This hardened fork lives at `logi348/aos-hardened` and its own references
+(`install.sh`, `bootstrap.sh`, `README.md`, `core/engine/work/backend.py`)
+point there. A remote still on the pre-rename path is redirected to the fork,
+never to upstream: updates come only from the fork (see UPSTREAM.md).
 
 That covers every NEW install. It does not cover the machines already out
 there, and those are the ones that matter: `release-manager` fetches through
@@ -31,7 +32,8 @@ What this migration does
      (any host spelling: https, ssh, git@, with or without `.git`).
   3. Leave every other remote alone — a fork, a mirror, a local path
      remote (`app-src` on the reference machine points at
-     `~/project/aos-app`) and anything already on AOS-Agent.
+     `~/project/aos-app`) and anything already on AOS-Agent/aos (a
+     deliberately added `upstream` remote) or on the fork.
 
 Idempotent: `check()` is true once no known checkout has a remote on the old
 path, which is also the state on a machine that never had one. Reversible:
@@ -44,10 +46,10 @@ import re
 import subprocess
 from pathlib import Path
 
-DESCRIPTION = "Point instance git remotes at AOS-Agent/aos (repo renamed)"
+DESCRIPTION = "Point instance git remotes at logi348/aos-hardened (repo renamed)"
 
 OLD_PATH = "hishamalhadi/aos"
-NEW_PATH = "AOS-Agent/aos"
+NEW_PATH = "logi348/aos-hardened"
 
 # Matches the old path only as a whole repo path, so a remote that merely
 # contains the string (a directory named after it, say) is not rewritten.

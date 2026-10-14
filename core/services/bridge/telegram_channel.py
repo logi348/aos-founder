@@ -40,10 +40,12 @@ from telegram import ReactionTypeEmoji, Update
 from telegram.error import BadRequest, TimedOut
 from telegram.ext import (
     Application,
+    ApplicationHandlerStop,
     CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
     MessageHandler,
+    TypeHandler,
     filters,
 )
 from voice_transcriber import get_mode, set_mode, transcribe_voice
@@ -435,10 +437,17 @@ def _format_tasks_telegram(tasks: list[dict]) -> str:
 
 class TelegramChannel:
     def __init__(self, bot_token: str, allowed_chat_id: int,
-                 forum_group_id: int = None, topic_routes: dict = None):
+                 forum_group_id: int = None, topic_routes: dict = None,
+                 owner_user_id: int = None):
         self.bot_token = bot_token
         self.allowed_chat_id = allowed_chat_id
         self.forum_group_id = forum_group_id
+        # The one Telegram user allowed to drive the bridge. In a private chat
+        # the chat id IS the user id, so that is the default; set
+        # TELEGRAM_USER_ID explicitly if TELEGRAM_CHAT_ID is a group.
+        if owner_user_id is None and allowed_chat_id and allowed_chat_id > 0:
+            owner_user_id = allowed_chat_id
+        self.owner_user_id = owner_user_id
         # topic_routes: {thread_id: {"cwd": "/path/to/project", "agent": "nuchay"}}
         self.topic_routes = topic_routes or {}
         self.app: Application = None
@@ -447,6 +456,63 @@ class TelegramChannel:
 
     def _is_authorized(self, chat_id: int) -> bool:
         return chat_id == self.allowed_chat_id or chat_id == self.forum_group_id
+
+    def _authorize_update(self, update) -> bool:
+        """Hardened fork: an update is accepted only when it comes from an
+        authorized chat AND from the operator's own Telegram account.
+
+        Upstream checked the chat alone, so in the forum group every member
+        was fully authorized (including inline-button presses). Updates with
+        no sender (channel posts) or no chat are rejected."""
+        chat = getattr(update, "effective_chat", None)
+        user = getattr(update, "effective_user", None)
+        if chat is None or user is None:
+            return False
+        if not self._is_authorized(chat.id):
+            return False
+        if getattr(user, "is_bot", False):
+            return False
+        if self.owner_user_id is not None and user.id != self.owner_user_id:
+            return False
+        return True
+
+    async def _send_approval_prompt(self, approval_id: str, text_html: str):
+        """Allow/Deny prompt for approvals.py. Returns the sent message."""
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+        import approvals
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ Allow", callback_data=f"{approvals.CALLBACK_PREFIX}{approval_id}:a"),
+            InlineKeyboardButton("⛔ Deny", callback_data=f"{approvals.CALLBACK_PREFIX}{approval_id}:d"),
+        ]])
+        if self.app is None:
+            return None
+        return await self.app.bot.send_message(
+            chat_id=self.allowed_chat_id, text=text_html,
+            parse_mode="HTML", reply_markup=keyboard,
+        )
+
+    async def _edit_approval_prompt(self, message, text_html: str):
+        await message.edit_text(text_html, parse_mode="HTML")
+
+    async def _gate(self, update, context):
+        """Runs before every handler (group -1). Anything unauthorized stops
+        here — text, voice, media, commands, callbacks, edits, and any update
+        type a future handler might add."""
+        if self._authorize_update(update):
+            return
+        chat = getattr(update, "effective_chat", None)
+        user = getattr(update, "effective_user", None)
+        logger.warning(
+            "Rejected update: chat_id=%s user_id=%s",
+            getattr(chat, "id", None), getattr(user, "id", None),
+        )
+        query = getattr(update, "callback_query", None)
+        if query is not None:
+            try:
+                await query.answer("Unauthorized")
+            except Exception:
+                pass
+        raise ApplicationHandlerStop
 
     def _get_topic_config(self, message) -> dict:
         """Get routing config for a forum topic message."""
@@ -1286,9 +1352,30 @@ class TelegramChannel:
         if not query:
             return
 
-        chat_id = query.message.chat_id
-        if not self._is_authorized(chat_id):
+        chat_id = query.message.chat_id if query.message else None
+        if chat_id is None or not self._is_authorized(chat_id):
             await query.answer("Unauthorized")
+            return
+
+        # ── Phone approval buttons (approvals.py) ──
+        import approvals
+        if approvals.resolve(query.data or ""):
+            await query.answer()
+            return
+
+        # ── "Apply update" button from check-update (update_offer.py) ──
+        import update_offer
+        data = query.data or ""
+        if data.startswith(update_offer.PREFIX) or data == update_offer.LATER:
+            reply, to_apply = update_offer.decide(data)
+            await query.answer()
+            try:
+                await query.edit_message_reply_markup(reply_markup=None)
+            except Exception:
+                pass
+            await query.message.reply_text(reply)
+            if to_apply:
+                update_offer.start_apply()
             return
 
         # ── Stop button — kill the active Claude process ──
@@ -1906,7 +1993,8 @@ class TelegramChannel:
         # Global error handler — registered FIRST so no errors are ever unhandled
         async def _error_handler(update, context):
             logger.error(f"Unhandled error: {context.error}", exc_info=context.error)
-            if update and update.effective_chat:
+            # Never answer an unauthorized chat, not even with an error.
+            if update and update.effective_chat and self._authorize_update(update):
                 try:
                     await context.bot.send_message(
                         chat_id=update.effective_chat.id,
@@ -1926,6 +2014,25 @@ class TelegramChannel:
         # Error handler before any message handlers
         self.app.add_error_handler(_error_handler)
 
+        self._register_handlers(self.app)
+
+        logger.info(f"Telegram channel started (chat_id={self.allowed_chat_id}, "
+                    f"owner_user_id={self.owner_user_id})")
+        if self.owner_user_id is None:
+            logger.warning("No owner user id (TELEGRAM_CHAT_ID is a group and TELEGRAM_USER_ID "
+                           "is unset): any member of the authorized chat can drive the bridge")
+        self.app.run_polling(drop_pending_updates=True)
+
+    def _register_handlers(self, app):
+        # Authorization gate first, in its own earlier group, so it sees every
+        # update before any handler can act on it.
+        app.add_handler(TypeHandler(Update, self._gate), group=-1)
+
+        # Phone approvals for bridge Claude sessions go to the operator's chat.
+        import approvals
+        approvals.set_transport(self._send_approval_prompt, self._edit_approval_prompt)
+
+        self.app = app
         self.app.add_handler(CommandHandler("new", self._handle_new))
         self.app.add_handler(CommandHandler("status", self._handle_status))
         self.app.add_handler(CommandHandler("tasks", self._handle_tasks))
@@ -1941,6 +2048,3 @@ class TelegramChannel:
         ))
         self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_message))
         self.app.add_handler(CallbackQueryHandler(self._handle_callback))
-
-        logger.info(f"Telegram channel started (chat_id={self.allowed_chat_id})")
-        self.app.run_polling(drop_pending_updates=True)

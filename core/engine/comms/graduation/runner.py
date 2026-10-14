@@ -234,6 +234,13 @@ def main():
     args = parser.parse_args()
 
     if args.command == "confirm":
+        if args.action == "accept":
+            # Hardened fork: accepting a promotion from the command line needs
+            # a person at a terminal. (The Telegram /approve path calls
+            # confirm() directly and is already limited to the operator's chat.)
+            sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "infra"))
+            from lib.human_gate import require_human
+            require_human(f"raise iMessage trust for {args.person_id}")
         success = confirm(args.person_id, args.action)
         sys.exit(0 if success else 1)
     else:

@@ -21,12 +21,6 @@ import yaml
 from datetime import datetime, date, timedelta
 from pathlib import Path
 
-try:
-    from hijri_converter import Gregorian
-    HAS_HIJRI = True
-except ImportError:
-    HAS_HIJRI = False
-
 VAULT_DAYS = Path.home() / "vault" / "log"
 WORK_FILE = Path.home() / ".aos" / "work" / "work.yaml"
 SESSIONS_LOG = Path.home() / ".aos" / "logs" / "sessions.jsonl"  # may not exist if session hook isn't installed; load_sessions_for_date() handles this gracefully (returns [])
@@ -240,11 +234,6 @@ def compile_day(target: date) -> str:
         "date": target.isoformat(),
         "day": day_name,
     }
-
-    # Hijri date
-    if HAS_HIJRI:
-        h = Gregorian(target.year, target.month, target.day).to_hijri()
-        fm["hijri_date"] = f"{h.day} {h.month_name()} {h.year}"
 
     # Add stats to frontmatter only if available
     if session_exports:

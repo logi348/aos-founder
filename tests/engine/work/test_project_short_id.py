@@ -148,11 +148,11 @@ def work_db(tmp_path, monkeypatch):
 def test_add_task_by_short_id_resolves_to_canonical_project(work_db):
     """The core regression: --project <short-id> must not raise an FK error
     and must store the canonical project id as the FK."""
-    proj = backend.add_project("Deen Over Dunya", short_id="dod")
+    proj = backend.add_project("Docs On Demand", short_id="dod")
     assert proj["id"] == "p1", "Project should get the canonical auto id 'p1'"
 
     # This previously raised sqlite3.IntegrityError: FOREIGN KEY constraint failed
-    task = backend.add_task("Build prayer tracker", project="dod")
+    task = backend.add_task("Build habit tracker", project="dod")
 
     # FK is set to the CANONICAL project id, not the literal short-id.
     assert work_db["task_project_id"](task["id"]) == "p1", (
@@ -167,7 +167,7 @@ def test_add_task_by_short_id_resolves_to_canonical_project(work_db):
 
 def test_short_id_round_trips_on_project(work_db):
     """A project's short_id is readable back after creation."""
-    backend.add_project("Deen Over Dunya", short_id="dod")
+    backend.add_project("Docs On Demand", short_id="dod")
     projects = {p["id"]: p for p in backend.get_all_projects()}
     assert projects["p1"].get("short_id") == "dod", (
         "short_id must round-trip through storage"
@@ -176,7 +176,7 @@ def test_short_id_round_trips_on_project(work_db):
 
 def test_add_task_by_canonical_id_still_works(work_db):
     """Scoping a task by the canonical project id resolves correctly too."""
-    backend.add_project("Deen Over Dunya", short_id="dod")
+    backend.add_project("Docs On Demand", short_id="dod")
     task = backend.add_task("Scoped by canonical id", project="p1")
     assert work_db["task_project_id"](task["id"]) == "p1"
 
@@ -240,7 +240,7 @@ def test_pre_migration_db_without_short_id_column_degrades(tmp_path, monkeypatch
 def test_move_task_to_short_id_resolves_to_canonical(work_db):
     """`work move <task> --to <short-id>` must resolve the FK to the canonical
     project id and re-scope the task under the short-id prefix."""
-    backend.add_project("Deen Over Dunya", short_id="dod")
+    backend.add_project("Docs On Demand", short_id="dod")
     task = backend.add_task("Wandering task")  # unaffiliated t#1
 
     moved = backend.move_tasks_to_project([task["id"]], "dod")

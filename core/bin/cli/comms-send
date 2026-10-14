@@ -2,7 +2,7 @@
 """comms-send — send one iMessage, verbatim, to an allowlisted contact.
 
 The operator-facing send path of the comms engine. The recipient is an
-allowlist *name* from ~/.aos/config/comms.yaml ("Hisham") or a raw handle
+allowlist *name* from ~/.aos/config/comms.yaml ("Alex") or a raw handle
 (phone number or email). The allowlist gate (core/engine/comms/scope.py) is
 checked here and again inside the adapter, so nothing outside it can be
 reached by this tool.
@@ -11,8 +11,8 @@ Usage:
     comms-send [--dry-run] [--channel messages] <name-or-handle> <text>
 
 Examples:
-    comms-send Hisham "running 10 min late"
-    comms-send --dry-run Hisham "hello"
+    comms-send Alex "running 10 min late"
+    comms-send --dry-run Alex "hello"
     comms-send "+14165550100" "hello"
 
 Exit codes:

@@ -120,7 +120,7 @@ def fixture_path(tmp_path: Path) -> Path:
                     "last_name": "Taylor",
                     "username": "alin",
                 },
-                "text": "assalamu alaykum",
+                "text": "hello there",
                 "timestamp": MAR_TS,
                 "from_me": False,
                 "thread_id": None,
@@ -192,7 +192,7 @@ def test_matches_camelcase_canonical_name(
     result = adapter.extract_all(person_index)
     ali = result["p2"]
     assert ali.communication[0].total_messages == 1
-    assert ali.communication[0].sample_messages[0]["text"] == "assalamu alaykum"
+    assert ali.communication[0].sample_messages[0]["text"] == "hello there"
 
 
 def test_total_messages_counted(fixture_path: Path, person_index: dict) -> None:

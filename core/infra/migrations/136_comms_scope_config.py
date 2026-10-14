@@ -1,6 +1,11 @@
 """
 Migration 136: seed ~/.aos/config/comms.yaml for the iMessage scope gate.
 
+Hardened fork: the seeded default is `access: allowlist` with an empty
+`allowed:` list (config/defaults/comms.yaml), not `access: all`, and a
+missing file now fails closed too (scope.load_policy). The "missing file
+means access: all" reasoning below describes upstream.
+
 Background
 ----------
 This release adds `core/engine/comms/scope.py`: an allowlist gate applied on
@@ -51,8 +56,8 @@ DESCRIPTION = (
 # template itself is missing. Keep the two in sync when the template changes.
 _FALLBACK_CONFIG = """# Comms configuration — Default Template
 # Instance copy lives at ~/.aos/config/comms.yaml (seeded by install.sh or
-# migration 136 when absent; never overwritten). A missing file means every
-# setting below is at its default.
+# migration 136 when absent; never overwritten). A missing or malformed file
+# means an empty allowlist: AOS sees no iMessage thread (hardened fork).
 #
 # ── iMessage scope ───────────────────────────────────────────────────────
 # macOS Full Disk Access is all-or-nothing: once AOS can open
@@ -62,10 +67,13 @@ _FALLBACK_CONFIG = """# Comms configuration — Default Template
 # comms engine opens (adapter, desktop ingest, Converse, Sentinel) and on
 # every outbound send.
 #
-#   access: all        — every thread visible, every recipient sendable.
-#                        This is the default and today's behaviour.
 #   access: allowlist  — only the contacts under `allowed:` are visible or
 #                        sendable. Everything else is invisible to AOS.
+#                        This is the default in this hardened fork, with an
+#                        empty list: AOS sees no iMessage threads until you
+#                        add the contacts you want it to handle.
+#   access: all        — every thread visible, every recipient sendable
+#                        (upstream's default).
 #
 # Handles are matched on digits for phones (+1 416 555 0123 == 4165550123)
 # and case-insensitively for emails. A 1:1 chat is visible when its one
@@ -77,13 +85,14 @@ _FALLBACK_CONFIG = """# Comms configuration — Default Template
 #   2026-09-15T19:20:01 scope=allowlist source=adapter chats=1 handles=2
 
 imessage:
-  access: all
+  access: allowlist
   include_groups: false
+  allowed: []
   # allowed:
-  #   - name: Hisham
+  #   - name: Alex
   #     handles:
   #       - "+14165550123"
-  #       - "hisham@example.com"
+  #       - "alex@example.com"
 """
 
 
@@ -124,8 +133,8 @@ def up() -> bool:
         dest.write_text(_FALLBACK_CONFIG)
         print(f"       - seeded {dest} from inline fallback "
               "(config/defaults/comms.yaml not found in framework tree)")
-    print("       - access: all — nothing changes until the operator sets "
-          "access: allowlist")
+    print("       - access: allowlist with no contacts — AOS sees no iMessage "
+          "threads until the operator lists them under `allowed:`")
     return True
 
 

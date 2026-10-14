@@ -87,7 +87,7 @@ class TestPlainCldUnchanged:
 
     def test_argv_is_exactly_the_pre_existing_flags(self, sandbox):
         result = _run(CLD, [], sandbox["env"])
-        assert 'ARGV=["--dangerously-skip-permissions", "--agent", "chief"]' in result.stdout
+        assert 'ARGV=["--agent", "chief"]' in result.stdout
 
     def test_extra_arguments_pass_through_untouched(self, sandbox):
         result = _run(CLD, ["do something", "--resume"], sandbox["env"])
@@ -124,7 +124,7 @@ class TestSymlinkInvokedProfile:
         cld2.symlink_to(CLD)
 
         result = _run(cld2, [], sandbox["env"])
-        assert 'ARGV=["--dangerously-skip-permissions", "--agent", "chief"]' in result.stdout
+        assert 'ARGV=["--agent", "chief"]' in result.stdout
 
     def test_cld2_with_no_profile_dir_exits_2_with_fix_line(self, sandbox, tmp_path):
         cld2 = tmp_path / "cld2"
@@ -170,3 +170,34 @@ class TestExplicitProfileFlag:
         result = _run(CLD, ["--profile"], sandbox["env"])
         assert result.returncode == 2
         assert "Usage" in result.stderr
+
+
+CLD_UNSAFE = REPO / "core" / "bin" / "cli" / "cld-unsafe"
+
+
+class TestUnsafeLauncher:
+    """Hardened fork: plain `cld` never bypasses permissions; `cld-unsafe`
+    is the only way in, and it says so on stderr before starting."""
+
+    def test_plain_cld_has_no_bypass_flag(self, sandbox):
+        result = _run(CLD, [], sandbox["env"])
+        assert "--dangerously-skip-permissions" not in result.stdout
+
+    def test_plain_cld_passes_arguments_without_bypass(self, sandbox):
+        env = dict(sandbox["env"])
+        env.pop("AOS_CLD_UNSAFE", None)
+        result = _run(CLD, ["--resume"], env)
+        assert 'ARGV=["--agent", "chief", "--resume"]' in result.stdout
+
+    def test_unsafe_adds_flag_and_warns(self, sandbox):
+        result = _run(CLD_UNSAFE, ["do it"], sandbox["env"])
+        assert result.returncode == 0, result.stderr
+        assert 'ARGV=["--dangerously-skip-permissions", "--agent", "chief", "do it"]' in result.stdout
+        assert "permission checks are OFF" in result.stderr
+
+    def test_unsafe_supports_profiles(self, sandbox):
+        _profile_dir(sandbox["home"], "cld3").mkdir(parents=True)
+        result = _run(CLD_UNSAFE, ["--profile", "cld3"], sandbox["env"])
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.splitlines()[0].endswith("claude-profiles/cld3")
+        assert '"--dangerously-skip-permissions"' in result.stdout

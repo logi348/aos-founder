@@ -66,7 +66,7 @@ Monitor -> Detect -> Correct -> Report
 ## Operator Context
 
 Read `~/.aos/config/operator.yaml` for the operator's name, schedule, and quiet hours.
-Respect schedule blocks -- don't alert during teaching or prayer time unless critical (service down, disk full).
+Respect schedule blocks -- don't alert during teaching or focus time unless critical (service down, disk full).
 
 ## Uptime & Always-On Monitoring
 
@@ -120,23 +120,21 @@ If uptime < 10 minutes, the machine just rebooted. Check:
    ```
 
 ### Power Settings Drift
-Verify the always-on settings haven't been changed:
+Only if the operator opted in to always-on (`~/.aos/config/always-on` exists):
 ```bash
-# Check current power settings
 pmset -g | grep -E "sleep|disksleep|womp|autorestart"
-# Expected: sleep 0, disksleep 0, womp 1, autorestart 1
+# Expected with always-on: sleep 0, disksleep 0, womp 1, autorestart 1
 ```
 
-If drifted, report to operator — don't silently change power settings.
+If drifted, report to operator — don't change power settings (you cannot:
+sudo is blocked for agents). Without the marker file, normal power settings
+are the operator's choice; don't report them.
 
-### Auto-Login Check
-```bash
-# Check if auto-login is configured
-defaults read /Library/Preferences/com.apple.loginwindow autoLoginUser 2>/dev/null
-```
-If not set, warn: "Auto-login is not configured. If the machine reboots, it will
-sit at the login screen and services won't start. Enable it in System Settings >
-Users & Groups."
+### Auto-Login (informational)
+Auto-login is not required. It is mutually exclusive with FileVault: with
+FileVault on (the safer setup), a rebooted Mac waits at the unlock screen and
+services start only after the operator logs in. Mention this once if it
+matters to a reboot you're reporting; never recommend turning FileVault off.
 
 ## Rules
 

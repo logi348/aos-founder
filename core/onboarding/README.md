@@ -13,7 +13,7 @@ prompt to Claude Code when that file is absent, and `install.sh` ends by
 `exec aos start` for both roles.
 
 > Both roles. Onboarding used to be gated on `ROLE == developer`, which meant a
-> non-developer install finished by opening a browser tab and promising "Sahib
+> non-developer install finished by opening a browser tab and promising "Skye
 > will take it from here" — while nothing ever started onboarding.
 
 ## Where things live

@@ -68,18 +68,15 @@ layers:
 # Setup steps (run by onboarding agent or manually)
 setup:
   steps:
-    - description: Create Telegram bot via @BotFather
+    - description: Create Telegram bot via @BotFather (operator, on their phone)
       type: interactive
-      instruction: "Message @BotFather on Telegram, /newbot, save the token"
-    - description: Store bot token
-      type: command
-      command: "agent-secret set TELEGRAM_BOT_TOKEN <token>"
-    - description: Get chat ID
+      instruction: "Message @BotFather on Telegram, /newbot, keep the token message open"
+    - description: Store bot token (operator types it at a hidden prompt)
       type: interactive
-      instruction: "Send /start to your bot, then check updates API for chat_id"
-    - description: Store chat ID
-      type: command
-      command: "agent-secret set TELEGRAM_CHAT_ID <chat_id>"
+      instruction: "agent-secret set TELEGRAM_BOT_TOKEN   (no value on the command line)"
+    - description: Pair the bot with the operator's own account
+      type: interactive
+      instruction: "aos telegram-pair — verifies a one-time code sent from the operator's @username before storing TELEGRAM_CHAT_ID / TELEGRAM_USER_ID"
     - description: Install bridge service
       type: command
       command: "core/infra/integrations/telegram/setup.sh"

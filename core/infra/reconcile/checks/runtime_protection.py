@@ -34,6 +34,10 @@ exit 1
 
 class RuntimeProtectionCheck(ReconcileCheck):
     name = "runtime_protection"
+    # Hardened fork: repair on the 30-minute periodic run too, not only on
+    # deploy, so tampering (an agent loosening its own permissions, flags or
+    # code) is undone within half an hour.
+    periodic_fix = True
     description = "~/aos/ is clean and protected from accidental commits"
 
     hooks_dir = RUNTIME_DIR / ".git" / "hooks"

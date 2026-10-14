@@ -112,8 +112,10 @@ def run_turn(conv: store.Conversation, kickoff: bool) -> dict | None:
         conv.mission, conv.transcript(), operator_name(), kickoff)
     try:
         proc = subprocess.run(
+            # Text-only turn: no tools exist (--tools ""), and dontAsk
+            # refuses anything that would otherwise prompt.
             [CLAUDE_BIN, "--print", "--model", "sonnet",
-             "--dangerously-skip-permissions", "--allowedTools", ""],
+             "--permission-mode", "dontAsk", "--tools", ""],
             input=prompt, capture_output=True, text=True,
             timeout=TURN_TIMEOUT, env=dict(os.environ))
     except subprocess.TimeoutExpired:

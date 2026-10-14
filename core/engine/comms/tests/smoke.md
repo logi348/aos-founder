@@ -5,7 +5,7 @@ Run these in a fresh Claude Code session with zero context. Each test should wor
 ## Test 1: Search comms by keyword
 
 ```
-Search my comms for "ramadan" — show me the top 5 most recent messages across all channels.
+Search my comms for "holiday" — show me the top 5 most recent messages across all channels.
 ```
 
 Expected: Returns messages from comms.db via FTS5. Multiple channels (WhatsApp, iMessage, email). Sub-second.

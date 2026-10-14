@@ -2,7 +2,7 @@
 
 **Status:** Draft
 **Created:** 2026-03-28
-**Author:** Hisham + Chief
+**Author:** Alex + Chief
 
 ## Overview
 
@@ -141,12 +141,12 @@ Node not heard from in 3 minutes → marked offline.
 
 ### Layer 2: Agent Protocol
 
-**Agent identity:** `{agent}@{node}` — e.g., `chief@hisham`, `advisor@khalid`
+**Agent identity:** `{agent}@{node}` — e.g., `chief@alex`, `advisor@khalid`
 
 **Message format:**
 ```json
 {
-  "from": "chief@hisham",
+  "from": "chief@alex",
   "to": "advisor@khalid",
   "type": "query",
   "payload": {
@@ -200,12 +200,12 @@ sharing:
 ```
 Your Chief → POST /message to khalid:4100
 {
-  "from": "chief@hisham",
+  "from": "chief@alex",
   "to": "chief@khalid",
   "type": "delegate",
   "payload": {
     "task": "Research Arabic morphological analyzers",
-    "context": "Working on tafsir extraction pipeline",
+    "context": "Working on summary extraction pipeline",
     "priority": 3,
     "deadline": null
   }
@@ -322,7 +322,7 @@ aos mesh feed
 │   │
 │   ├── mesh/                       # Shared mesh libraries
 │   │   ├── __init__.py
-│   │   ├── identity.py             # Agent identity (chief@hisham)
+│   │   ├── identity.py             # Agent identity (chief@alex)
 │   │   ├── protocol.py             # Message format, types
 │   │   ├── federation.py           # Cross-node QMD search
 │   │   ├── sharing.py              # Privacy boundary enforcement
@@ -360,7 +360,7 @@ aos mesh feed
 ├── config/
 │   ├── mesh.yaml                   # This node's mesh config
 │   │   ├── role: admin | node
-│   │   ├── node_name: hisham
+│   │   ├── node_name: alex
 │   │   ├── admin_node: 100.64.0.1
 │   │   └── mesh_port: 4100
 │   │

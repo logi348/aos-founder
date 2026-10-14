@@ -32,6 +32,31 @@ from .base import SignalAdapter
 
 log = logging.getLogger(__name__)
 
+def _load_scope_gate():
+    """core/engine/comms/scope.py, loaded by path (this package is imported
+    under several roots). None if it can't be loaded — the caller then reads
+    nothing, so a broken gate never means an ungated read."""
+    import sys
+    name = "aos_comms_scope_for_intel"
+    if name in sys.modules:
+        return sys.modules[name]
+    try:
+        import importlib.util
+        path = Path(__file__).resolve().parents[3] / "comms" / "scope.py"
+        spec = importlib.util.spec_from_file_location(name, path)
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[name] = mod  # dataclasses look the module up while it loads
+        try:
+            spec.loader.exec_module(mod)
+        except Exception:
+            sys.modules.pop(name, None)
+            raise
+        return mod
+    except Exception as e:  # noqa: BLE001
+        log.warning("apple_messages: iMessage scope gate unavailable (%s) — skipping chat.db", e)
+        return None
+
+
 # Apple epoch offset: seconds from 1970-01-01 to 2001-01-01.
 APPLE_EPOCH_OFFSET = 978307200
 
@@ -196,6 +221,17 @@ class AppleMessagesAdapter(SignalAdapter):
 
             conn = sqlite3.connect(f"file:{tmp_db}?mode=ro", uri=True)
             try:
+                # Hardened fork: the same iMessage allowlist every comms
+                # reader goes through (~/.aos/config/comms.yaml). Upstream read
+                # every conversation here regardless of the allowlist.
+                gate = _load_scope_gate()
+                if gate is None:
+                    return {}
+                try:
+                    gate.apply(conn, source="people-intel")
+                except Exception as e:  # noqa: BLE001
+                    log.warning("apple_messages: scope gate failed (%s) — skipping chat.db", e)
+                    return {}
                 conn.row_factory = sqlite3.Row
                 return self._scan_and_group(
                     conn, person_index, phone_suffix_to_pid, email_to_pid

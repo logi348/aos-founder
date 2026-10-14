@@ -85,9 +85,9 @@ Then, the part only a human-or-agent reading the code can do:
 Route maps from real projects, for shape:
 
 ```bash
-# quran-tools (reader app): page:<N>, study:<N>:<S>:<A>, panel[:<N>], root:<id>
+# notes-tools (reader app): page:<N>, study:<N>:<S>:<A>, panel[:<N>], root:<id>
 study) ARGS+=(-readingMode study -startPage "${A:?}"); [[ -n "$B" ]] && ARGS+=(-targetAyah "$B:${C:?}") ;;
-# deenoverdunya (seeded tabs + sheets): today, record-month, card-accepted, excuse-sheet-begin
+# docsondemand (seeded tabs + sheets): today, record-month, card-accepted, excuse-sheet-begin
 ARGS=(-uiTestSeed); …; record-month) ARGS+=(-uiTab record -uiRecordView month) ;;
 ```
 
@@ -152,7 +152,7 @@ bloat, build-slot state, stuck D-state build processes (usually `syspolicyd`).
 
 ## Rollout / migration (applying to a project that already has an older loop)
 
-`quran-tools` shipped the first copy of these scripts under project-specific
+`notes-tools` shipped the first copy of these scripts under project-specific
 names. When you apply the installer there, retire the old copies in the same
 change or the two will fight:
 

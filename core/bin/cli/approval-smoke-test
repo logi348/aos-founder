@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# approval-smoke-test — check the Telegram phone-approval flow end to end on
+# this Mac (hardened fork). Run it yourself after onboarding, with the bridge
+# running and Telegram paired. It uses your Claude account (one short turn).
+#
+# Expected: your phone gets "Claude wants to run: Edit/Write …" with
+# Allow / Deny. Tap Allow → the file appears; tap Deny (or wait 5 min) →
+# it doesn't. ~/.aos/logs/approval-mcp.log shows the argument names Claude
+# Code sent (never values) — if a call shows up there with keys other than
+# tool_name/input, tell whoever maintains the fork.
+set -u
+TARGET="$HOME/Desktop/aos-approval-test.txt"
+rm -f "$TARGET"
+BRIDGE_DIR="$HOME/aos/core/services/bridge"
+PY="$HOME/.aos/services/bridge/.venv/bin/python"
+[[ -x "$PY" ]] || PY=python3
+
+curl -sf -H "Host: 127.0.0.1:4098" http://127.0.0.1:4098/health >/dev/null \
+    || { echo "Bridge API not answering on :4098 — start it: aos deploy bridge"; exit 1; }
+
+ARGS=$(cd "$BRIDGE_DIR" && "$PY" -c 'import json, bridge_permissions; print(json.dumps(bridge_permissions.args("approve")))')
+mapfile_args() { "$PY" -c 'import json,sys; [print(a) for a in json.loads(sys.argv[1])]' "$1"; }
+CLAUDE_ARGS=()
+while IFS= read -r line; do CLAUDE_ARGS+=("$line"); done < <(mapfile_args "$ARGS")
+
+echo "Asking Claude to create $TARGET — check your phone for an Allow/Deny prompt…"
+(cd "$HOME/aos" && claude -p "${CLAUDE_ARGS[@]}" --max-turns 3 \
+    "Create the file $TARGET containing the single line: approval test. Use the Write tool. Do nothing else.")
+echo
+if [[ -f "$TARGET" ]]; then echo "RESULT: file created (you tapped Allow)"; else echo "RESULT: file not created (denied or timed out)"; fi
+echo "--- last lines of ~/.aos/logs/approval-mcp.log"
+tail -5 "$HOME/.aos/logs/approval-mcp.log" 2>/dev/null || echo "(no log — the approval tool was never called)"

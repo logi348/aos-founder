@@ -1,7 +1,7 @@
 """Recipient resolution for the operator-facing iMessage CLIs.
 
 ``comms-send`` and ``comms-thread`` both take one positional argument that is
-either an allowlist *name* ("Hisham") or a raw *handle* (a phone number or an
+either an allowlist *name* ("Alex") or a raw *handle* (a phone number or an
 email address). This module turns that argument into a handle and decides,
 through ``scope``, whether the operator may act on it.
 

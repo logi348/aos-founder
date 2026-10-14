@@ -61,6 +61,12 @@ class PowerAutorestartCheck(ReconcileCheck):
         self._value = None
 
     def check(self) -> bool:
+        # Hardened fork: always-on is opt-in (install.sh --always-on writes
+        # this marker). Without it the operator chose normal power settings,
+        # so there is nothing to nag about.
+        if not (Path.home() / ".aos" / "config" / "always-on").exists():
+            self._skip_reason = "Always-on not opted in (install.sh --always-on)"
+            return False
         if shutil.which("pmset") is None:
             self._skip_reason = "pmset not available — not a macOS host"
             return False

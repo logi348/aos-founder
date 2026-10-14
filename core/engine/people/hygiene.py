@@ -69,8 +69,8 @@ def split_concatenated_name(raw: str | None) -> str | None:
     Examples:
         >>> split_concatenated_name("AbdusSamadRashid")
         'Abdus Samad Rashid'
-        >>> split_concatenated_name("Dr.BadarUlIslam")
-        'Dr. Badar Ul Islam'
+        >>> split_concatenated_name("Dr.JohnSmithJones")
+        'Dr. John Smith Jones'
         >>> split_concatenated_name("KhaleeqUrRehman")
         'Khaleeq Ur Rehman'
         >>> split_concatenated_name("Ahmed") is None

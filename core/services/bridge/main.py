@@ -319,7 +319,12 @@ def main():
         _start_api_standalone()
         return
 
-    chat_id = int(chat_id_str)
+    try:
+        chat_id = int(chat_id_str)
+    except ValueError:
+        logger.error("TELEGRAM_CHAT_ID is not a number — starting API-only mode")
+        _start_api_standalone()
+        return
 
     # ── Load operator schedule ────────────────────────────────────────────────
     op_config = _load_operator_config()
@@ -371,10 +376,21 @@ def main():
 
     # Telegram channel (main thread, blocking)
     from telegram_channel import TelegramChannel
+    # Optional: the operator's Telegram user id, needed only when
+    # TELEGRAM_CHAT_ID is a group. For a private chat it equals the chat id.
+    owner_user_id = None
+    user_id_str = _get_secret("TELEGRAM_USER_ID")
+    if user_id_str:
+        try:
+            owner_user_id = int(user_id_str)
+        except ValueError:
+            logger.error("TELEGRAM_USER_ID is not a number — ignoring it")
+
     telegram = TelegramChannel(
         bot_token, chat_id,
         forum_group_id=forum_group_id,
         topic_routes=topic_routes,
+        owner_user_id=owner_user_id,
     )
 
     # SIGHUP handler: reload routes without restarting

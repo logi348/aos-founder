@@ -69,10 +69,10 @@ def test_reply_is_plain_english(ic, cli_calls, monkeypatch):
 
 
 def test_reply_names_the_project_when_known(ic, cli_calls, monkeypatch):
-    monkeypatch.setattr(ic, "_current_project", lambda: "quran-garden")
+    monkeypatch.setattr(ic, "_current_project", lambda: "notes-garden")
     reply = ic.handle_add_task("add task: Fix the login page")
-    assert reply == "✅ Added to Quran Garden: Fix the login page"
-    assert "quran-garden" not in reply  # the id itself never shows
+    assert reply == "✅ Added to Notes Garden: Fix the login page"
+    assert "notes-garden" not in reply  # the id itself never shows
 
 
 def test_project_is_passed_to_the_cli(ic, cli_calls, monkeypatch):
@@ -152,7 +152,7 @@ def test_trigger_prefixes_are_stripped_from_the_title(ic, cli_calls, monkeypatch
 
 
 def test_project_display_humanises_the_id(ic):
-    assert ic._project_display("quran-garden-ios") == "Quran Garden Ios"
+    assert ic._project_display("notes-garden-ios") == "Notes Garden Ios"
     assert ic._project_display("aos") == "Aos"
 
 

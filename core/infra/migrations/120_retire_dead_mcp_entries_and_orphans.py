@@ -19,10 +19,10 @@ a. Stalled LaunchAgents — NONE RETIRED.
        reconcile-sessions). This is not a stalled agent; it is the scheduler.
      - com.aos.domain-watch: StartInterval 21600s (6h). Log shows a clean run
        every 6 hours, current as of the verification day, tracking
-       quran.garden and alhuda.com expiry/registration state. Empty .err.
+       the expiry/registration state of two operator-owned domains. Empty .err.
      - com.aos.domain-catch: StartInterval 300s (5m). Log shows a clean run
        every 5 minutes, current as of the verification day — an active
-       drop-catch monitor on quran.garden (14→11 days to expiry over the
+       drop-catch monitor on notes.garden (14→11 days to expiry over the
        observed window). Empty .err. Retiring this one specifically would be
        actively harmful: it is watching a domain the operator is trying to
        reclaim on drop.

@@ -98,7 +98,7 @@ def _repo(directory: Path, *, commit: bool = True) -> Path:
 
 # ── names ───────────────────────────────────────────────────────────
 
-@pytest.mark.parametrize("name", ["aos", "quran-garden", "hre2", "a1-b2-c3"])
+@pytest.mark.parametrize("name", ["aos", "notes-garden", "hre2", "a1-b2-c3"])
 def test_valid_names_accepted(name):
     assert zones.validate_name(name) is None
 
@@ -107,7 +107,7 @@ def test_valid_names_accepted(name):
     ("_ref", "reserved for zones"),
     ("_anything", "reserved for zones"),
     ("aos-wt", "-wt"),
-    ("Quran_Garden", "kebab-case"),
+    ("Notes_Garden", "kebab-case"),
     ("has spaces", "kebab-case"),
     ("trailing-", "kebab-case"),
     ("", "needs a name"),
@@ -203,7 +203,7 @@ def _manifest_dict(**over) -> dict:
 
 def test_depends_on_accepts_a_list_of_ids():
     assert pm.validate(_manifest_dict(
-        depends_on=["quran-garden-data", "tafsir"])) == []
+        depends_on=["notes-garden-data", "summary"])) == []
 
 
 def test_depends_on_is_optional_and_schema_stays_1():
@@ -215,13 +215,13 @@ def test_depends_on_is_optional_and_schema_stays_1():
 
 
 @pytest.mark.parametrize("value,fragment", [
-    (["../quran-garden-data"], "looks like a path"),
+    (["../notes-garden-data"], "looks like a path"),
     (["~/project/data"], "looks like a path"),
     (["/Volumes/AOS-X/project/data"], "looks like a path"),
     (["sub/dir"], "looks like a path"),
     (["Not_Kebab"], "kebab-case"),
     (["hre"], "this project itself"),
-    ("quran-garden-data", "must be a list"),
+    ("notes-garden-data", "must be a list"),
     ([42], "must be a project id string"),
 ])
 def test_depends_on_rejections(value, fragment):
@@ -233,10 +233,10 @@ def test_depends_on_rejections(value, fragment):
 def test_depends_on_survives_render_and_reparse():
     """The renderer and the validator are one module's two halves; a manifest
     it writes must be one it can read back."""
-    m = pm.Manifest(id="hre", title="HRE", depends_on=["quran-garden-data"])
+    m = pm.Manifest(id="hre", title="HRE", depends_on=["notes-garden-data"])
     raw = yaml.safe_load(pm.render_manifest_yaml(m))
     assert pm.validate(raw) == []
-    assert pm.parse(raw).depends_on == ["quran-garden-data"]
+    assert pm.parse(raw).depends_on == ["notes-garden-data"]
 
 
 def test_shipped_template_validates():
@@ -410,7 +410,7 @@ def _hand_edit(directory: Path) -> None:
     """Put declarations into a manifest that only a person could have written."""
     mp = pm.manifest_path_for(directory)
     raw = mp.read_text()
-    raw = raw.replace("depends_on: []", "depends_on:\n  - quran-garden-data")
+    raw = raw.replace("depends_on: []", "depends_on:\n  - notes-garden-data")
     raw = raw.replace("description: null", "description: The hand-written truth")
     raw = raw.replace("done_when: null", "done_when: when the curriculum ships")
     raw = raw.replace("goal: null", "goal: g-teaching")
@@ -432,7 +432,7 @@ def test_readopting_keeps_hand_written_declarations(root):
 
     m, errors = pm.load_manifest(d)
     assert errors == []
-    assert m.depends_on == ["quran-garden-data"]
+    assert m.depends_on == ["notes-garden-data"]
     assert m.description == "The hand-written truth"
     assert m.done_when == "when the curriculum ships"
     assert m.goal == "g-teaching"
@@ -449,7 +449,7 @@ def test_readopting_still_fills_the_gaps_it_can(root):
 
     lifecycle.adopt("gaps", root=root)
     m, _ = pm.load_manifest(d)
-    assert m.depends_on == ["quran-garden-data"], "declaration still there"
+    assert m.depends_on == ["notes-garden-data"], "declaration still there"
 
 
 def test_force_regenerates_and_names_what_it_discards(root):

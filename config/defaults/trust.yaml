@@ -7,6 +7,17 @@
 
 agents: {}
 
+# Level used when an agent, capability or person has no explicit entry.
+# Hardened fork:
+#   agent_level 2 (SEMI-AUTO) — agents act when confident, ask otherwise.
+#   comms_level 0 (SHADOW)    — messages to other people are drafted, never
+#                               sent on their own.
+# Raising a level is done by the operator with `aos trust promote` in a
+# terminal (see HARDENING.md); agents cannot do it. Lowering is never gated.
+defaults:
+  agent_level: 2
+  comms_level: 0
+
 graduation:
   0_to_1:
     min_observations: 20

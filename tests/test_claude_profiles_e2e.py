@@ -15,7 +15,7 @@ call order — the launcher check and the lanes check are independent and must
 not interfere with each other's counters:
 
   - Invoked WITHOUT `-p` (the shape `cld`'s `exec claude
-    --dangerously-skip-permissions --agent ...` uses): just echoes its env
+    --agent ...` uses): just echoes its env
     and argv and exits 0 — this is the launcher check's stub.
   - Invoked WITH `-p` (the shape `claude_lanes.run(["claude", "-p", ...])`
     uses): the FIRST such call prints "You've hit your weekly limit. Resets
@@ -69,7 +69,7 @@ _STUB_CLAUDE = textwrap.dedent("""\
         print("ok")
         sys.exit(0)
 
-    # Launcher-check shape: claude --dangerously-skip-permissions --agent ...
+    # Launcher-check shape: claude --agent ...
     print("CLAUDE_CONFIG_DIR=" + (cfg or "<unset>"))
     print("ARGV=" + json.dumps(sys.argv[1:]))
     sys.exit(0)
@@ -138,7 +138,7 @@ def test_claude_profiles_release_smoke(tmp_path, monkeypatch):
     )
     assert launch.returncode == 0, launch.stderr
     assert f"CLAUDE_CONFIG_DIR={profile_dir}" in launch.stdout
-    assert 'ARGV=["--dangerously-skip-permissions", "--agent", "chief"]' in launch.stdout
+    assert 'ARGV=["--agent", "chief"]' in launch.stdout
 
     # ── 3. lane failover — a real usage-limit hit fails over to cld2 ──────
     (home / ".aos" / "config" / "claude-lanes.yaml").write_text("lanes: [default, cld2]\n")

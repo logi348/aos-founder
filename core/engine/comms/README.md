@@ -46,7 +46,7 @@ recall never mutates comms.db.
 ```python
 from recall import RecallEngine
 eng = RecallEngine()
-rows = eng.search(query="ramadan", person="my mom", since="2026-06-01", limit=20)
+rows = eng.search(query="holiday", person="my mom", since="2026-06-01", limit=20)
 full = eng.get("im-223330")
 ```
 
@@ -62,16 +62,19 @@ macOS Full Disk Access is all-or-nothing — once a process can open
 the narrowing has to happen here, and only here.
 
 **Config** — `~/.aos/config/comms.yaml` (operator-written; template in
-`config/defaults/comms.yaml`). A missing file means `access: all`, today's
-behaviour on every machine that never wrote one:
+`config/defaults/comms.yaml`, which in this hardened fork seeds
+`access: allowlist` with an empty `allowed:` list — no thread is visible until
+the operator adds one). A missing, unreadable or malformed file also means
+an empty allowlist (fail closed); only an explicit `access: all` opens
+everything:
 
 ```yaml
 imessage:
   access: allowlist        # allowlist | all
   include_groups: false    # groups with an allowlisted member become visible
   allowed:
-    - name: Hisham
-      handles: ["+14165550123", "hisham@example.com"]
+    - name: Alex
+      handles: ["+14165550123", "alex@example.com"]
 ```
 
 Phones match on digits (`+1 416 555 0123` == `4165550123`); emails match

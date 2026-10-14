@@ -3,7 +3,7 @@
 
 ``~/project/`` is flat by decision, not by accident. The council of 2026-08-14
 (``knowledge/decisions/2026-08-14-aos-project-layer-framework-level-design-of-projec-council.md``)
-rejected domain nesting — ``quran/``, ``business/`` — because a directory can
+rejected domain nesting — ``notes/``, ``business/`` — because a directory can
 belong to two domains and to neither, and every nesting scheme eventually
 forces a directory to lie about itself. What survives is four zones, three of
 them named with a leading underscore so they sort together and read as
@@ -135,7 +135,7 @@ written inside `_scratch/` is real and permanently invisible.
 NAME_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 
 # The three worktree conventions found on this machine in the 2026-08-14
-# survey were `aos-wt`, `dod-wt` and `quran-tools-wt`. Two were empty husks and
+# survey were `aos-wt`, `dod-wt` and `notes-tools-wt`. Two were empty husks and
 # the third held 19GB of live checkouts sitting as a peer of its own project.
 # Worktrees belong at `<project>/.claude/worktrees/<branch-slug>`, so the suffix
 # that named the old scheme is refused outright rather than deprecated quietly.
@@ -177,7 +177,7 @@ def validate_name(name: str) -> str | None:
                 f"describe something that is no longer a thing.")
     if not NAME_RE.match(name):
         return (f"'{name}' is not kebab-case. Use lowercase letters, digits and "
-                f"single hyphens — e.g. 'quran-garden', not 'Quran_Garden'.")
+                f"single hyphens — e.g. 'notes-garden', not 'Notes_Garden'.")
     return None
 
 

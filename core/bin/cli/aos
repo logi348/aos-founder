@@ -567,7 +567,7 @@ if errors:
         echo ""
         echo "  Opening cmux..."
         if [[ ! -f "$HOME/.aos/config/onboarding.yaml" ]]; then
-            echo "  Claude Code will start automatically — Sahib will walk you through setup."
+            echo "  Claude Code will start automatically — Skye will walk you through setup."
         else
             echo "  Claude Code will start automatically."
         fi
@@ -875,7 +875,7 @@ print('\n'.join(deps))
         new_name="${1:-}"
         if [[ -z "$new_name" ]]; then
             echo "Usage: aos rename-agent <new-name>"
-            echo "Example: aos rename-agent sahib"
+            echo "Example: aos rename-agent atlas"
             echo ""
             # Show current name
             current=$("$AOS_PY" -c "
@@ -1178,7 +1178,7 @@ PYEOF
         echo "  trust-log       Log agent trust actions"
         echo "  migrate         Run pending migrations"
         echo "  feedback         Report a bug or issue (auto-files to GitHub)"
-        echo "  rename-agent     Rename your main agent (aos rename-agent sahib)"
+        echo "  rename-agent     Rename your main agent (aos rename-agent atlas)"
         echo "  repair           Pull latest, rebuild venvs, reload everything"
         echo "  telemetry        Anonymous usage telemetry (opt-in/out/report)"
         echo "  sessions         View recorded onboarding/setup sessions"
@@ -1188,6 +1188,8 @@ PYEOF
         echo "  hygiene         Find orphaned instance artifacts (services, plists, caches)"
         echo "  version         Show current version"
         echo "  claude-profile  Isolated Claude Code login profiles (add/list/remove/path)"
+        echo "  claude-features Opt in/out: remote-control, chrome (aos claude-features enable chrome)"
+        echo "  telegram-pair   Link the Telegram bot to your own account (run it yourself)"
         echo ""
         ;;
 
@@ -1292,6 +1294,18 @@ if dismiss_list:
         # Isolated Claude Code login profiles — add/list/remove/path.
         shift
         exec "$AOS_DIR/core/bin/cli/claude-profile" "$@"
+        ;;
+
+    telegram-pair)
+        # Pair the Telegram bot with the operator's own account (run by hand).
+        shift
+        exec "$AOS_DIR/core/bin/internal/aos-python" "$AOS_DIR/core/bin/cli/telegram-pair" "$@"
+        ;;
+
+    claude-features)
+        # Opt in/out of Remote Control and Claude in Chrome (both off by default).
+        shift
+        exec "$AOS_DIR/core/bin/internal/aos-python" "$AOS_DIR/core/bin/cli/claude-features" "$@"
         ;;
 
     snapshot)

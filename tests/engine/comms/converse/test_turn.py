@@ -330,11 +330,26 @@ def test_run_turn_launch_exception_is_safe_failure(monkeypatch):
     assert "failed to launch" in outcome.error
 
 
-def test_build_command_none_profile_has_empty_allowed_tools():
+def test_build_command_none_profile_has_no_tools():
     session = _session(tools=models.TOOLS_NONE)
     cmd = turn.build_command(session, claude_bin="claude")
-    i = cmd.index("--allowedTools")
+    i = cmd.index("--tools")
     assert cmd[i + 1] == ""
+    assert "--allowedTools" not in cmd
+
+
+def test_build_command_never_bypasses_permissions():
+    for profile in (models.TOOLS_NONE, models.TOOLS_RESEARCH, models.TOOLS_FULL):
+        cmd = turn.build_command(_session(tools=profile), claude_bin="claude")
+        assert "--dangerously-skip-permissions" not in cmd
+        assert "bypassPermissions" not in cmd
+        assert cmd[cmd.index("--permission-mode") + 1] == "dontAsk"
+
+
+def test_build_command_research_profile_limits_and_preapproves_same_tools():
+    cmd = turn.build_command(_session(tools=models.TOOLS_RESEARCH), claude_bin="claude")
+    assert cmd[cmd.index("--tools") + 1] == "WebSearch,WebFetch,Read"
+    assert cmd[cmd.index("--allowedTools") + 1] == "WebSearch,WebFetch,Read"
 
 
 def test_build_command_full_profile_has_max_turns():

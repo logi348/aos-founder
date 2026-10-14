@@ -86,8 +86,8 @@ HRE_SPINE = [
     _task("hre#2", "HRE: draft the constitution (manhaj, approved sources, "
                    "rules of representation)"),
     _task("hre#3", "HRE: build T0 extraction pipeline (roots, morphology, "
-                   "tajwid spans) from quran-tools/qul"),
-    _task("hre#4", "HRE: build T1 citation pipeline (Taleem al-Quran, Sadi, "
+                   "syntax spans) from notes-tools/qul"),
+    _task("hre#4", "HRE: build T1 citation pipeline (Learning Notes, Sadi, "
                    "Ibn Kathir) with provenance"),
     _task("hre#5", "HRE: produce 10 real ruku briefs and MEASURE velocity "
                    "(min per brief, pct human, scholar-min)"),
@@ -121,7 +121,7 @@ def test_state_done_when_every_task_is_done():
 
 
 def test_cancelled_project_does_not_read_as_about_to_start():
-    """`deenoverdunya` is cancelled with zero tasks.
+    """`docsondemand` is cancelled with zero tasks.
 
     It read "not started — no tasks have been filed yet", which implies work
     is pending on an abandoned project. The locked state vocabulary has no
@@ -293,9 +293,9 @@ def test_duplicate_spine_reports_repeated_evidence_between_two_subtrees():
     tasks = [
         _task("a#1", "Plan A"),
         _task("a#1.1", "Import the morphology corpus", parent="a#1"),
-        _task("a#1.2", "Render the tajwid overlay", parent="a#1"),
+        _task("a#1.2", "Render the syntax overlay", parent="a#1"),
         _task("b#2", "Import morphology corpus from qul"),
-        _task("b#3", "Tajwid overlay rendering"),
+        _task("b#3", "Syntax overlay rendering"),
     ]
     conflicts = briefmod._detect_duplicate_spine(tasks)
     assert conflicts
@@ -784,25 +784,25 @@ def test_timeline_never_credits_the_operator_for_a_source_token(brief_env):
 # ── Tags ────────────────────────────────────────────────────────────────
 
 def test_tags_are_derived_and_structural_tags_survive_the_cap():
-    tasks = [_task("p#1", "One", tags=["quran", "education"]),
-             _task("p#2", "Two", "waiting", tags=["quran"])]
-    docs = [{"fm": {"tags": ["platform", "arabic", "tafsir", "education"]}}]
+    tasks = [_task("p#1", "One", tags=["notes", "education"]),
+             _task("p#2", "Two", "waiting", tags=["notes"])]
+    docs = [{"fm": {"tags": ["platform", "arabic", "summary", "education"]}}]
     conflicts = [Conflict(kind="stale_doc"), Conflict(kind="duplicate_spine")]
     tags = briefmod._derive_tags(tasks, docs, conflicts, repo_path=None)
 
     assert len(tags) <= briefmod.MAX_TAGS
     assert tags[:4] == ["not-started", "blocked", "stale-doc", "no-repo"]
-    assert "quran" in tags            # the most frequent derived tag still lands
+    assert "notes" in tags            # the most frequent derived tag still lands
     assert all(t == t.lower() and " " not in t for t in tags)
 
 
 def test_structural_tags_leave_room_for_topic_tags():
     """Five structural findings must not squeeze every real tag out of six."""
-    tasks = [_task("p#1", "One", "waiting", tags=["quran", "education"])]
+    tasks = [_task("p#1", "One", "waiting", tags=["notes", "education"])]
     conflicts = [Conflict(kind="stale_doc"), Conflict(kind="duplicate_spine"),
                  Conflict(kind="untracked_repo")]
     tags = briefmod._derive_tags(tasks, [], conflicts, repo_path=None)
-    derived = [t for t in tags if t in ("quran", "education")]
+    derived = [t for t in tags if t in ("notes", "education")]
     assert len(derived) == 2
 
 
@@ -1037,14 +1037,14 @@ def test_session_rows_only_ever_name_a_task_of_this_project():
     sessions = [
         # matched on project_id, but its primary task is another project's
         {"id": "s1", "started_at": "2026-07-20T10:00:00", "ended_at": None,
-         "task_id": "quran-garden#78", "matched_task": None},
+         "task_id": "notes-garden#78", "matched_task": None},
         {"id": "s2", "started_at": "2026-07-20T11:00:00", "ended_at": None,
          "task_id": "aos#1", "matched_task": "aos#1"},
     ]
     events = briefmod._build_timeline(
         list(tasks_by_id.values()), {}, [], sessions, [], [])
     text = " ".join(e.text for e in events if e.kind == "session")
-    assert "quran-garden#78" not in text
+    assert "notes-garden#78" not in text
     assert "this project" in text        # the honest phrasing for an unnamed match
     assert "Ours" in text
 

@@ -8,7 +8,7 @@ on a release install `~/aos` is a symlink into an unpacked tarball with no
 `.git`, so `gh` could never infer a target repo, and every report silently
 fell back to the local queue with no visible failure (exit 0).
 
-Fix: all three calls now pass `--repo AOS-Agent/aos` (the one `GH_REPO`
+Fix: all three calls now pass `--repo logi348/aos-hardened` (the one `GH_REPO`
 constant) and never depend on `cwd`; `file_issue`/`comment_on_issue` return
 `(result, error)` instead of swallowing the failure, and the queue-fallback
 path in `main()` exits non-zero with a plain-English notice.
@@ -84,15 +84,15 @@ class TestGhRepoAndFailureSurfacing:
     def test_file_issue_passes_repo_flag_and_no_cwd(self, aos_report, monkeypatch):
         calls = self._stub_run(
             monkeypatch, aos_report, returncode=0,
-            stdout="https://github.com/AOS-Agent/aos/issues/42\n",
+            stdout="https://github.com/logi348/aos-hardened/issues/42\n",
         )
         result, err = aos_report.file_issue("Title", "Body", ["bug"])
         assert err is None
-        assert result == {"number": 42, "url": "https://github.com/AOS-Agent/aos/issues/42"}
+        assert result == {"number": 42, "url": "https://github.com/logi348/aos-hardened/issues/42"}
         assert len(calls) == 1
         cmd = calls[0]["cmd"]
         assert "--repo" in cmd
-        assert cmd[cmd.index("--repo") + 1] == "AOS-Agent/aos"
+        assert cmd[cmd.index("--repo") + 1] == "logi348/aos-hardened"
         assert "cwd" not in calls[0]["kwargs"]
 
     def test_comment_on_issue_passes_repo_flag_and_no_cwd(self, aos_report, monkeypatch):
@@ -102,7 +102,7 @@ class TestGhRepoAndFailureSurfacing:
         assert err is None
         cmd = calls[0]["cmd"]
         assert "--repo" in cmd
-        assert cmd[cmd.index("--repo") + 1] == "AOS-Agent/aos"
+        assert cmd[cmd.index("--repo") + 1] == "logi348/aos-hardened"
         assert "cwd" not in calls[0]["kwargs"]
 
     def test_search_existing_issues_passes_repo_flag_and_no_cwd(self, aos_report, monkeypatch):
@@ -110,7 +110,7 @@ class TestGhRepoAndFailureSurfacing:
         aos_report.search_existing_issues("some bug title")
         cmd = calls[0]["cmd"]
         assert "--repo" in cmd
-        assert cmd[cmd.index("--repo") + 1] == "AOS-Agent/aos"
+        assert cmd[cmd.index("--repo") + 1] == "logi348/aos-hardened"
         assert "cwd" not in calls[0]["kwargs"]
 
     def test_file_issue_failure_returns_error_not_none_silently(self, aos_report, monkeypatch):
@@ -159,9 +159,9 @@ _STUB_GH_TEMPLATE = textwrap.dedent("""\
 
     argv = sys.argv[1:]
     if argv[:2] == ["issue", "create"]:
-        print("https://github.com/AOS-Agent/aos/issues/99999")
+        print("https://github.com/logi348/aos-hardened/issues/99999")
     elif argv[:2] == ["issue", "comment"]:
-        print("https://github.com/AOS-Agent/aos/issues/99999#issuecomment-1")
+        print("https://github.com/logi348/aos-hardened/issues/99999#issuecomment-1")
     elif argv[:2] == ["issue", "list"]:
         print("[]")
     sys.exit(0)
@@ -218,7 +218,7 @@ class TestEndToEnd:
         assert calls, "stub gh was never invoked"
         create_call = next(c for c in calls if c[:2] == ["issue", "create"])
         assert "--repo" in create_call
-        assert create_call[create_call.index("--repo") + 1] == "AOS-Agent/aos"
+        assert create_call[create_call.index("--repo") + 1] == "logi348/aos-hardened"
 
     def test_duplicate_of_uses_repo_flag(self, tmp_path, stub_gh):
         bin_dir, gh_log = stub_gh
@@ -238,7 +238,7 @@ class TestEndToEnd:
         calls = _read_argv_log(gh_log)
         comment_call = next(c for c in calls if c[:2] == ["issue", "comment"])
         assert "--repo" in comment_call
-        assert comment_call[comment_call.index("--repo") + 1] == "AOS-Agent/aos"
+        assert comment_call[comment_call.index("--repo") + 1] == "logi348/aos-hardened"
 
     def test_gh_failure_propagates_nonzero_exit_and_humanized_notice(self, tmp_path, stub_gh):
         bin_dir, gh_log = stub_gh

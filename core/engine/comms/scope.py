@@ -12,11 +12,11 @@ How the gate works
 The policy lives in ``~/.aos/config/comms.yaml``::
 
     imessage:
-      access: allowlist          # allowlist | all   (missing file/key => all)
+      access: allowlist          # allowlist | all   (missing/invalid => empty allowlist)
       include_groups: false
       allowed:
-        - name: Hisham
-          handles: ["+14165550123", "hisham@example.com"]
+        - name: Alex
+          handles: ["+14165550123", "alex@example.com"]
 
 ``apply(conn)`` is called right after any connection to chat.db is opened.
 When the policy is an allowlist it installs SQLite **temp views** named
@@ -28,8 +28,10 @@ every existing and future query on the connection — ``SELECT … FROM message`
 connection because the temp schema is in-memory and always writable, and it
 never copies the database.
 
-Missing config, or ``access: all``, installs nothing: today's behaviour,
-unchanged, on every machine that never wrote a comms.yaml.
+Only an explicit ``access: all`` installs nothing. Hardened fork: a missing,
+unreadable or malformed comms.yaml, a missing ``imessage`` section or an
+unknown ``access`` value all fail CLOSED to an empty allowlist — no thread
+visible, no recipient sendable — instead of upstream's fail-open ``all``.
 
 The one bypass
 --------------
@@ -180,24 +182,33 @@ def _config_path(path: Path | str | None = None) -> Path:
     return DEFAULT_CONFIG_PATH
 
 
+def _closed(cfg_path: Path) -> Policy:
+    """Fail-closed policy: allowlist with nobody on it."""
+    return Policy(access=ACCESS_ALLOWLIST, source_path=cfg_path)
+
+
 def load_policy(path: Path | str | None = None) -> Policy:
-    """Read the iMessage policy. Missing file or key → unrestricted."""
+    """Read the iMessage policy.
+
+    Hardened fork: only an explicit ``access: all`` is unrestricted. A
+    missing/unreadable/malformed file, a missing ``imessage`` section, or a
+    missing/unknown ``access`` value → empty allowlist (fail closed)."""
     cfg_path = _config_path(path)
     if not cfg_path.exists():
-        return Policy(source_path=cfg_path)
+        return _closed(cfg_path)
     try:
         with open(cfg_path) as f:
             raw = yaml.safe_load(f) or {}
     except (OSError, yaml.YAMLError):
-        return Policy(source_path=cfg_path)
+        return _closed(cfg_path)
 
     section = raw.get("imessage") if isinstance(raw, dict) else None
     if not isinstance(section, dict):
-        return Policy(source_path=cfg_path)
+        return _closed(cfg_path)
 
-    access = str(section.get("access") or ACCESS_ALL).strip().lower()
+    access = str(section.get("access") or ACCESS_ALLOWLIST).strip().lower()
     if access not in (ACCESS_ALL, ACCESS_ALLOWLIST):
-        access = ACCESS_ALL
+        access = ACCESS_ALLOWLIST
 
     allowed: list[AllowedContact] = []
     for entry in section.get("allowed") or []:

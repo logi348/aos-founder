@@ -1,7 +1,7 @@
 # Comms configuration — Default Template
 # Instance copy lives at ~/.aos/config/comms.yaml (seeded by install.sh or
-# migration 136 when absent; never overwritten). A missing file means every
-# setting below is at its default.
+# migration 136 when absent; never overwritten). A missing or malformed file
+# means an empty allowlist: AOS sees no iMessage thread (hardened fork).
 #
 # ── iMessage scope ───────────────────────────────────────────────────────
 # macOS Full Disk Access is all-or-nothing: once AOS can open
@@ -11,10 +11,13 @@
 # comms engine opens (adapter, desktop ingest, Converse, Sentinel) and on
 # every outbound send.
 #
-#   access: all        — every thread visible, every recipient sendable.
-#                        This is the default and today's behaviour.
 #   access: allowlist  — only the contacts under `allowed:` are visible or
 #                        sendable. Everything else is invisible to AOS.
+#                        This is the default in this hardened fork, with an
+#                        empty list: AOS sees no iMessage threads until you
+#                        add the contacts you want it to handle.
+#   access: all        — every thread visible, every recipient sendable
+#                        (upstream's default).
 #
 # Handles are matched on digits for phones (+1 416 555 0123 == 4165550123)
 # and case-insensitively for emails. A 1:1 chat is visible when its one
@@ -26,10 +29,11 @@
 #   2026-09-15T19:20:01 scope=allowlist source=adapter chats=1 handles=2
 
 imessage:
-  access: all
+  access: allowlist
   include_groups: false
+  allowed: []
   # allowed:
-  #   - name: Hisham
+  #   - name: Alex
   #     handles:
   #       - "+14165550123"
-  #       - "hisham@example.com"
+  #       - "alex@example.com"

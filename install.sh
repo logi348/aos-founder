@@ -5,13 +5,21 @@
 #
 #  Usage (one-liner — see bootstrap.sh; it fetches a tarball and hands off
 #  here, so a fresh Mac's git-stub CLT prompt can't kill the install):
-#    bash -c "$(curl -fsSL https://raw.githubusercontent.com/AOS-Agent/aos/main/bootstrap.sh)"
+#    bash -c "$(curl -fsSL https://raw.githubusercontent.com/logi348/aos-hardened/main/bootstrap.sh)"
 #
 #  Or manually:
-#    git clone https://github.com/AOS-Agent/aos.git ~/aos
+#    git clone https://github.com/logi348/aos-hardened.git ~/aos
 #    bash ~/aos/install.sh
 #
 #  Idempotent. Safe to re-run. Resumes from where it left off.
+#
+#  Options (hardened fork — everything below is OFF unless you pass it):
+#    --always-on          never sleep, restart after power loss, Wake on LAN
+#    --with-superwhisper  install SuperWhisper (dictation) + login item
+#    --with-obsidian      install Obsidian
+#    --with-theming       change Dock layout, wallpaper and Terminal profile
+#    --with-ytdlp-pot     yt-dlp PO-token plugin + bgutil clone (YouTube)
+#    --dry-run            walk the stages without changing anything
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 set -uo pipefail
@@ -34,15 +42,9 @@ _EARLY_DRY_RUN=false
 [[ "${INSTALL_DRY_RUN:-0}" == "1" ]] && _EARLY_DRY_RUN=true
 for _arg in "$@"; do [[ "$_arg" == "--dry-run" ]] && _EARLY_DRY_RUN=true; done
 
-# Cache sudo upfront — one password prompt, then it's good for the whole install
-if [[ "$_EARLY_DRY_RUN" != true ]]; then
-    echo "AOS needs admin access for Homebrew, SSH, and system config."
-    echo ""
-    if ! sudo true; then
-        echo "  Failed to get admin access. Some steps may fail."
-        echo ""
-    fi
-fi
+# Hardened fork: no up-front sudo and no keep-alive loop. Steps that need
+# admin rights (Command Line Tools, Homebrew, --always-on) ask for the
+# password at that moment via _need_sudo.
 
 # ── Version ──────────────────────────────────────────
 # Prefer an already-installed ~/aos (upgrade path). On a fresh install that
@@ -56,7 +58,7 @@ AOS_VERSION=$(
 )
 AOS_VERSION=$(echo "$AOS_VERSION" | tr -d '[:space:]')
 [[ -n "$AOS_VERSION" ]] || AOS_VERSION="0.1.0"
-AOS_REPO="https://github.com/AOS-Agent/aos.git"
+AOS_REPO="https://github.com/logi348/aos-hardened.git"
 AOS_BRANCH="main"
 
 # ── Paths ────────────────────────────────────────────
@@ -83,11 +85,30 @@ DRY_RUN=false
 [[ "${INSTALL_DRY_RUN:-0}" == "1" ]] && DRY_RUN=true
 CHECKPOINT_FILE="$HOME/.aos/.install-checkpoint"
 
+# Hardened fork: machine-wide always-on power settings are opt-in.
+#   --always-on   never sleep, restart after power loss, Wake on LAN, no
+#                 auto-logout (Mac mini kept on 24/7). Off by default.
+ALWAYS_ON=false
+# Optional extras, all OFF unless asked for:
+#   --with-superwhisper  SuperWhisper dictation app + login item
+#   --with-obsidian      Obsidian app
+#   --with-theming       Dock layout, wallpaper, Terminal profile
+#   --with-ytdlp-pot     yt-dlp PO-token plugin (pip into yt-dlp's Python) + bgutil clone
+WITH_SUPERWHISPER=false
+WITH_OBSIDIAN=false
+WITH_THEMING=false
+WITH_YTDLP_POT=false
+
 for arg in "$@"; do
     case "$arg" in
         --dry-run)  DRY_RUN=true ;;
         --resume)   ;; # default behavior — checkpoints handle resume
         --clean)    rm -f "$HOME/.aos/.install-checkpoint" 2>/dev/null ;;
+        --always-on) ALWAYS_ON=true ;;
+        --with-superwhisper) WITH_SUPERWHISPER=true ;;
+        --with-obsidian)     WITH_OBSIDIAN=true ;;
+        --with-theming)      WITH_THEMING=true ;;
+        --with-ytdlp-pot)    WITH_YTDLP_POT=true ;;
     esac
 done
 
@@ -205,6 +226,25 @@ _spinner_stop() {
     fi
 }
 
+# ── Admin password, asked for only when a step needs it ──
+# Hardened fork: no up-front `sudo true` and no background keep-alive loop.
+# A step that needs root calls `_need_sudo "<why>"`; the spinner pauses, the
+# reason is shown, and sudo prompts on the terminal (or reuses a still-valid
+# ticket). Returns non-zero if there is no terminal or the password is refused,
+# so callers can print the manual command instead.
+_need_sudo() {
+    local why="${1:-this step}"
+    sudo -n true 2>/dev/null && return 0
+    [[ -t 3 ]] || return 1
+    local had_spinner=false
+    [[ -n "${_SPINNER_PID:-}" ]] && had_spinner=true && _spinner_stop
+    printf "\n  ${BOLD}Admin password needed${RESET} ${MUTED}— %s${RESET}\n" "$why" >&3
+    local rc=0
+    sudo -v -p "  Password for %u: " </dev/tty 2>&3 || rc=$?
+    [[ "$had_spinner" == true ]] && _spinner_start "${_CURRENT_STAGE:-Working}…"
+    return "$rc"
+}
+
 # Restore cursor and clear any live spinner on exit — a stack trace or an
 # interrupt must never leave the terminal with a spinning artifact.
 trap '_spinner_stop; tput cnorm 2>/dev/null >&3' EXIT INT TERM
@@ -239,10 +279,6 @@ _info() { echo "  ${MUTED}$*${RESET}"; }
 _banner() {
     tput civis 2>/dev/null  # hide cursor during install
 
-    echo ""
-    # U+FDFD ARABIC LIGATURE BISMILLAH. Printed as raw bytes so the glyph
-    # survives any editor or locale that would mangle the literal character.
-    printf "  ${BRAND}\xef\xb7\xbd${RESET}\n"
     echo ""
     echo "${BRAND}${BOLD}"
     cat << 'BANNER'
@@ -427,7 +463,8 @@ prereq_homebrew() {
     fi
 
     _step "Installing Homebrew..."
-    # sudo is already active from main() — NONINTERACTIVE skips Homebrew's own prompts
+    # NONINTERACTIVE skips Homebrew's own prompts, so it needs a sudo ticket now.
+    _need_sudo "install Homebrew (creates /opt/homebrew)" || _die "Homebrew needs an administrator password"
     NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 
     # Add to PATH for this session (Apple Silicon vs Intel)
@@ -460,7 +497,7 @@ prereq_python3() {
     # blaming the version file, which is what sent operators looking for a
     # Python fault that was never there.
     if [[ ! -d "$AOS_DIR/.git" ]]; then
-        _die "AOS repository missing at $AOS_DIR — the clone did not happen. Re-run: curl -fsSL https://install.hish.am | bash"
+        _die "AOS repository missing at $AOS_DIR — the clone did not happen. Re-run: git clone https://github.com/logi348/aos-hardened.git ~/aos && bash ~/aos/install.sh"
     fi
 
     local pinned
@@ -584,6 +621,7 @@ prereq_xcode_clt() {
     # This is the same method Homebrew uses. Works over SSH, no GUI.
     local clt_placeholder="/tmp/.com.apple.dt.CommandLineTools.installondemand.in-progress"
 
+    _need_sudo "install the Xcode Command Line Tools" || _warn "No admin password — Command Line Tools install may fail"
     # Reset ignored updates (CLT might have been previously dismissed)
     sudo /usr/sbin/softwareupdate --reset-ignored 2>/dev/null || true
     sudo touch "${clt_placeholder}" 2>/dev/null
@@ -931,6 +969,13 @@ prereq_ytdlp() {
         _ok "yt-dlp"
     fi
 
+    # PO Token plugin + bgutil server: opt-in (--with-ytdlp-pot). It pip-installs
+    # into yt-dlp's own Python and clones a third-party repo into ~.
+    if [[ "$WITH_YTDLP_POT" != true ]]; then
+        _skip "yt-dlp PO Token plugin (opt-in: --with-ytdlp-pot)"
+        return 0
+    fi
+
     # PO Token plugin — required for YouTube since 2025
     local ytdlp_python
     ytdlp_python="$(head -1 "$(which yt-dlp)" | sed 's/^#!//')"
@@ -954,29 +999,11 @@ prereq_ytdlp() {
     fi
 }
 
-prereq_youtube_transcript_api() {
-    if python3 -c "import youtube_transcript_api" &>/dev/null; then
-        _skip "youtube-transcript-api"
-        return 0
-    fi
-
-    _step "Installing youtube-transcript-api..."
-    pip3 install --break-system-packages youtube-transcript-api 2>&1 | tail -1
-    python3 -c "import youtube_transcript_api" &>/dev/null || { _warn "youtube-transcript-api — install failed (YouTube captions won't work until fixed)"; return 0; }
-    _ok "youtube-transcript-api"
-}
-
-prereq_surya_ocr() {
-    if python3 -c "from surya.recognition import RecognitionPredictor" &>/dev/null; then
-        _skip "surya-ocr"
-        return 0
-    fi
-
-    _step "Installing surya-ocr + imagehash (video OCR)..."
-    pip3 install --break-system-packages "surya-ocr" "imagehash" "transformers>=4.40,<5" 2>&1 | tail -1
-    python3 -c "from surya.recognition import RecognitionPredictor" &>/dev/null || { _warn "surya-ocr — install failed (video OCR won't work until fixed)"; return 0; }
-    _ok "surya-ocr"
-}
+# Hardened fork: the `pip3 install --break-system-packages` steps for
+# youtube-transcript-api and surya-ocr/imagehash/transformers are gone. Only
+# the optional apps/content-engine uses them, and it already degrades without
+# them (no YouTube-caption tier, no video OCR). To add them deliberately, see
+# HARDENING.md ("content-engine extras") — into a venv, not system Python.
 
 prereq_mlx_whisper() {
     # mlx-whisper is now part of the transcriber service (core/services/transcriber).
@@ -1104,7 +1131,7 @@ run_prereqs() {
     prereq_xcode_clt
     prereq_git
     # The repo has to exist before anything reads out of it. install.sh does not
-    # necessarily run from $AOS_DIR: the install.hish.am bootstrap untars the
+    # necessarily run from $AOS_DIR: the bootstrap.sh one-liner untars the
     # repo into a scratch dir and execs this script from there, on the stated
     # contract that "the repo's install.sh clones ~/aos itself". It did — but in
     # the repo stage, which runs after this one, so prereq_python3 died reading
@@ -1126,14 +1153,12 @@ run_prereqs() {
     prereq_jq
     prereq_ffmpeg
     prereq_ytdlp
-    prereq_youtube_transcript_api
-    prereq_surya_ocr
     prereq_mlx_whisper
     prereq_gh
     prereq_editor
     prereq_chrome
-    prereq_superwhisper
-    prereq_obsidian
+    [[ "$WITH_SUPERWHISPER" == true ]] && prereq_superwhisper
+    [[ "$WITH_OBSIDIAN" == true ]] && prereq_obsidian
     prereq_claude
     prereq_claude_auth
 
@@ -1229,17 +1254,21 @@ setup_path() {
     # Make aos executable
     chmod +x "$aos_bin"
 
-    # Symlink cld (claude with bypassed permissions)
-    local cld_bin="$AOS_DIR/core/bin/cli/cld"
-    local cld_target="$HOME/.local/bin/cld"
-    chmod +x "$cld_bin" 2>/dev/null
-
-    if [[ -L "$cld_target" ]] && [[ "$(readlink "$cld_target")" == "$cld_bin" ]]; then
-        _skip "cld on PATH"
-    else
-        ln -sf "$cld_bin" "$cld_target"
-        _ok "cld on PATH (claude --dangerously-skip-permissions)"
-    fi
+    # Symlink cld (Claude with the orchestrator agent, normal permission
+    # rules) and cld-unsafe (same, with --dangerously-skip-permissions and a
+    # warning). Hardened fork: plain cld no longer bypasses permissions.
+    local name
+    for name in cld cld-unsafe; do
+        local cld_bin="$AOS_DIR/core/bin/cli/$name"
+        local cld_target="$HOME/.local/bin/$name"
+        chmod +x "$cld_bin" 2>/dev/null
+        if [[ -L "$cld_target" ]] && [[ "$(readlink "$cld_target")" == "$cld_bin" ]]; then
+            _skip "$name on PATH"
+        else
+            ln -sf "$cld_bin" "$cld_target"
+            _ok "$name on PATH"
+        fi
+    done
 
     # Also add to current session
     export PATH="$HOME/.local/bin:$PATH"
@@ -1377,7 +1406,7 @@ daily_loop:
 
 # Trust preferences
 trust:
-  default_level: 1          # 0=SHADOW, 1=APPROVAL, 2=SEMI-AUTO, 3=FULL-AUTO
+  default_level: 2          # 0=SHADOW, 1=APPROVAL, 2=SEMI-AUTO, 3=FULL-AUTO (agents; messaging people stays 0 — see trust.yaml)
   escalation: always        # always ask before destructive actions
 OPERATOR
         _ok "Operator profile scaffolded (name: ${op_name:-Operator}, tz: $op_tz)"
@@ -1402,14 +1431,14 @@ OPERATOR
         cat > "$settings_file" << 'SETTINGS'
 {
   "agent": "chief",
-  "chrome": true,
   "permissions": {
-    "allow": ["Bash(*)", "Read(*)", "Write(*)", "Edit(*)", "Glob(*)", "Grep(*)"],
+    "allow": [],
     "deny": []
   },
   "env": {
     "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1",
-    "CLAUDE_CODE_TEAMMATE_MODE": "in-process"
+    "CLAUDE_CODE_TEAMMATE_MODE": "in-process",
+    "DISABLE_AUTOUPDATER": "1"
   },
   "hooks": {}
 }
@@ -1426,9 +1455,6 @@ changed = False
 if not s.get('agent'):
     s['agent'] = 'chief'
     changed = True
-if not s.get('chrome'):
-    s['chrome'] = True
-    changed = True
 if 'env' not in s:
     s['env'] = {}
 if 'CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS' not in s.get('env', {}):
@@ -1437,6 +1463,10 @@ if 'CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS' not in s.get('env', {}):
 if 'CLAUDE_CODE_TEAMMATE_MODE' not in s.get('env', {}):
     s['env']['CLAUDE_CODE_TEAMMATE_MODE'] = 'in-process'
     changed = True
+# Hardened fork: Claude Code updates only when the operator runs them.
+if 'DISABLE_AUTOUPDATER' not in s.get('env', {}):
+    s['env']['DISABLE_AUTOUPDATER'] = '1'
+    changed = True
 if changed:
     p.write_text(json.dumps(s, indent=2) + '\n')
     print('patched')
@@ -1444,6 +1474,14 @@ else:
     print('ok')
 " 2>/dev/null
     fi
+
+    # Permissions — the hardened set (scoped Read/Edit allows, deny rules for
+    # secrets, sudo, the keychain CLI, curl|sh, rm -rf of home). Applied to
+    # whichever settings.json exists now (migrations usually created it);
+    # the settings_config reconcile check keeps it that way.
+    python3 "$AOS_DIR/core/infra/lib/claude_permissions.py" apply "$settings_file" 2>/dev/null \
+        && _ok "Claude permissions (scoped allows + deny rules)" \
+        || _warn "Claude permissions — run 'aos reconcile' after install"
 
     # Repair hooks — fix flat format ({"command": "..."}) to correct nested format ({"hooks": [{"type": "command", ...}]})
     python3 -c "
@@ -1502,7 +1540,9 @@ assert s.get('hooks', {}).get('SessionStart')
     # projects dir — Claude Code per-project memory
     mkdir -p "$HOME/.claude/projects"
 
-    # Pre-accept trust dialog for ~ and ~/aos (prevents interactive prompt on first run)
+    # Pre-accept the trust dialog for ~/aos only (hardened fork: never for the
+    # home directory — a session started in ~ asks first). Remote Control and
+    # Claude in Chrome are opt-in: `aos claude-features enable <feature>`.
     python3 -c "
 import json
 from pathlib import Path
@@ -1512,19 +1552,15 @@ d = json.loads(p.read_text()) if p.exists() else {}
 if 'projects' not in d:
     d['projects'] = {}
 
-for path in [str(Path.home()), str(Path.home() / 'aos')]:
+for path in [str(Path.home() / 'aos')]:
     if path not in d['projects']:
         d['projects'][path] = {}
     d['projects'][path]['hasTrustDialogAccepted'] = True
     d['projects'][path]['hasTrustDialogHooksAccepted'] = True
 
-# AOS defaults: always-on features (verified keys — see rules/claude-code-config.md)
-# remoteControlAtStartup: enables Remote Control for all sessions (stored in ~/.claude.json, not settings.json)
-# claudeInChromeDefaultEnabled: enables Chrome MCP for all sessions
-if not d.get('remoteControlAtStartup'):
-    d['remoteControlAtStartup'] = True
-if not d.get('claudeInChromeDefaultEnabled'):
-    d['claudeInChromeDefaultEnabled'] = True
+# Opt-in features default off (core/infra/lib/claude_features.py).
+d['remoteControlAtStartup'] = False
+d['claudeInChromeDefaultEnabled'] = False
 
 p.write_text(json.dumps(d, indent=2) + '\n')
 print('ok')
@@ -1580,6 +1616,9 @@ HOOK
 # Trust Configuration — Per-capability trust levels
 # Levels: 0=SHADOW, 1=APPROVAL, 2=SEMI-AUTO, 3=FULL-AUTO
 agents: {}
+defaults:
+  agent_level: 2
+  comms_level: 0
 graduation:
   0_to_1:
     min_observations: 20
@@ -2147,54 +2186,40 @@ configure_macos() {
         _info "Some preferences may require logout to take full effect"
     fi
 
-    # ── Always-On Configuration ────────────────────────────
-    # Mac Mini should never sleep, auto-restart on power loss, and stay logged in
-    _step "Configuring always-on settings..."
-
-    if sudo -n true 2>/dev/null; then
-        # Prevent sleep (display can sleep, but system stays awake)
-        sudo pmset -a sleep 0 2>/dev/null && _ok "System sleep disabled" || _warn "Could not disable sleep"
-
-        # Prevent disk sleep
-        sudo pmset -a disksleep 0 2>/dev/null
-
-        # Wake on network access (Wake on LAN)
-        sudo pmset -a womp 1 2>/dev/null && _ok "Wake on LAN enabled" || true
-
-        # Auto restart on power failure
-        sudo pmset -a autorestart 1 2>/dev/null && _ok "Auto-restart on power loss" || _warn "Could not set auto-restart"
-
-        # Start up automatically after power failure (hardware level)
-        sudo nvram AutoBoot=%01 2>/dev/null || true
-
-        # Disable screen saver lock (headless machine, no one to unlock)
-        defaults write com.apple.screensaver askForPassword -int 0 2>/dev/null
-        _ok "Screen lock disabled"
-
-        # Disable auto-logout (System Settings > Security > Advanced)
-        sudo defaults write /Library/Preferences/.GlobalPreferences com.apple.autologout.AutoLogOutDelay -int 0 2>/dev/null
-        _ok "Auto-logout disabled"
-
-        # Disable display sleep on AC power (keep it awake for screen sharing)
-        sudo pmset -a displaysleep 0 2>/dev/null
-        _ok "Display sleep disabled"
-
-        # Enable Screen Sharing
-        if nc -z localhost 5900 2>/dev/null; then
-            _skip "Screen Sharing"
+    # ── Always-On Configuration (opt-in: --always-on) ──────
+    # Hardened fork: the screen-lock password is never touched, Screen
+    # Sharing is never switched on by script, and the power settings below
+    # run only when asked for.
+    if [[ "$ALWAYS_ON" == true ]]; then
+        _step "Configuring always-on settings (--always-on)..."
+        if _need_sudo "always-on power settings"; then
+            # Prevent sleep (display can sleep, but system stays awake)
+            sudo pmset -a sleep 0 2>/dev/null && _ok "System sleep disabled" || _warn "Could not disable sleep"
+            sudo pmset -a disksleep 0 2>/dev/null
+            # Wake on network access (Wake on LAN)
+            sudo pmset -a womp 1 2>/dev/null && _ok "Wake on LAN enabled" || true
+            # Auto restart on power failure (+ hardware-level AutoBoot)
+            sudo pmset -a autorestart 1 2>/dev/null && _ok "Auto-restart on power loss" || _warn "Could not set auto-restart"
+            sudo nvram AutoBoot=%01 2>/dev/null || true
+            # Disable auto-logout (System Settings > Privacy & Security > Advanced)
+            sudo defaults write /Library/Preferences/.GlobalPreferences com.apple.autologout.AutoLogOutDelay -int 0 2>/dev/null
+            _ok "Auto-logout disabled"
+            # Marker read by the power_autorestart reconcile check
+            mkdir -p "$USER_DIR/config"
+            echo "# Created by install.sh --always-on. Delete to stop the autorestart reminder." > "$USER_DIR/config/always-on"
         else
-            sudo launchctl load -w /System/Library/LaunchDaemons/com.apple.screensharing.plist 2>/dev/null
-            if nc -z localhost 5900 2>/dev/null; then
-                _ok "Screen Sharing enabled"
-            else
-                _warn "Screen Sharing — enable manually: System Settings > Sharing > Screen Sharing"
-            fi
+            _warn "Always-on settings skipped (no admin password). Run later:"
+            _info "  sudo pmset -a sleep 0 disksleep 0 autorestart 1 womp 1"
         fi
     else
-        _info "Always-on settings require sudo — configure manually:"
-        _info "  sudo pmset -a sleep 0 displaysleep 0 disksleep 0"
-        _info "  sudo pmset -a autorestart 1 womp 1"
+        _info "Always-on power settings not changed (re-run with --always-on to keep this Mac awake 24/7)"
     fi
+
+    # Screen Sharing is left as it is. To use it over Tailscale:
+    _info "Screen Sharing is not enabled automatically. If you want it:"
+    _info "  System Settings > General > Sharing > Screen Sharing: ON,"
+    _info "  'Allow access for: Only these users' = your account."
+    _info "  Connect from another Mac with vnc://<tailscale-ip> (keep it on Tailscale, never port-forward 5900)."
 }
 
 setup_statusline() {
@@ -2335,6 +2360,14 @@ hook_defs = {
             {'type': 'command', 'command': 'python3 ~/aos/core/bin/crons/reconcile-sessions --hook --quiet', 'async': True},
         ]},
     ],
+    # Hardened fork: parse every Bash command before it runs
+    # (core/hooks/guard_bash.py). Also enforced by the settings_config
+    # reconcile check.
+    'PreToolUse': [
+        {'matcher': 'Bash', 'hooks': [
+            {'type': 'command', 'command': 'python3 ~/aos/core/hooks/guard_bash.py'},
+        ]},
+    ],
     # aos#236.4: automatic trust-log entries for catalog dispatch — matcher
     # scopes this to the Agent tool only, every other PostToolUse consumer
     # is unaffected. Also carried by migration 130 and the hooks reconcile
@@ -2383,9 +2416,13 @@ if settings_path.exists():
 }
 
 run_provisioning() {
-    configure_dock
-    configure_desktop
-    configure_terminal
+    if [[ "$WITH_THEMING" == true ]]; then
+        configure_dock
+        configure_desktop
+        configure_terminal
+    else
+        _info "Dock, wallpaper and Terminal left as they are (opt-in: --with-theming)"
+    fi
     configure_macos
     setup_statusline
     return 0
@@ -2664,18 +2701,31 @@ for name, job in (data.get('jobs') or {}).items():
     _step "Applications"
     _check "cmux"           "[[ -d '/Applications/cmux.app' ]]"
     _check "Google Chrome"  "[[ -d '/Applications/Google Chrome.app' ]]"
-    _check "SuperWhisper"   "[[ -d '/Applications/superwhisper.app' ]]"
-    _check "Obsidian"       "[[ -d '/Applications/Obsidian.app' ]]"
+    [[ "$WITH_SUPERWHISPER" == true ]] && _check "SuperWhisper"   "[[ -d '/Applications/superwhisper.app' ]]"
+    [[ "$WITH_OBSIDIAN" == true ]] && _check "Obsidian"       "[[ -d '/Applications/Obsidian.app' ]]"
 
     # ── Always-on ─────────────────────────────────────────────
     _step "Always-on configuration"
-    _check "System sleep disabled"    "pmset -g 2>/dev/null | grep -q 'sleep.*0'"
-    _check "Auto-restart on power"    "pmset -g 2>/dev/null | grep -q 'autorestart.*1'"
-    _check "Auto-login configured"    "defaults read /Library/Preferences/com.apple.loginwindow autoLoginUser 2>/dev/null"
+    if [[ "$ALWAYS_ON" == true ]]; then
+        _check "System sleep disabled"    "pmset -g 2>/dev/null | grep -q 'sleep.*0'"
+        _check "Auto-restart on power"    "pmset -g 2>/dev/null | grep -q 'autorestart.*1'"
+    else
+        _info "Power settings unchanged (install was run without --always-on)"
+    fi
+    # Informational only — never required. Automatic login and FileVault are
+    # mutually exclusive: macOS disables auto-login while FileVault is on.
+    if defaults read /Library/Preferences/com.apple.loginwindow autoLoginUser &>/dev/null; then
+        _info "Note: automatic login is ON. FileVault cannot be on at the same time,"
+        _info "      so the disk is not encrypted at rest."
+    else
+        _info "Note: automatic login is off. After a power cut the Mac waits at the"
+        _info "      login (FileVault) screen and AOS services start only once you log in."
+        _info "      That keeps FileVault possible; enabling auto-login would rule it out."
+    fi
 
     # ── Remote access ──────────────────────────────────────────
     _step "Remote access"
-    _check "SSH"            "sudo -n systemsetup -getremotelogin 2>/dev/null | grep -qi on"
+    _check "SSH (optional)" "nc -z localhost 22 2>/dev/null"
     _check "Tailscale"      "command -v tailscale"
     _check "Claude Remote"  "launchctl list 2>/dev/null | grep -q claude-remote"
 
@@ -2782,7 +2832,7 @@ except: print('Operator')
 
     if command -v cld &>/dev/null || command -v claude &>/dev/null; then
         if [[ "$onboarded" == false ]]; then
-            echo "  ${BOLD}Next:${RESET}  ${BRAND}${BOLD}aos start${RESET}  ${MUTED}— Sahib will walk you through setup in cmux.${RESET}"
+            echo "  ${BOLD}Next:${RESET}  ${BRAND}${BOLD}aos start${RESET}  ${MUTED}— Skye will walk you through setup in cmux.${RESET}"
         else
             echo "  ${BOLD}Start a session:${RESET}  ${BRAND}${BOLD}aos start${RESET}"
         fi
@@ -2807,9 +2857,7 @@ except: print('Operator')
     echo ""
     echo "  ${MUTED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
     echo ""
-    # Closes the ceremony in the same script it opened in: الحمد لله.
-    # Raw bytes, same reasoning as the bismillah in _banner.
-    printf "  ${BRAND}\xd8\xa7\xd9\x84\xd8\xad\xd9\x85\xd8\xaf \xd9\x84\xd9\x84\xd9\x87${RESET}\n"
+    echo "  ${BRAND}${BOLD}Setup complete.${RESET}"
     echo ""
 }
 
@@ -2853,10 +2901,8 @@ main() {
     # The only questions we ask, asked once, before the calm ceremony begins.
     _collect_identity
 
-    # Keep sudo alive — install can take 20+ minutes, ticket expires in 5
-    ( while true; do sudo -n true 2>/dev/null; sleep 50; done ) &
-    SUDO_KEEPALIVE_PID=$!
-    trap '_spinner_stop; tput cnorm 2>/dev/null >&3; kill $SUDO_KEEPALIVE_PID 2>/dev/null' EXIT
+    # Hardened fork: no background `sudo -n true` keep-alive. Each step that
+    # needs admin rights asks when it runs (_need_sudo).
 
     echo "" >&3
 

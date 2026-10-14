@@ -14,11 +14,11 @@
 #   account-resolve --default <service>         → account from default context
 #
 # Examples:
-#   account-resolve nuchay google              → hisham@nuchay.com
-#   account-resolve personal google            → hishamalhadi@gmail.com
-#   account-resolve nuchay telegram --key      → TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID
-#   account-resolve --default google           → hisham@nuchay.com
-#   account-resolve alhuda google --trust      → ask
+#   account-resolve work google                → alex@work.example
+#   account-resolve personal google            → alex@example.com
+#   account-resolve work telegram --key        → TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID
+#   account-resolve --default google           → alex@work.example
+#   account-resolve volunteer google --trust   → ask
 
 
 # Always resolve Python through the AOS resolver — a python3 on PATH can be

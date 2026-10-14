@@ -40,8 +40,7 @@ _OPERATOR_KNOWN = _OPERATOR_REQUIRED | {
     "communication", "daily_loop", "trust", "agent_name",
     "initiatives", "projects",
     # Read by shipped code, flagged as unknown since they were introduced:
-    "location",       # prayer times + weather in the morning briefing
-    "prayer",         # calculation method / madhab for the Adhan schedule
+    "location",       # city/country for the weather in the morning briefing
     "nickname",       # how the system addresses the operator
     "notifications",  # per-topic notification preferences
     # Found via the aos#237 second-operator parity audit: real operators use

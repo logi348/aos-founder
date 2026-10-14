@@ -203,7 +203,7 @@ CREATE TABLE IF NOT EXISTS relationships (
     subtype         TEXT,                   -- spouse, sibling, parent, child, mentor, client, classmate
     strength        REAL DEFAULT 0.5,       -- 0.0 to 1.0
     source          TEXT,                   -- contacts_db, whatsapp_group, calendar, manual
-    context         TEXT,                   -- "both in Quran Garden", "introduced by Ahmad"
+    context         TEXT,                   -- "both in Notes Garden", "introduced by Ahmad"
     since           TEXT,                   -- date
     notes           TEXT,
     created_at      INTEGER,

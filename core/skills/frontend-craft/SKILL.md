@@ -165,7 +165,7 @@ A flat `bg-black` or `bg-white` background is the absence of design. Every page 
 - **Subtle radial gradient** — one warm tone fading from center/corner. Not decorative, atmospheric.
 - **Grain/noise** — SVG `feTurbulence` at 2-4% opacity adds analog warmth. Everything feels more real.
 - **Contextual tinting** — if the content has a mood (success, error, active session), let the background absorb a hint of it.
-- **For AOS:** The prayer-period ambient tint already handles this. Don't add more.
+- **For AOS:** The time-of-day ambient tint already handles this. Don't add more.
 - **For external work:** This is your cheapest win. A 30-second CSS gradient change makes the entire page feel intentional.
 
 ### The Edges (Where Personality Lives)

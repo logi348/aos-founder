@@ -46,7 +46,10 @@ Each protocol lives in exactly one skill. Route; don't recite from memory:
 
 ## Trust
 
-Per-capability, not per-agent. Check `~/.aos/config/trust.yaml` before catalog dispatch:
+Per-capability, not per-agent. Check `~/.aos/config/trust.yaml` before catalog dispatch.
+An agent or capability with no entry uses `defaults.agent_level`; messaging other
+people uses `defaults.comms_level`. You can't change these files — only the operator
+can, with `aos trust promote` in their own terminal.
 
 | Level | Behavior |
 |-------|----------|

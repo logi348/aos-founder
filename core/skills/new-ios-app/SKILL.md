@@ -168,7 +168,7 @@ and run tests on the iOS Simulator — slower but no guards. Default keeps macOS
   (filenames). Reference by the **PostScript name**, not the filename. Verify
   glyph/tashkīl coverage with fonttools before trusting an Arabic font.
 - **App name uniqueness**: ASC names are globally unique. On conflict, add
-  keywords ("App: Salah Focus") — the home-screen name (CFBundleDisplayName)
+  keywords ("App: Habit Focus") — the home-screen name (CFBundleDisplayName)
   can stay short.
 - **AI apps require iOS 26** + an Apple-Intelligence-capable device (A17 Pro+);
   the app still builds/runs with AI gracefully disabled elsewhere.
@@ -219,8 +219,9 @@ For a premium look, generate a coherent asset set at build time:
 - **Icon prompt must say full-bleed** ("fill the entire square edge to edge, no
   border, no rounded corners") or the model draws an icon-of-an-icon.
 - Read `OPENROUTER_API_KEY` from Keychain; never hardcode.
-- **Authenticity for Islamic/cultural apps**: no figurative imagery, and NEVER
-  AI-generate Arabic/scripture (models mangle letterforms) — use real fonts.
+- **Authenticity for cultural or religious apps**: follow the community's
+  imagery norms, and NEVER AI-generate non-Latin script or scripture (models
+  mangle letterforms) — use real fonts and sourced text.
 
 ## Verifying screens headlessly
 Bake a debug launch-arg convention into the app (`-uiTestSeed` to skip

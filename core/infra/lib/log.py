@@ -6,10 +6,10 @@ Every component should use get_logger() instead of configuring logging manually.
 Usage:
     from lib.log import get_logger
     logger = get_logger("bridge")
-    logger.info("Message received", extra={"user": "hisham", "channel": "telegram"})
+    logger.info("Message received", extra={"user": "alex", "channel": "telegram"})
 
 Output (JSONL):
-    {"ts":"2026-03-27T14:30:00","level":"INFO","source":"bridge","msg":"Message received","user":"hisham","channel":"telegram"}
+    {"ts":"2026-03-27T14:30:00","level":"INFO","source":"bridge","msg":"Message received","user":"alex","channel":"telegram"}
 """
 
 import json

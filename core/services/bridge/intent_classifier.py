@@ -437,7 +437,7 @@ def _current_project() -> str | None:
 
 
 def _project_display(project_id: str) -> str:
-    """A project id rendered for a human. 'quran-garden' → 'Quran Garden'."""
+    """A project id rendered for a human. 'notes-garden' → 'Notes Garden'."""
     return project_id.replace("-", " ").replace("_", " ").title()
 
 
@@ -936,10 +936,6 @@ def handle_greeting(text: str) -> str:
         time_greeting = "Good afternoon"
     else:
         time_greeting = "Good evening"
-
-    text_lower = text.lower().strip()
-    if "salam" in text_lower or "asalam" in text_lower:
-        return f"Wa alaikum assalam. {time_greeting}. How can I help?"
 
     return f"{time_greeting}. How can I help?"
 
