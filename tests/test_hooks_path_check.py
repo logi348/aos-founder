@@ -54,6 +54,7 @@ def _base_settings() -> dict:
         "permissions": {
             "allow": list(claude_permissions.ALLOW),
             "deny": list(claude_permissions.DENY),
+            "ask": list(claude_permissions.ASK),
         },
     }
 
@@ -153,6 +154,22 @@ def test_upstream_blanket_allows_are_replaced_not_restored(tmp_path, monkeypatch
     assert "mcp__custom__tool" in perms["allow"]  # operator's own rules survive
     assert "Read(~/.ssh/**)" in perms["deny"] and "Bash(sudo *)" in perms["deny"]
     assert HooksPathCheck().check() is True
+
+
+def test_agents_cannot_edit_their_own_framework_or_startup_items():
+    perms = {}
+    claude_permissions.apply(perms)
+    p = perms["permissions"]
+    assert "Edit(~/aos/**)" not in p["allow"]
+    assert "Read(~/aos/**)" in p["allow"]
+    for rule in ("Edit(~/aos/**)", "Edit(~/Library/LaunchAgents/**)", "Edit(~/.zshrc)",
+                 "Edit(~/.aos/config/trust.yaml)"):
+        assert rule in p["deny"], rule
+    assert "Edit(~/.aos/config/**)" in p["ask"]
+
+
+def test_periodic_run_repairs_settings():
+    assert HooksPathCheck.periodic_fix is True
 
 
 def test_guard_hook_is_required_and_added(tmp_path, monkeypatch):

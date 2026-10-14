@@ -25,13 +25,29 @@ import sys
 from pathlib import Path
 
 AOS_DIRS = ["~/aos", "~/.aos", "~/vault", "~/project"]
+# Where agents may edit without asking. ~/aos (the running framework: agent
+# and skill instructions, hooks, this module, crons.yaml) is readable but
+# never editable by agents — framework changes go ~/project/aos → the fork →
+# operator merge → `aos update`.
+EDIT_DIRS = ["~/.aos", "~/vault", "~/project"]
 TEMP_DIRS = ["//tmp", "//private/tmp"]
 
 ALLOW = (
     ["Bash", "Glob", "Grep", "WebSearch", "WebFetch", "Agent", "Task", "TodoWrite", "Skill"]
     + [f"Read({d}/**)" for d in AOS_DIRS + TEMP_DIRS]
-    + [f"Edit({d}/**)" for d in AOS_DIRS + TEMP_DIRS]
+    + [f"Edit({d}/**)" for d in EDIT_DIRS + TEMP_DIRS]
 )
+
+# Self-modification: what an agent could change to give itself more.
+SELF_MOD_PATHS = [
+    "~/aos/**", "~/aos-releases/**",
+    "~/Library/LaunchAgents/**", "//Library/LaunchAgents/**", "//Library/LaunchDaemons/**",
+    "~/.zshrc", "~/.zprofile", "~/.zshenv", "~/.zlogin", "~/.bashrc", "~/.bash_profile", "~/.profile",
+]
+
+# Needs the operator's OK each time (ask beats allow): comms allowlist,
+# account trust, operator profile, converse defaults …
+ASK = ["Edit(~/.aos/config/**)"]
 
 _SECRET_DIRS = [
     "~/.ssh",
@@ -60,6 +76,7 @@ DENY = (
     [f"Read({d}/**)" for d in _SECRET_DIRS]
     + [f"Edit({d}/**)" for d in _SECRET_DIRS]
     + [f"Edit({f})" for f in OPERATOR_ONLY_FILES]
+    + [f"Edit({p})" for p in SELF_MOD_PATHS]
     + [
         # Command-text rules are a first layer only; guard_bash.py parses
         # the command properly (sudo via a path, bash -c, pipes, rm targets).
@@ -74,7 +91,8 @@ DENY = (
 # Blanket allows written by upstream install.sh / reconcile. Removed so the
 # scoped rules above are the ones that apply.
 LEGACY_ALLOW = ["Bash(*)", "Read(*)", "Write(*)", "Edit(*)", "Glob(*)", "Grep(*)",
-                "Read", "Write", "Edit", "Edit ~/.claude/**", "Write ~/.claude/**"]
+                "Read", "Write", "Edit", "Edit ~/.claude/**", "Write ~/.claude/**",
+                "Edit(~/aos/**)"]  # pre-approved by this fork's first version
 
 GUARD_HOOK = {
     "event": "PreToolUse",
@@ -85,9 +103,10 @@ GUARD_HOOK = {
 
 def needs_update(settings: dict) -> bool:
     perms = settings.get("permissions") or {}
-    allow, deny = perms.get("allow") or [], perms.get("deny") or []
+    allow, deny, ask = perms.get("allow") or [], perms.get("deny") or [], perms.get("ask") or []
     return (any(r not in allow for r in ALLOW)
             or any(r not in deny for r in DENY)
+            or any(r not in ask for r in ASK)
             or any(r in allow for r in LEGACY_ALLOW))
 
 
@@ -110,6 +129,11 @@ def apply(settings: dict) -> list[str]:
         if r not in deny:
             deny.append(r)
             changes.append(f"deny {r}")
+    ask = perms.setdefault("ask", [])
+    for r in ASK:
+        if r not in ask:
+            ask.append(r)
+            changes.append(f"ask {r}")
     return changes
 
 

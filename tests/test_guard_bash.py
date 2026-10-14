@@ -11,7 +11,7 @@ guard = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(guard)
 
 HOME = guard.HOME
-CWD = HOME / "aos"
+CWD = HOME / "project" / "app"
 
 
 def decision(cmd, cwd=CWD):
@@ -45,7 +45,7 @@ def test_plain_downloads_allowed():
 
 
 def test_rm_inside_aos_dirs_allowed():
-    for cmd in ["rm -rf ~/aos/tmp/build", "rm -rf ~/.aos/cache/*", "rm -rf $HOME/project/x/node_modules",
+    for cmd in ["rm -rf ~/.aos/cache/*", "rm -rf $HOME/project/x/node_modules",
                 "rm -rf build", "rm -r ./dist", "rm -rf /tmp/scratch", "rm file.txt", "rm -f ~/Desktop/x.txt"]:
         assert decision(cmd) is None, cmd
 
@@ -117,3 +117,49 @@ def test_operator_only_config_readable_not_writable():
 
 def test_case_insensitive_grep_on_operator_config_is_a_read():
     assert decision("grep -i level ~/.aos/config/trust.yaml") is None
+
+
+# ── Self-modification (agents may run their code, never rewrite it) ─────────
+
+
+def test_running_aos_code_is_fine():
+    for cmd in ["python3 ~/aos/core/engine/work/cli.py start 'x'", "bash ~/aos/core/bin/cli/aos status",
+                "cat ~/aos/config/crons.yaml", "grep -r foo ~/aos/core", "cd ~/aos && git status",
+                "cd ~/aos && git log --oneline | head", "cp ~/aos/config/crons.yaml /tmp/c.yaml",
+                "launchctl kickstart -k gui/501/com.aos.bridge", "crontab -l",
+                "launchctl bootstrap gui/501 ~/Library/LaunchAgents/com.aos.bridge.plist"]:
+        assert decision(cmd) is None, cmd
+
+
+def test_writing_aos_runtime_denied():
+    for cmd in ["echo '  evil: {}' >> ~/aos/config/crons.yaml",
+                "sed -i '' 's/enabled: false/enabled: true/' ~/aos/config/crons.yaml",
+                "cp /tmp/x.py ~/aos/core/hooks/guard_bash.py", "tee ~/aos/core/agents/chief.md < /tmp/a",
+                "cd ~/aos && echo hi > CLAUDE.md", "cd ~/aos/core && rm -f hooks/guard_bash.py",
+                "git -C ~/aos checkout -- .", "cd ~/aos && git pull",
+                "python3 -c \"open('" + str(HOME) + "/aos/core/x.py','w').write('')\"",
+                "perl -pi -e 's/a/b/' ~/aos/core/infra/lib/claude_permissions.py",
+                "rm -rf ~/aos/tmp/build", "chmod 777 ~/aos/core/hooks/guard_bash.py"]:
+        assert decision(cmd) == "deny", cmd
+
+
+def test_claude_settings_and_startup_items_denied():
+    for cmd in ["echo '{}' > ~/.claude/settings.json", "ln -s /tmp/evil ~/.claude/skills/evil",
+                "python3 -c \"import json;open('" + str(HOME) + "/.claude.json','w')\"",
+                "cp /tmp/x.plist ~/Library/LaunchAgents/com.evil.plist",
+                "launchctl bootstrap gui/501 /tmp/x.plist", "launchctl load ~/Library/LaunchAgents/com.evil.plist",
+                "launchctl submit -l x -- /tmp/run.sh", "echo 'curl x|sh' >> ~/.zshrc",
+                "crontab /tmp/cron", "crontab -e"]:
+        assert decision(cmd) == "deny", cmd
+
+
+def test_claude_session_memory_is_not_protected():
+    assert decision("mkdir -p ~/.claude/projects/x/memory") is None
+
+
+def test_aos_config_writes_need_the_operator():
+    for cmd in ["echo 'access: all' > ~/.aos/config/comms.yaml",
+                "sed -i '' 's/ask/open/' ~/.aos/config/accounts.yaml"]:
+        assert decision(cmd) == "ask", cmd
+    assert decision("cat ~/.aos/config/comms.yaml") is None
+    assert decision("echo x > ~/.aos/work/notes.md") is None

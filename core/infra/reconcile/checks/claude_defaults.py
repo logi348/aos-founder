@@ -24,6 +24,10 @@ from lib import claude_features
 
 class ClaudeDefaultsCheck(ReconcileCheck):
     name = "claude_defaults"
+    # Hardened fork: repair on the 30-minute periodic run too, not only on
+    # deploy, so tampering (an agent loosening its own permissions, flags or
+    # code) is undone within half an hour.
+    periodic_fix = True
     description = "Remote Control / Chrome match ~/.aos/config/claude-features.json (default off)"
 
     def check(self) -> bool:

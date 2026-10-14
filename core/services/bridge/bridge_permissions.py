@@ -51,7 +51,12 @@ PROMPT_NOTE = (
 
 
 def working_dir() -> str:
-    """Default cwd for bridge sessions: ~/aos, not the home directory —
-    reads inside the working directory are allowed without asking."""
-    p = Path.home() / "aos"
-    return str(p if p.is_dir() else Path.home())
+    """Default cwd for bridge sessions: ~/.aos/work — not the home directory
+    (reads inside the working directory are allowed without asking) and not
+    ~/aos (agents may not write there, so relative writes would just fail)."""
+    p = Path.home() / ".aos" / "work"
+    try:
+        p.mkdir(parents=True, exist_ok=True)
+        return str(p)
+    except OSError:
+        return str(Path.home())

@@ -20,7 +20,12 @@ Stdlib only: it runs under whatever `python3` is on PATH. If it cannot parse
 a command it stays silent rather than blocking (shlex failure on odd quoting);
 the settings.json deny rules remain as a second layer.
 
-Allowed rm roots: ~/aos, ~/.aos, ~/vault, ~/project, the temp dirs and
+Self-modification: writes of any kind into ~/aos, ~/.claude, ~/.claude.json,
+LaunchAgents/Daemons or shell startup files are denied, as are crontab edits and
+loading new launchd jobs; writes into ~/.aos/config are "ask". Running code
+from ~/aos is of course fine.
+
+Allowed rm roots: ~/.aos, ~/vault, ~/project, the temp dirs and
 anything in AOS_GUARD_EXTRA_RM_ROOTS (colon-separated). The roots themselves
 are protected; only paths strictly inside them may be removed recursively.
 """
@@ -35,7 +40,7 @@ from pathlib import Path
 
 HOME = Path(os.path.expanduser("~"))
 
-RM_ROOTS = [HOME / "aos", HOME / ".aos", HOME / "vault", HOME / "project",
+RM_ROOTS = [HOME / ".aos", HOME / "vault", HOME / "project",
             Path("/tmp"), Path("/private/tmp"), Path("/var/folders"),
             Path("/private/var/folders")]
 
@@ -64,6 +69,34 @@ OPERATOR_ONLY = [
 READ_ONLY_CMDS = {"cat", "head", "tail", "less", "more", "grep", "rg", "wc", "ls", "stat",
                   "file", "diff", "jq", "bat", "test", "["}
 
+# Self-modification guard: agents run code from these places but must never
+# write to them — that would let them rewrite their own instructions, this
+# guard, the permission set, the scheduler's job list or what starts at login.
+WRITE_PROTECTED = [
+    HOME / "aos",                 # the running framework (agents, skills, crons.yaml, hooks)
+    HOME / "aos-releases",        # release installs (~/aos is a symlink into here)
+    HOME / ".claude",             # settings.json, agents/skills/rules links, hooks
+    HOME / ".claude.json",
+    HOME / "Library" / "LaunchAgents",
+    Path("/Library/LaunchAgents"),
+    Path("/Library/LaunchDaemons"),
+    HOME / ".zshrc", HOME / ".zprofile", HOME / ".zshenv", HOME / ".zlogin",
+    HOME / ".bashrc", HOME / ".bash_profile", HOME / ".profile",
+]
+WRITE_PROTECTED_EXCEPT = [HOME / ".claude" / "projects"]   # Claude Code's own session memory
+# Writes here need the operator's OK ("ask"): comms allowlist, accounts,
+# operator profile, converse defaults ...
+WRITE_ASK = [HOME / ".aos" / "config"]
+
+WRITE_ALL_ARGS = {"tee", "touch", "mkdir", "rmdir", "rm", "unlink", "truncate", "chflags", "xattr", "shred"}
+WRITE_SKIP_FIRST = {"chmod", "chown", "chgrp"}            # first arg is the mode/owner
+WRITE_LAST_ARG = {"cp", "mv", "install", "rsync", "ditto", "ln", "scp"}
+IN_PLACE = {"sed", "gsed", "perl", "ruby"}
+INLINE_CODE = {"python", "python3", "node", "perl", "ruby", "osascript", "php"}
+GIT_WRITE = {"commit", "checkout", "reset", "apply", "am", "merge", "pull", "rebase", "stash",
+             "clean", "restore", "switch", "cherry-pick", "revert", "rm", "mv", "add", "init",
+             "clone", "fetch", "submodule", "worktree", "update-index", "config"}
+
 SHELLS = {"sh", "bash", "zsh", "dash", "ksh", "fish"}
 DOWNLOADERS = {"curl", "wget"}
 WRAPPERS = {"nohup", "time", "command", "builtin", "exec", "nice", "caffeinate", "env", "xargs"}
@@ -87,13 +120,18 @@ def _expand(word: str) -> str | None:
     return w
 
 
+def _is_op(tok: str) -> bool:
+    """A shell operator token. An empty argument (`''`) is NOT an operator."""
+    return tok in OPERATORS or (bool(tok) and set(tok) <= set(";&|()"))
+
+
 def _segments(command: str) -> list[list[str]]:
     lexer = shlex.shlex(command.replace("\n", " ; "), posix=True, punctuation_chars=";&|()")
     lexer.whitespace_split = True
     lexer.commenters = ""
     segs: list[list[str]] = [[]]
     for tok in lexer:
-        if tok in OPERATORS or set(tok) <= set(";&|()"):
+        if _is_op(tok):
             segs.append([tok])  # keep the operator as a marker at segment start
             segs.append([])
         else:
@@ -168,11 +206,111 @@ def _check_rm(args: list[str], cwd: Path) -> tuple[str, str] | None:
     return None
 
 
+def _classify_write(p: Path) -> tuple[str, str] | None:
+    for ex in WRITE_PROTECTED_EXCEPT:
+        if p == ex or _inside(p, ex):
+            return None
+    for root in WRITE_PROTECTED:
+        if p == root or _inside(p, root):
+            return ("deny", f"Agents can't modify {root} (their own code, settings or startup "
+                            f"items). Propose the change to the operator instead.")
+    for root in WRITE_ASK:
+        if p == root or _inside(p, root):
+            return ("ask", f"Changing {root} needs the operator's OK.")
+    return None
+
+
+def _positional(args: list[str]) -> list[str]:
+    out, end = [], False
+    for a in args:
+        if not end and a == "--":
+            end = True
+        elif not end and a.startswith("-") and len(a) > 1:
+            continue
+        else:
+            out.append(a)
+    return out
+
+
+def _in_place(name: str, args: list[str]) -> bool:
+    for a in args:
+        if a == "--in-place" or a == "-i" or (a.startswith("-i") and name in ("sed", "gsed")):
+            return True
+        if name in ("perl", "ruby") and a.startswith("-") and not a.startswith("--") and "i" in a[1:]:
+            return True
+    return False
+
+
+def _write_targets(words: list[str], cwd: Path) -> list[str]:
+    """Raw path words this command segment writes to (best effort)."""
+    name = os.path.basename(words[0])
+    args = words[1:]
+    targets: list[str] = []
+    # Output redirection anywhere in the segment: `> f`, `>>f`, `2>f`, `&>f`.
+    for i, w in enumerate(words):
+        m = re.match(r"^(?:\d*|&)?>>?\|?(.*)$", w)
+        if m:
+            if m.group(1):
+                targets.append(m.group(1))
+            elif i + 1 < len(words):
+                targets.append(words[i + 1])
+    pos = _positional(args)
+    if name in WRITE_ALL_ARGS:
+        targets += pos
+    elif name in WRITE_SKIP_FIRST:
+        targets += pos[1:]
+    elif name in WRITE_LAST_ARG and pos:
+        targets.append(pos[-1])
+    elif name in IN_PLACE and _in_place(name, args):
+        targets += pos
+    elif name == "dd":
+        targets += [a[3:] for a in args if a.startswith("of=")]
+    elif name == "git":
+        repo = str(cwd)
+        rest = args
+        while rest and rest[0].startswith("-"):
+            if rest[0] == "-C" and len(rest) > 1:
+                repo = rest[1]
+                rest = rest[2:]
+            else:
+                rest = rest[1:]
+        if rest and rest[0] in GIT_WRITE:
+            targets.append(repo)
+    return targets
+
+
 def _check_words(words: list[str], cwd: Path, depth: int) -> tuple[str, str] | None:
     words = _strip(words)
     if not words:
         return None
     name = os.path.basename(words[0])
+    if name == "crontab" and any(a != "-l" for a in words[1:]):
+        return ("deny", "Changing the crontab is blocked for agents (it would run code outside "
+                        "Claude). Scheduled jobs belong in config/crons.yaml, changed by the operator.")
+    if name == "launchctl" and len(words) > 1 and words[1] in ("load", "bootstrap", "submit", "enable"):
+        if words[1] == "submit":
+            return ("deny", "Agents may not submit new launchd jobs.")
+        for w in (w for w in words[2:] if w.endswith(".plist")):
+            p = _resolve(w, cwd)
+            if p is None or not (_inside(p, HOME / "Library" / "LaunchAgents") and p.name.startswith("com.aos.")):
+                return ("deny", "Agents may only (re)load existing AOS LaunchAgents, not new ones.")
+    if name in INLINE_CODE:
+        for i in range(1, len(words) - 1):
+            if words[i] in ("-c", "-e", "-E"):
+                code = words[i + 1]
+                exp = code.replace("$HOME", str(HOME))
+                exp = re.sub(r"(?<![\w/])~(?=/)", str(HOME), exp)
+                for root in WRITE_PROTECTED:
+                    if str(root) in exp and re.search(
+                            r"open\(|write|unlink|remove|rename|rmtree|copy|move|symlink|chmod|mkdir|>", code):
+                        return ("deny", f"Inline code that writes under {root} is blocked.")
+    for t in _write_targets(words, cwd):
+        p = _resolve(t, cwd)
+        if p is None:
+            continue
+        verdict = _classify_write(p)
+        if verdict:
+            return verdict
     if name in ("sudo", "doas", "su"):
         return ("deny", "sudo is blocked for agents; run it yourself if it is really needed.")
     if name == "security":
@@ -203,7 +341,7 @@ def _read_only(command: str) -> bool:
     except ValueError:
         return False
     for seg in segs:
-        if not seg or seg[0] in OPERATORS or set(seg[0]) <= set(";&|()"):
+        if not seg or _is_op(seg[0]):
             continue
         words = _strip(seg)
         if words and os.path.basename(words[0]) not in READ_ONLY_CMDS:
@@ -232,7 +370,14 @@ def check_command(command: str, cwd: Path | None = None, depth: int = 0) -> tupl
         return None
     result = None
     for seg in segs:
-        if seg and (seg[0] in OPERATORS or set(seg[0]) <= set(";&|()")):
+        if seg and _is_op(seg[0]):
+            continue
+        # Track `cd`/`pushd` so `cd ~/aos && echo x > f` is judged in ~/aos.
+        stripped = _strip(seg)
+        if stripped and stripped[0] in ("cd", "pushd"):
+            nxt = _resolve(stripped[1] if len(stripped) > 1 else str(HOME), cwd)
+            if nxt is not None:
+                cwd = nxt
             continue
         r = _check_words(seg, cwd, depth)
         if r and r[0] == "deny":

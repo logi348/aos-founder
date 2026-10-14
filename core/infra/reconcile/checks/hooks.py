@@ -28,6 +28,10 @@ from lib import claude_permissions
 
 class HooksPathCheck(ReconcileCheck):
     name = "settings_config"
+    # Hardened fork: repair on the 30-minute periodic run too, not only on
+    # deploy, so tampering (an agent loosening its own permissions, flags or
+    # code) is undone within half an hour.
+    periodic_fix = True
     description = "settings.json hooks, paths, and permissions are correct"
 
     SETTINGS = Path.home() / ".claude" / "settings.json"
