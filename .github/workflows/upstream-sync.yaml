@@ -1,0 +1,114 @@
+name: Upstream sync
+
+# Weekly (and on demand): if AOS-Agent/aos has new commits, open a PR that
+# merges them into this fork's main, with a risk report and test results.
+# It never merges anything — you review and merge, then run `aos update` on
+# the Mac mini (see UPSTREAM.md).
+#
+# One-time repo setting: Settings → Actions → General → "Allow GitHub
+# Actions to create and approve pull requests" (needed for the PR step).
+
+on:
+  schedule:
+    - cron: "0 9 * * 1"        # Mondays 09:00 UTC
+  workflow_dispatch: {}
+
+env:
+  UPSTREAM_URL: https://github.com/AOS-Agent/aos.git
+
+jobs:
+  # Runs upstream's code (the test suite) with a READ-ONLY token and no saved
+  # credentials, so nothing it does can push to this repo.
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      new: ${{ steps.diff.outputs.new }}
+      merge: ${{ steps.merge.outputs.status }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Fetch upstream
+        run: |
+          git remote add upstream "$UPSTREAM_URL"
+          git fetch --no-tags upstream main
+      - id: diff
+        run: echo "new=$(git rev-list --count HEAD..upstream/main)" >> "$GITHUB_OUTPUT"
+      - name: Risk report (script taken from main, before merging)
+        if: steps.diff.outputs.new != '0'
+        run: |
+          cp .github/scripts/upstream-report.sh /tmp/report.sh
+          bash /tmp/report.sh HEAD upstream/main > /tmp/report.md
+      - id: merge
+        if: steps.diff.outputs.new != '0'
+        run: |
+          git config user.name "upstream-sync"; git config user.email "upstream-sync@users.noreply.github.com"
+          if git merge --no-ff --no-edit upstream/main -m "Merge upstream AOS-Agent/aos main"; then
+            echo "status=clean" >> "$GITHUB_OUTPUT"
+          else
+            { echo; echo "## ❌ Merge conflicts"; echo '```'; git diff --name-only --diff-filter=U; echo '```'; } >> /tmp/report.md
+            git merge --abort
+            echo "status=conflict" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: astral-sh/setup-uv@v9.0.0
+        if: steps.merge.outputs.status == 'clean'
+      - name: Tests on the merged tree
+        if: steps.merge.outputs.status == 'clean'
+        run: |
+          {
+            echo; echo "## Tests on the merged tree"
+            if uv lock --check >/tmp/lock.txt 2>&1; then echo "- uv.lock: ✅ up to date"; else echo "- uv.lock: ❌ out of date"; fi
+            if uv sync --frozen --group dev >/tmp/sync.txt 2>&1 && uv run --frozen pytest tests/ -q >/tmp/pytest.txt 2>&1; then
+              echo "- pytest: ✅ passed"
+            else
+              echo "- pytest: ❌ failed"
+            fi
+            echo '```'; tail -25 /tmp/pytest.txt 2>/dev/null || tail -25 /tmp/sync.txt; echo '```'
+          } >> /tmp/report.md
+      - uses: actions/upload-artifact@v4
+        if: steps.diff.outputs.new != '0'
+        with:
+          name: report
+          path: /tmp/report.md
+
+  # Only git and gh run here — nothing from upstream is executed.
+  open-pr:
+    needs: check
+    if: needs.check.outputs.new != '0'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          name: report
+          path: /tmp/r
+      - name: Open PR (or an issue if it can't merge cleanly)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          branch="upstream-sync/$(date -u +%Y-%m-%d)"
+          title="Upstream sync $(date -u +%Y-%m-%d): ${{ needs.check.outputs.new }} new commit(s)"
+          if [[ "${{ needs.check.outputs.merge }}" != "clean" ]]; then
+            gh issue create --title "$title — needs a manual merge" --body-file /tmp/r/report.md
+            exit 0
+          fi
+          git remote add upstream "$UPSTREAM_URL"
+          git fetch --no-tags upstream main
+          git config user.name "upstream-sync"; git config user.email "upstream-sync@users.noreply.github.com"
+          git switch -c "$branch"
+          git merge --no-ff --no-edit upstream/main -m "Merge upstream AOS-Agent/aos main"
+          if ! git push origin "$branch"; then
+            # GITHUB_TOKEN may not push changes to .github/workflows.
+            gh issue create --title "$title — push refused (workflow files changed?), merge manually" --body-file /tmp/r/report.md
+            exit 0
+          fi
+          gh pr create --base main --head "$branch" --title "$title" --body-file /tmp/r/report.md
