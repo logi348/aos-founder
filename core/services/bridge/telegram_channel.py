@@ -476,6 +476,24 @@ class TelegramChannel:
             return False
         return True
 
+    async def _send_approval_prompt(self, approval_id: str, text_html: str):
+        """Allow/Deny prompt for approvals.py. Returns the sent message."""
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+        import approvals
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ Allow", callback_data=f"{approvals.CALLBACK_PREFIX}{approval_id}:a"),
+            InlineKeyboardButton("⛔ Deny", callback_data=f"{approvals.CALLBACK_PREFIX}{approval_id}:d"),
+        ]])
+        if self.app is None:
+            return None
+        return await self.app.bot.send_message(
+            chat_id=self.allowed_chat_id, text=text_html,
+            parse_mode="HTML", reply_markup=keyboard,
+        )
+
+    async def _edit_approval_prompt(self, message, text_html: str):
+        await message.edit_text(text_html, parse_mode="HTML")
+
     async def _gate(self, update, context):
         """Runs before every handler (group -1). Anything unauthorized stops
         here — text, voice, media, commands, callbacks, edits, and any update
@@ -1339,6 +1357,12 @@ class TelegramChannel:
             await query.answer("Unauthorized")
             return
 
+        # ── Phone approval buttons (approvals.py) ──
+        import approvals
+        if approvals.resolve(query.data or ""):
+            await query.answer()
+            return
+
         # ── Stop button — kill the active Claude process ──
         if query.data == "stop_generation":
             thread_id = getattr(query.message, 'message_thread_id', None)
@@ -1988,6 +2012,10 @@ class TelegramChannel:
         # Authorization gate first, in its own earlier group, so it sees every
         # update before any handler can act on it.
         app.add_handler(TypeHandler(Update, self._gate), group=-1)
+
+        # Phone approvals for bridge Claude sessions go to the operator's chat.
+        import approvals
+        approvals.set_transport(self._send_approval_prompt, self._edit_approval_prompt)
 
         self.app = app
         self.app.add_handler(CommandHandler("new", self._handle_new))

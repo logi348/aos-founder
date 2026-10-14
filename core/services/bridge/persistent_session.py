@@ -35,6 +35,7 @@ import sys
 import time
 from pathlib import Path
 
+import bridge_permissions
 from bridge_events import bridge_event
 
 logger = logging.getLogger("aos.bridge.persistent_session")
@@ -101,7 +102,7 @@ class PersistentSession:
     """
 
     def __init__(self, cwd: str | None = None):
-        self.cwd = cwd or str(Path.home())
+        self.cwd = cwd or bridge_permissions.working_dir()
         self.proc: asyncio.subprocess.Process | None = None
         self.session_id: str | None = None
         self.lane: str | None = None  # which lane this.proc was spawned on
@@ -135,7 +136,7 @@ class PersistentSession:
                 "--output-format", "stream-json",
                 "--verbose",
                 "--include-partial-messages",
-                "--permission-mode", "bypassPermissions",
+                *bridge_permissions.args(),
                 "--max-turns", "100",
                 "--max-budget-usd", "50",
                 "--append-system-prompt",
@@ -149,7 +150,7 @@ class PersistentSession:
                 "your next message continues the conversation. Don't ask for confirmation on "
                 "routine tasks. If you need to delegate, use the Agent tool with subagent_type: "
                 "steward (system health), advisor (analysis), or other installed agents. "
-                "You have full tool access." + ambient,
+                + bridge_permissions.PROMPT_NOTE + ambient,
             ]
 
             if resume_session_id:

@@ -59,6 +59,7 @@ OPERATOR_ONLY = [
     HOME / ".aos" / "config" / "trust.yaml",
     HOME / ".aos" / "config" / "claude-features.json",
     HOME / ".aos" / "config" / "always-on",
+    HOME / ".aos" / "config" / "bridge-permission-mode",
 ]
 READ_ONLY_CMDS = {"cat", "head", "tail", "less", "more", "grep", "rg", "wc", "ls", "stat",
                   "file", "diff", "jq", "bat", "test", "["}

@@ -53,6 +53,7 @@ OPERATOR_ONLY_FILES = [
     "~/.aos/config/trust.yaml",
     "~/.aos/config/claude-features.json",
     "~/.aos/config/always-on",
+    "~/.aos/config/bridge-permission-mode",
 ]
 
 DENY = (

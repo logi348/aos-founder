@@ -315,6 +315,9 @@ async def start_api_server():
     app.router.add_post("/cancel", handle_cancel)
     app.router.add_get("/history", handle_history)
     app.router.add_get("/health", handle_health)
+    # Phone approval for bridge Claude sessions (approvals.py / approval_mcp.py)
+    from approvals import handle_http as handle_approval
+    app.router.add_post("/approval", handle_approval)
     register_extra_routes(app)
 
     runner = web.AppRunner(app)
