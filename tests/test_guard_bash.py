@@ -100,3 +100,20 @@ def test_non_bash_and_garbage_input_ignored():
     for raw in ['{"tool_name": "Read", "tool_input": {"file_path": "~/.ssh/id_rsa"}}', "not json"]:
         r = subprocess.run([sys.executable, str(HOOK)], input=raw, capture_output=True, text=True)
         assert r.returncode == 0 and r.stdout.strip() == ""
+
+
+def test_operator_only_config_readable_not_writable():
+    assert decision("cat ~/.aos/config/trust.yaml") is None
+    assert decision("grep level ~/.aos/config/trust.yaml | head") is None
+    for cmd in ["echo 'x: 3' >> ~/.aos/config/trust.yaml",
+                "sed -i '' 's/0/3/' ~/.aos/config/trust.yaml",
+                "python3 -c \"open('" + str(HOME) + "/.aos/config/trust.yaml','w')\"",
+                "cp /tmp/t.yaml ~/.aos/config/trust.yaml",
+                "yq -i '.defaults.agent_level = 3' ~/.aos/config/trust.yaml",
+                "echo '{\"remote-control\": true}' > $HOME/.aos/config/claude-features.json",
+                "touch ~/.aos/config/always-on"]:
+        assert decision(cmd) == "deny", cmd
+
+
+def test_case_insensitive_grep_on_operator_config_is_a_read():
+    assert decision("grep -i level ~/.aos/config/trust.yaml") is None

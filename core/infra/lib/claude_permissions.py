@@ -47,9 +47,18 @@ _SECRET_DIRS = [
     "~/Library/Application Support/Firefox",
 ]
 
+# Operator-only settings: raising trust or opting into always-on features
+# is a human decision (core/infra/lib/human_gate.py). Agents may read these.
+OPERATOR_ONLY_FILES = [
+    "~/.aos/config/trust.yaml",
+    "~/.aos/config/claude-features.json",
+    "~/.aos/config/always-on",
+]
+
 DENY = (
     [f"Read({d}/**)" for d in _SECRET_DIRS]
     + [f"Edit({d}/**)" for d in _SECRET_DIRS]
+    + [f"Edit({f})" for f in OPERATOR_ONLY_FILES]
     + [
         # Command-text rules are a first layer only; guard_bash.py parses
         # the command properly (sudo via a path, bash -c, pipes, rm targets).

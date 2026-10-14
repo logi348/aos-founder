@@ -96,6 +96,12 @@ def cmd_create(args: argparse.Namespace) -> int:
 
     tools = args.tools or defaults.get("tools", models.TOOLS_NONE)
     trust = args.trust if args.trust is not None else int(defaults.get("trust_level", 2))
+    if trust >= 3:
+        # Hardened fork: level 3 auto-sends without review, so only a person
+        # at a terminal may start a session at that level.
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "infra"))
+        from lib.human_gate import require_human
+        require_human(f"start a FULL-AUTO (trust 3) conversation with {args.to}")
     max_messages = args.max_messages if args.max_messages is not None else int(defaults.get("max_messages", 30))
     expires_days = args.expires_days if args.expires_days is not None else defaults.get("expires_days")
     expires_at = int(time.time()) + int(expires_days) * 86400 if expires_days else None

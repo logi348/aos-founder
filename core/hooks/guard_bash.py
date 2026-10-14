@@ -53,6 +53,16 @@ SENSITIVE = [
     HOME / "Library" / "Containers" / "com.apple.Safari",
 ]
 
+# Operator-only config: agents may read these, never write them (raising
+# trust / enabling always-on features is a human decision).
+OPERATOR_ONLY = [
+    HOME / ".aos" / "config" / "trust.yaml",
+    HOME / ".aos" / "config" / "claude-features.json",
+    HOME / ".aos" / "config" / "always-on",
+]
+READ_ONLY_CMDS = {"cat", "head", "tail", "less", "more", "grep", "rg", "wc", "ls", "stat",
+                  "file", "diff", "jq", "bat", "test", "["}
+
 SHELLS = {"sh", "bash", "zsh", "dash", "ksh", "fish"}
 DOWNLOADERS = {"curl", "wget"}
 WRAPPERS = {"nohup", "time", "command", "builtin", "exec", "nice", "caffeinate", "env", "xargs"}
@@ -183,6 +193,23 @@ def _check_words(words: list[str], cwd: Path, depth: int) -> tuple[str, str] | N
     return None
 
 
+def _read_only(command: str) -> bool:
+    """True when every segment is a plain reader with no output redirection."""
+    if re.search(r"(^|[^<>&0-9])>|>>|\btee\b", command):
+        return False
+    try:
+        segs = _segments(command)
+    except ValueError:
+        return False
+    for seg in segs:
+        if not seg or seg[0] in OPERATORS or set(seg[0]) <= set(";&|()"):
+            continue
+        words = _strip(seg)
+        if words and os.path.basename(words[0]) not in READ_ONLY_CMDS:
+            return False
+    return True
+
+
 def check_command(command: str, cwd: Path | None = None, depth: int = 0) -> tuple[str, str] | None:
     cwd = cwd or Path.cwd()
     expanded = command.replace("${HOME}", str(HOME)).replace("$HOME", str(HOME))
@@ -190,6 +217,9 @@ def check_command(command: str, cwd: Path | None = None, depth: int = 0) -> tupl
     for s in SENSITIVE:
         if str(s) in expanded:
             return ("deny", f"Access to {s} is blocked for agents.")
+    for f in OPERATOR_ONLY:
+        if str(f) in expanded and not _read_only(command):
+            return ("deny", f"{f} is operator-only; agents may read it but not change it.")
     # Download piped straight into a shell, process substitution or $( ).
     if re.search(r"\b(curl|wget)\b[^|;&]*\|\s*(sudo\s+)?(\S*/)?(sh|bash|zsh|dash|ksh|python3?|perl|ruby|osascript)\b", command):
         return ("deny", "Piping a download into an interpreter is blocked.")

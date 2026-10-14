@@ -18,6 +18,9 @@ from pathlib import Path
 
 import yaml
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "infra"))
+from lib.human_gate import require_human  # noqa: E402
+
 TRUST_CONFIG = Path.home() / ".aos" / "config" / "trust.yaml"
 TRUST_LOG_DIR = Path.home() / ".aos" / "logs" / "trust"
 
@@ -210,7 +213,10 @@ def review(args):
 
 
 def promote(args):
-    """Apply a trust promotion."""
+    """Apply a trust promotion. Hardened fork: only a person at a terminal
+    can do this (lib/human_gate.py); demotion stays ungated."""
+    target_desc = f"{args.agent}/{args.capability}" if args.capability else args.agent
+    require_human(f"raise trust for {target_desc}" + (f" to level {args.to}" if args.to is not None else ""))
     config = load_config()
     agents = config.get("agents", {})
 

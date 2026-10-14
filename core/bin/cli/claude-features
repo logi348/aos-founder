@@ -21,6 +21,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "infra"))
 from lib import claude_features as cf  # noqa: E402
+from lib.human_gate import require_human  # noqa: E402
 
 
 def show() -> None:
@@ -42,6 +43,10 @@ def main(argv: list[str]) -> int:
         print(__doc__.strip().split("\n\n")[1], file=sys.stderr)
         return 2
     state = cf.load()
+    if argv[1] == "enable":
+        # Turning a feature ON widens what can reach this Mac: a person at a
+        # terminal must confirm. Turning it off is never gated.
+        require_human(f"enable {argv[2]} for every Claude session")
     state[argv[2]] = argv[1] == "enable"
     cf.save(state)
     cf.apply()
