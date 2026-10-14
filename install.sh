@@ -83,11 +83,17 @@ DRY_RUN=false
 [[ "${INSTALL_DRY_RUN:-0}" == "1" ]] && DRY_RUN=true
 CHECKPOINT_FILE="$HOME/.aos/.install-checkpoint"
 
+# Hardened fork: machine-wide always-on power settings are opt-in.
+#   --always-on   never sleep, restart after power loss, Wake on LAN, no
+#                 auto-logout (Mac mini kept on 24/7). Off by default.
+ALWAYS_ON=false
+
 for arg in "$@"; do
     case "$arg" in
         --dry-run)  DRY_RUN=true ;;
         --resume)   ;; # default behavior — checkpoints handle resume
         --clean)    rm -f "$HOME/.aos/.install-checkpoint" 2>/dev/null ;;
+        --always-on) ALWAYS_ON=true ;;
     esac
 done
 
@@ -203,6 +209,25 @@ _spinner_stop() {
         _SPINNER_PID=""
         printf "\r\033[K" >&3
     fi
+}
+
+# ── Admin password, asked for only when a step needs it ──
+# Hardened fork: no up-front `sudo true` and no background keep-alive loop.
+# A step that needs root calls `_need_sudo "<why>"`; the spinner pauses, the
+# reason is shown, and sudo prompts on the terminal (or reuses a still-valid
+# ticket). Returns non-zero if there is no terminal or the password is refused,
+# so callers can print the manual command instead.
+_need_sudo() {
+    local why="${1:-this step}"
+    sudo -n true 2>/dev/null && return 0
+    [[ -t 3 ]] || return 1
+    local had_spinner=false
+    [[ -n "${_SPINNER_PID:-}" ]] && had_spinner=true && _spinner_stop
+    printf "\n  ${BOLD}Admin password needed${RESET} ${MUTED}— %s${RESET}\n" "$why" >&3
+    local rc=0
+    sudo -v -p "  Password for %u: " </dev/tty 2>&3 || rc=$?
+    [[ "$had_spinner" == true ]] && _spinner_start "${_CURRENT_STAGE:-Working}…"
+    return "$rc"
 }
 
 # Restore cursor and clear any live spinner on exit — a stack trace or an
@@ -2158,54 +2183,40 @@ configure_macos() {
         _info "Some preferences may require logout to take full effect"
     fi
 
-    # ── Always-On Configuration ────────────────────────────
-    # Mac Mini should never sleep, auto-restart on power loss, and stay logged in
-    _step "Configuring always-on settings..."
-
-    if sudo -n true 2>/dev/null; then
-        # Prevent sleep (display can sleep, but system stays awake)
-        sudo pmset -a sleep 0 2>/dev/null && _ok "System sleep disabled" || _warn "Could not disable sleep"
-
-        # Prevent disk sleep
-        sudo pmset -a disksleep 0 2>/dev/null
-
-        # Wake on network access (Wake on LAN)
-        sudo pmset -a womp 1 2>/dev/null && _ok "Wake on LAN enabled" || true
-
-        # Auto restart on power failure
-        sudo pmset -a autorestart 1 2>/dev/null && _ok "Auto-restart on power loss" || _warn "Could not set auto-restart"
-
-        # Start up automatically after power failure (hardware level)
-        sudo nvram AutoBoot=%01 2>/dev/null || true
-
-        # Disable screen saver lock (headless machine, no one to unlock)
-        defaults write com.apple.screensaver askForPassword -int 0 2>/dev/null
-        _ok "Screen lock disabled"
-
-        # Disable auto-logout (System Settings > Security > Advanced)
-        sudo defaults write /Library/Preferences/.GlobalPreferences com.apple.autologout.AutoLogOutDelay -int 0 2>/dev/null
-        _ok "Auto-logout disabled"
-
-        # Disable display sleep on AC power (keep it awake for screen sharing)
-        sudo pmset -a displaysleep 0 2>/dev/null
-        _ok "Display sleep disabled"
-
-        # Enable Screen Sharing
-        if nc -z localhost 5900 2>/dev/null; then
-            _skip "Screen Sharing"
+    # ── Always-On Configuration (opt-in: --always-on) ──────
+    # Hardened fork: the screen-lock password is never touched, Screen
+    # Sharing is never switched on by script, and the power settings below
+    # run only when asked for.
+    if [[ "$ALWAYS_ON" == true ]]; then
+        _step "Configuring always-on settings (--always-on)..."
+        if _need_sudo "always-on power settings"; then
+            # Prevent sleep (display can sleep, but system stays awake)
+            sudo pmset -a sleep 0 2>/dev/null && _ok "System sleep disabled" || _warn "Could not disable sleep"
+            sudo pmset -a disksleep 0 2>/dev/null
+            # Wake on network access (Wake on LAN)
+            sudo pmset -a womp 1 2>/dev/null && _ok "Wake on LAN enabled" || true
+            # Auto restart on power failure (+ hardware-level AutoBoot)
+            sudo pmset -a autorestart 1 2>/dev/null && _ok "Auto-restart on power loss" || _warn "Could not set auto-restart"
+            sudo nvram AutoBoot=%01 2>/dev/null || true
+            # Disable auto-logout (System Settings > Privacy & Security > Advanced)
+            sudo defaults write /Library/Preferences/.GlobalPreferences com.apple.autologout.AutoLogOutDelay -int 0 2>/dev/null
+            _ok "Auto-logout disabled"
+            # Marker read by the power_autorestart reconcile check
+            mkdir -p "$USER_DIR/config"
+            echo "# Created by install.sh --always-on. Delete to stop the autorestart reminder." > "$USER_DIR/config/always-on"
         else
-            sudo launchctl load -w /System/Library/LaunchDaemons/com.apple.screensharing.plist 2>/dev/null
-            if nc -z localhost 5900 2>/dev/null; then
-                _ok "Screen Sharing enabled"
-            else
-                _warn "Screen Sharing — enable manually: System Settings > Sharing > Screen Sharing"
-            fi
+            _warn "Always-on settings skipped (no admin password). Run later:"
+            _info "  sudo pmset -a sleep 0 disksleep 0 autorestart 1 womp 1"
         fi
     else
-        _info "Always-on settings require sudo — configure manually:"
-        _info "  sudo pmset -a sleep 0 displaysleep 0 disksleep 0"
-        _info "  sudo pmset -a autorestart 1 womp 1"
+        _info "Always-on power settings not changed (re-run with --always-on to keep this Mac awake 24/7)"
     fi
+
+    # Screen Sharing is left as it is. To use it over Tailscale:
+    _info "Screen Sharing is not enabled automatically. If you want it:"
+    _info "  System Settings > General > Sharing > Screen Sharing: ON,"
+    _info "  'Allow access for: Only these users' = your account."
+    _info "  Connect from another Mac with vnc://<tailscale-ip> (keep it on Tailscale, never port-forward 5900)."
 }
 
 setup_statusline() {
@@ -2688,9 +2699,22 @@ for name, job in (data.get('jobs') or {}).items():
 
     # ── Always-on ─────────────────────────────────────────────
     _step "Always-on configuration"
-    _check "System sleep disabled"    "pmset -g 2>/dev/null | grep -q 'sleep.*0'"
-    _check "Auto-restart on power"    "pmset -g 2>/dev/null | grep -q 'autorestart.*1'"
-    _check "Auto-login configured"    "defaults read /Library/Preferences/com.apple.loginwindow autoLoginUser 2>/dev/null"
+    if [[ "$ALWAYS_ON" == true ]]; then
+        _check "System sleep disabled"    "pmset -g 2>/dev/null | grep -q 'sleep.*0'"
+        _check "Auto-restart on power"    "pmset -g 2>/dev/null | grep -q 'autorestart.*1'"
+    else
+        _info "Power settings unchanged (install was run without --always-on)"
+    fi
+    # Informational only — never required. Automatic login and FileVault are
+    # mutually exclusive: macOS disables auto-login while FileVault is on.
+    if defaults read /Library/Preferences/com.apple.loginwindow autoLoginUser &>/dev/null; then
+        _info "Note: automatic login is ON. FileVault cannot be on at the same time,"
+        _info "      so the disk is not encrypted at rest."
+    else
+        _info "Note: automatic login is off. After a power cut the Mac waits at the"
+        _info "      login (FileVault) screen and AOS services start only once you log in."
+        _info "      That keeps FileVault possible; enabling auto-login would rule it out."
+    fi
 
     # ── Remote access ──────────────────────────────────────────
     _step "Remote access"

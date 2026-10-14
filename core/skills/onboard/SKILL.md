@@ -574,83 +574,64 @@ If yes: `~/aos/core/bin/internal/telemetry opt-in`
 
 `python3 ~/aos/core/engine/work/cli.py start "remote access"`
 
-"This machine is meant to run 24/7 — even when no one's sitting in front of it. We need
-to set up three things: auto-login so it recovers from power outages, SSH so you can reach
-it from other devices, and Tailscale so you can reach it from anywhere in the world."
+"This machine is meant to run unattended, reachable from your other devices.
+Two things matter here: how it comes back after a reboot, and how you reach it
+remotely. I can't change system settings myself (admin commands are blocked
+for agents), so I'll show you where each switch is."
 
-### Auto-Login
+### After a reboot: FileVault vs automatic login
 
-"If the power goes out and the Mac restarts, it needs to log in automatically. Otherwise
-it sits at the login screen and none of your agents or services start. Let me open
-System Settings for you."
+Explain the trade-off plainly; do not push either way, and never suggest
+turning FileVault off:
+
+"macOS gives you one of two things. With **FileVault on** (recommended), the
+disk is encrypted, and after a power cut the Mac waits at the unlock screen —
+AOS starts once you log in. With **automatic login**, it comes back by itself,
+but FileVault has to be off, so anyone with the hardware can read the disk.
+Automatic login is not required for AOS."
 
 AskUserQuestion:
-- question: "Let me open Users & Groups — you'll enable automatic login."
-- options: ["Open it", "I'll do it myself"]
+- question: "Which do you want?"
+- options: ["Keep FileVault (recommended)", "Automatic login — I accept the trade-off", "Decide later"]
 
-If "Open it":
+If they choose automatic login, open the pane and let them do it:
 ```bash
 open "x-apple.systempreferences:com.apple.preferences.users"
 ```
+"Users & Groups → Automatically log in as → your account. macOS will refuse
+while FileVault is on; that's expected."
 
-Walk through:
-1. "Click the info button (i) next to your user account"
-2. "Look for 'Automatically log in as' or check Login Options at the bottom"
-3. "Enable automatic login for your account"
-4. "You'll need to enter your password to confirm"
-5. "Note: if FileVault is on, auto-login won't work — that's a trade-off between
-   security and availability. For a headless machine, auto-login is usually the right call."
+If the operator wants the Mac to stay awake 24/7 and restart after a power
+cut, those are installer options they run themselves:
+`bash ~/aos/install.sh --always-on` (asks for their password).
 
-Verify by asking them to confirm it's enabled.
+### SSH (optional) and Screen Sharing (optional)
 
-### SSH + Screen Sharing
-
-"Two things to enable — SSH for terminal access, and Screen Sharing
-so you can see the desktop remotely."
-
-Try to enable both programmatically:
-
-```bash
-# SSH
-nc -z localhost 22 2>/dev/null && echo "SSH already on" || \
-    sudo -n launchctl load -w /System/Library/LaunchDaemons/ssh.plist 2>/dev/null
-
-# Screen Sharing
-nc -z localhost 5900 2>/dev/null && echo "Screen Sharing already on" || \
-    sudo -n launchctl load -w /System/Library/LaunchDaemons/com.apple.screensharing.plist 2>/dev/null
-
-# Verify
-nc -z localhost 22 && echo "SSH: ON" || echo "SSH: OFF"
-nc -z localhost 5900 && echo "Screen Sharing: ON" || echo "Screen Sharing: OFF"
-```
-
-If both worked: "SSH and Screen Sharing are enabled."
-
-If either failed (no sudo), fall back to System Settings:
-
-"I need you to enable these manually."
+Both are off unless the operator turns them on. Neither is needed for AOS:
+Telegram and `cld` over SSH are the usual ways in.
 
 AskUserQuestion:
-- question: "Let me open System Settings — you'll toggle both on."
-- options: ["Open it", "I'll do it myself"]
+- question: "Do you want to reach this Mac's terminal or screen from your other devices?"
+- options: ["SSH only", "SSH and Screen Sharing", "Neither for now"]
 
-If "Open it": `open "x-apple.systempreferences:com.apple.preferences.sharing"`
+If either: `open "x-apple.systempreferences:com.apple.preferences.sharing"`
 
 Walk through:
-1. "Toggle 'Remote Login' ON"
-2. "Toggle 'Screen Sharing' ON"
-3. "Under both, set 'Allow access for: All users'"
+1. "Toggle 'Remote Login' ON" (SSH)
+2. Only if they chose it: "Toggle 'Screen Sharing' ON"
+3. "Under each, set 'Allow access for: Only these users' and add just your account"
+4. "Only connect over Tailscale (next step). Don't forward ports 22 or 5900 on your router."
 
-Either way, confirm:
+Then confirm:
 ```bash
-echo "SSH: $(whoami)@$(hostname).local"
-echo "Screen Sharing: vnc://$(hostname).local"
+nc -z localhost 22 && echo "SSH: ON" || echo "SSH: off"
+nc -z localhost 5900 && echo "Screen Sharing: ON" || echo "Screen Sharing: off"
 ```
 
 ### Tailscale
 
-"Tailscale gives you a private network. You can SSH into this Mac from
-anywhere — coffee shop, airport, different country. No port forwarding."
+"Tailscale gives you a private network. You can reach this Mac from
+anywhere — no port forwarding."
 
 Check if installed and status:
 ```bash
@@ -662,19 +643,16 @@ If not installed — install via Homebrew (no browser needed):
 brew install tailscale
 ```
 
-Then start and authenticate:
-```bash
-# Start the Tailscale daemon
-sudo -n tailscaled install-system-daemon 2>/dev/null || brew services start tailscale
+Starting the daemon needs admin rights, so the operator runs these two
+commands in their own Terminal window (you can't run sudo):
 
-# Authenticate — this prints a URL for the operator to visit
-sudo -n tailscale up 2>/dev/null || tailscale up
+```
+sudo tailscaled install-system-daemon
+sudo tailscale up
 ```
 
-The `tailscale up` command prints an auth URL. Tell the operator:
-
-"Tailscale printed a link. Open it on your phone or laptop, sign in
-(Google, GitHub, or Apple), and approve this device."
+"`tailscale up` prints a link. Open it on your phone or laptop, sign in, and
+approve this device."
 
 AskUserQuestion:
 - question: "Approved the device?"
@@ -685,8 +663,6 @@ Verify:
 tailscale status
 tailscale ip -4
 ```
-
-If already installed but not connected, just run `tailscale up`.
 
 Once connected, get the IP:
 ```bash
