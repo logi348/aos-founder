@@ -1,14 +1,17 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"html"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -427,19 +430,55 @@ func handleQR(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Return as an HTML page with a rendered QR code using a JS library
-	w.Header().Set("Content-Type", "text/html")
+	// Hardened fork: render the QR on the server. Upstream loaded a QR library
+	// from a CDN with no integrity hash — whoever controlled that script could
+	// read the pairing code and link their own device to this WhatsApp account.
+	var qr bytes.Buffer
+	qrterminal.GenerateHalfBlock(code, qrterminal.L, &qr)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'")
 	fmt.Fprintf(w, `<!DOCTYPE html>
-<html><head><title>WhatsApp QR</title>
-<script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.4/build/qrcode.min.js"></script>
-<style>body{background:#111;display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;margin:0;font-family:sans-serif;color:#fff}
-h2{margin-bottom:20px}canvas{border-radius:12px}</style>
+<html><head><meta charset="utf-8"><title>WhatsApp QR</title>
+<style>body{background:#000;display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;margin:0;font-family:sans-serif;color:#fff}
+pre{font-family:Menlo,monospace;font-size:10px;line-height:1;letter-spacing:0;color:#fff;background:#000;padding:12px}</style>
 </head><body>
 <h2>Scan with WhatsApp</h2>
-<canvas id="qr"></canvas>
+<pre>%s</pre>
 <p style="color:#888;margin-top:16px;font-size:14px">WhatsApp → Settings → Linked Devices → Link a Device</p>
-<script>QRCode.toCanvas(document.getElementById('qr'),%q,{width:400,margin:2,color:{dark:'#000',light:'#fff'}});</script>
-</body></html>`, code)
+</body></html>`, html.EscapeString(qr.String()))
+}
+
+// localOnly guards the HTTP API (hardened fork). It listens on 127.0.0.1
+// only, but a web page open in a browser on this Mac could still reach it:
+// a text/plain POST to /send is a CORS "simple request" and would send a
+// WhatsApp message as the operator. So:
+//   - Host must be 127.0.0.1:<port> or localhost:<port> (DNS rebinding).
+//   - Cross-origin browser requests (Origin header from any other origin)
+//     are refused; the QR page itself is same-origin.
+//   - POST bodies must be application/json, which a page can't send
+//     cross-origin without a preflight that this server never approves.
+func localOnly(port string, next http.Handler) http.Handler {
+	hosts := map[string]bool{"127.0.0.1:" + port: true, "localhost:" + port: true}
+	origins := map[string]bool{"http://127.0.0.1:" + port: true, "http://localhost:" + port: true}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !hosts[strings.ToLower(r.Host)] {
+			http.Error(w, `{"error": "bad host"}`, http.StatusForbidden)
+			return
+		}
+		if o := r.Header.Get("Origin"); o != "" && !origins[strings.ToLower(o)] {
+			http.Error(w, `{"error": "cross-origin requests are not accepted"}`, http.StatusForbidden)
+			return
+		}
+		if r.Method == http.MethodOptions {
+			http.Error(w, `{"error": "no CORS"}`, http.StatusForbidden)
+			return
+		}
+		if r.Method == http.MethodPost && !strings.HasPrefix(strings.ToLower(r.Header.Get("Content-Type")), "application/json") {
+			http.Error(w, `{"error": "Content-Type must be application/json"}`, http.StatusUnsupportedMediaType)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func main() {
@@ -485,7 +524,7 @@ func main() {
 
 	server := &http.Server{
 		Addr:    "127.0.0.1:" + port,
-		Handler: mux,
+		Handler: localOnly(port, mux),
 	}
 
 	go func() {

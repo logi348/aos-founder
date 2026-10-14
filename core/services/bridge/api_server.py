@@ -1,7 +1,9 @@
 """Bridge API — SSE stream + message endpoint for Mission Control.
 
 Runs as a background task inside the bridge's asyncio loop.
-Localhost only, no auth (same security model as dashboard :4096).
+Hardened fork: loopback only, Host-checked, no CORS, browser (Origin)
+requests refused, and every endpoint but GET /health needs the bearer token
+from ~/.aos/services/bridge/api.token (see api_auth.py).
 
 Endpoints:
     GET  /stream   — SSE stream of live conversation events
@@ -119,7 +121,6 @@ async def handle_stream(request):
             "Content-Type": "text/event-stream",
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
-            "Access-Control-Allow-Origin": "*",
         },
     )
     await response.prepare(request)
@@ -236,10 +237,7 @@ async def handle_send(request):
 
 async def handle_history(request):
     """GET /history — return recent events for initial page load."""
-    return web.json_response(
-        list(_event_history),
-        headers={"Access-Control-Allow-Origin": "*"},
-    )
+    return web.json_response(list(_event_history))
 
 
 async def handle_health(request):
@@ -265,7 +263,7 @@ async def handle_health(request):
         "history_size": len(_event_history),
         "last_poll_ts": poll_ts or None,
         "last_poll_age_s": round(poll_age, 1) if poll_age is not None else None,
-    }, headers={"Access-Control-Allow-Origin": "*"})
+    })
 
 
 async def handle_cancel(request):
@@ -273,34 +271,51 @@ async def handle_cancel(request):
     from session_manager import get_persistent_session
     session = get_persistent_session()
     cancelled = await session.cancel()
-    return web.json_response(
-        {"ok": True, "cancelled": cancelled},
-        headers={"Access-Control-Allow-Origin": "*"},
-    )
+    return web.json_response({"ok": True, "cancelled": cancelled})
 
 
-async def handle_options(request):
-    """CORS preflight."""
-    return web.Response(headers={
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type",
-    })
+def _auth_middleware(token: str):
+    from api_auth import check_request
+
+    @web.middleware
+    async def guard(request, handler):
+        refused = check_request(request.method, request.path, request.headers, API_PORT, token)
+        if refused:
+            status, reason = refused
+            logger.warning("Bridge API refused %s %s: %s", request.method, request.path, reason)
+            return web.json_response({"error": reason}, status=status)
+        return await handler(request)
+
+    return guard
 
 
 # ── Server lifecycle ─────────────────────────────────────
 
+# Other modules (e.g. the phone-approval flow) add authenticated routes here
+# before the server starts.
+_extra_routes: list = []
+
+
+def add_route(method: str, path: str, handler) -> None:
+    _extra_routes.append((method, path, handler))
+
+
+def register_extra_routes(app) -> None:
+    for method, path, handler in _extra_routes:
+        app.router.add_route(method, path, handler)
+
+
 
 async def start_api_server():
     """Start the API server as a background task. Call from bridge main."""
-    app = web.Application()
+    from api_auth import load_or_create_token
+    app = web.Application(middlewares=[_auth_middleware(load_or_create_token())])
     app.router.add_get("/stream", handle_stream)
     app.router.add_post("/send", handle_send)
     app.router.add_post("/cancel", handle_cancel)
     app.router.add_get("/history", handle_history)
     app.router.add_get("/health", handle_health)
-    app.router.add_route("OPTIONS", "/send", handle_options)
-    app.router.add_route("OPTIONS", "/cancel", handle_options)
+    register_extra_routes(app)
 
     runner = web.AppRunner(app)
     await runner.setup()
