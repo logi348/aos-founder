@@ -1,0 +1,105 @@
+# AOS Learning Drip — First 7 Days
+#
+# One or two Telegram messages per day teaching the operator
+# about a feature, skill, or concept. Sent at varied times
+# to feel natural, not scheduled.
+#
+# After day 7, the system switches to contextual tips
+# triggered by behavior, not schedule.
+
+days:
+
+  # ── Day 1: Foundations ──────────────────────────────────
+  - day: 1
+    time: evening
+    message: |
+      Quick tip — if Claude's responses feel off or slow, type /clear to start fresh. It clears the conversation (like closing and reopening) but keeps all your files and settings.
+
+      Also: press / to see all available commands. There's a lot in there.
+
+  # ── Day 2: Your vault + voice ───────────────────────────
+  - day: 2
+    time: morning
+    message: |
+      Your knowledge vault is at ~/vault/. Daily notes, session summaries, ideas, research — it all goes there and gets indexed every 30 minutes.
+
+      Open Obsidian to browse it. Or search from Claude Code: "recall what I said about my projects"
+
+      The more you put in, the smarter the system gets.
+
+  - day: 2
+    time: evening
+    message: |
+      SuperWhisper works everywhere on your Mac — not just in Claude Code. Hold the shortcut key in any app and speak.
+
+      And anytime you want to think out loud, just tell Chief "let me ramble" or "brain dump." It organizes your thoughts into tasks, ideas, and notes.
+
+  # ── Day 3: Work system + dashboard ──────────────────────
+  - day: 3
+    time: midday
+    message: |
+      Your work system tracks tasks, projects, and goals. Try these:
+
+        /work add "Research competitors"
+        /work list
+        /work done "competitors"
+
+      Tasks auto-assign to whatever project you're working in. Check your dashboard to see it all: http://localhost:4096
+
+  # ── Day 4: Build things + extract ───────────────────────
+  - day: 4
+    time: midday
+    message: |
+      Two things to try today:
+
+      1. Paste any YouTube or social media link — Chief extracts the transcript and saves it to your vault.
+
+      2. Tell Chief to build something: "build me a landing page for my tutoring business" — it generates real, polished code you can use immediately.
+
+  # ── Day 5: Agents + delegation ──────────────────────────
+  - day: 5
+    time: evening
+    message: |
+      Chief handles most things directly, but can delegate to specialists:
+
+      • Steward — system health ("is the bridge running?")
+      • Advisor — analysis + reviews ("give me my weekly review")
+      • Catalog agents — aos activate engineer, aos activate developer
+
+      Chief decides who handles what. You just ask.
+
+  # ── Day 6: Context, memory, and how it all connects ─────
+  - day: 6
+    time: midday
+    message: |
+      How the system remembers:
+
+      Context window = RAM. Cleared on /clear or new session.
+      Memory files = disk. Persists forever across sessions.
+      Vault = your second brain. Searchable, indexed, permanent.
+
+      When Chief learns something important, it saves to memory automatically. You can also say "remember that I prefer X."
+
+      12 automated jobs run 24/7 behind the scenes — session exports, vault indexing, pattern analysis. Type "aos status" to see them.
+
+  # ── Day 7: Your first review ────────────────────────────
+  - day: 7
+    time: evening
+    message: |
+      One week. Try this:
+
+        "Chief, give me my weekly review"
+
+      Advisor analyzes your sessions, tasks, and vault notes — what got done, what didn't, patterns noticed, and what to focus on next week.
+
+      This runs automatically every Sunday. But the real power is the compounding — next week's review will be smarter than this one because there's more data.
+
+      The system learns. Keep using it. Bismillah.
+
+# After day 7, switch to contextual tips triggered by behavior:
+# - First time they use a new skill → explain it
+# - No ramble in 3 days → gentle nudge
+# - Task overdue → surface it
+# - Long session without /clear → suggest it
+# - Completed 5+ tasks → celebrate momentum
+# These are handled by the bridge, not this config file.

@@ -1,0 +1,606 @@
+#!/usr/bin/env python3
+"""
+Weekly Digest — Rich weekly review with trends, patterns, and actionable focus.
+
+Runs every Sunday at 20:00. Aggregates:
+  - Work data (tasks completed/added/active, goals, drift)
+  - Session data (count, topics, tool usage, projects)
+  - Daily notes (energy, notes count)
+  - Compiled patterns (new this week)
+  - Health data (if available)
+  - Week-over-week trends
+
+Output:
+  - Vault note: ~/vault/log/weeks/weekly-{date}.md
+  - Telegram message: summary with focus items
+  - Previous week comparison for trends
+
+Usage:
+  python3 ~/aos/core/bin/weekly-digest [--no-telegram] [--week YYYY-MM-DD]
+"""
+
+import datetime
+import json
+import os
+import re
+import subprocess
+import sys
+from collections import Counter
+from pathlib import Path
+
+try:
+    import yaml
+except ImportError:
+    print("Error: PyYAML not available. Install with: pip install pyyaml")
+    sys.exit(1)
+
+# ── Config ────────────────────────────────────────────────
+
+NO_TELEGRAM = "--no-telegram" in sys.argv
+VAULT_ROOT = Path.home() / "vault"
+WORK_FILE = Path.home() / ".aos" / "work" / "work.yaml"
+SESSIONS_DIR = VAULT_ROOT / "log" / "sessions"
+DAILY_DIR = VAULT_ROOT / "daily"
+PATTERNS_YAML = Path.home() / ".aos" / "config" / "patterns.yaml"
+REVIEWS_DIR = VAULT_ROOT / "reviews"
+AGENT_SECRET = Path.home() / "aos" / "core" / "bin" / "agent-secret"
+
+# Allow overriding the target week
+OVERRIDE_DATE = None
+for i, arg in enumerate(sys.argv):
+    if arg == "--week" and i + 1 < len(sys.argv):
+        OVERRIDE_DATE = datetime.date.fromisoformat(sys.argv[i + 1])
+
+
+# ── Date Helpers ──────────────────────────────────────────
+
+def week_bounds(ref_date=None):
+    """Return Monday and Sunday of the week containing ref_date."""
+    today = ref_date or datetime.date.today()
+    monday = today - datetime.timedelta(days=today.weekday())
+    sunday = monday + datetime.timedelta(days=6)
+    return monday, sunday
+
+
+def prev_week_bounds(ref_date=None):
+    """Return Monday and Sunday of the previous week."""
+    today = ref_date or datetime.date.today()
+    prev_monday = today - datetime.timedelta(days=today.weekday() + 7)
+    prev_sunday = prev_monday + datetime.timedelta(days=6)
+    return prev_monday, prev_sunday
+
+
+def format_date_range(start, end):
+    m1 = start.strftime("%b")
+    m2 = end.strftime("%b")
+    if m1 == m2:
+        return f"{m1} {start.day}-{end.day}, {end.year}"
+    return f"{m1} {start.day} - {m2} {end.day}, {end.year}"
+
+
+# ── Data Loaders ──────────────────────────────────────────
+
+def load_work():
+    if not WORK_FILE.exists():
+        return {}
+    try:
+        return yaml.safe_load(WORK_FILE.read_text()) or {}
+    except Exception:
+        return {}
+
+
+def analyze_tasks(work, start, end):
+    tasks = work.get("tasks", [])
+    completed, added, active, stalled = [], [], [], []
+
+    for t in tasks:
+        status = t.get("status", "")
+        title = t.get("title", t.get("id", "?"))
+
+        created = _parse_date(t.get("created"))
+        completed_date = _parse_date(t.get("completed"))
+        started_date = _parse_date(t.get("started"))
+
+        if status == "done" and completed_date and start <= completed_date <= end:
+            completed.append(title)
+        if created and start <= created <= end:
+            added.append(title)
+        if status in ("active", "todo"):
+            active.append(t)
+            # Stalled: active for 7+ days with no progress
+            if status == "active" and started_date and (end - started_date).days > 7:
+                stalled.append(title)
+
+    return {
+        "completed": completed,
+        "added": added,
+        "active": active,
+        "active_count": len(active),
+        "stalled": stalled,
+    }
+
+
+def _parse_date(val):
+    if not val:
+        return None
+    try:
+        return datetime.date.fromisoformat(str(val)[:10])
+    except (ValueError, TypeError):
+        return None
+
+
+def scan_sessions(start, end):
+    if not SESSIONS_DIR.exists():
+        return {"count": 0, "topics": [], "projects": Counter(), "tools": Counter(),
+                "total_messages": 0, "total_duration_min": 0, "avg_duration_min": 0}
+
+    count = 0
+    topics = []
+    projects = Counter()
+    tools = Counter()
+    total_messages = 0
+    durations = []
+
+    for f in SESSIONS_DIR.glob("*.md"):
+        # Check date from filename
+        try:
+            fdate = datetime.date.fromisoformat(f.name[:10])
+        except ValueError:
+            continue
+        if not (start <= fdate <= end):
+            continue
+
+        count += 1
+        content = f.read_text()
+
+        # Parse frontmatter
+        if content.startswith("---"):
+            fm_end = content.find("---", 3)
+            if fm_end > 0:
+                try:
+                    fm = yaml.safe_load(content[3:fm_end]) or {}
+                    proj = fm.get("project", "")
+                    if proj:
+                        projects[proj] += 1
+                    msgs = fm.get("message_count", 0)
+                    total_messages += msgs
+                    dur = fm.get("duration_min", 0)
+                    if dur:
+                        durations.append(dur)
+                except Exception:
+                    pass
+
+        # Extract title
+        title_match = re.search(r"^# (.+)$", content, re.MULTILINE)
+        if title_match:
+            title = title_match.group(1).strip()[:60]
+            if title and not title.startswith("<"):
+                topics.append(title)
+
+        # Extract tools
+        tools_match = re.search(r"## Tools Used\n\n(.+)", content)
+        if tools_match:
+            for t in tools_match.group(1).strip().split(","):
+                t = t.strip()
+                if t and t != "(none)":
+                    tools[t] += 1
+
+    return {
+        "count": count,
+        "topics": topics,
+        "projects": projects,
+        "tools": tools,
+        "total_messages": total_messages,
+        "total_duration_min": sum(durations),
+        "avg_duration_min": sum(durations) // max(len(durations), 1),
+    }
+
+
+def scan_daily_notes(start, end):
+    if not DAILY_DIR.exists():
+        return {"days_with_notes": 0, "energy_values": []}
+
+    days_with_notes = 0
+    energy_values = []
+
+    current = start
+    while current <= end:
+        note_path = DAILY_DIR / f"{current.isoformat()}.md"
+        if note_path.exists():
+            days_with_notes += 1
+            try:
+                content = note_path.read_text()
+                if content.startswith("---"):
+                    fm_end = content.find("---", 3)
+                    if fm_end > 0:
+                        for line in content[3:fm_end].splitlines():
+                            if line.startswith("energy:"):
+                                val = line.split(":", 1)[1].strip()
+                                if val and val not in ("", "null", "~"):
+                                    energy_values.append(val)
+            except Exception:
+                pass
+        current += datetime.timedelta(days=1)
+
+    return {"days_with_notes": days_with_notes, "energy_values": energy_values}
+
+
+def scan_health_data(start, end):
+    """Load health metrics from HealthSync JSON files for the week."""
+    health_dir = Path.home() / ".aos" / "data" / "health"
+    if not health_dir.exists():
+        return None
+
+    sleep_hours = []
+    steps = []
+    resting_hr = []
+    days_with_data = 0
+
+    current = start
+    while current <= end:
+        data_file = health_dir / f"{current.isoformat()}.json"
+        if data_file.exists():
+            try:
+                data = json.loads(data_file.read_text())
+                days_with_data += 1
+
+                # Sleep (HealthKit stores in hours or minutes depending on source)
+                sleep = data.get("sleep", {})
+                duration = sleep.get("duration_hours") or sleep.get("duration")
+                if duration:
+                    val = float(duration)
+                    # Normalize to hours (if > 24, it's probably minutes)
+                    if val > 24:
+                        val = val / 60
+                    sleep_hours.append(val)
+
+                # Steps
+                step_count = data.get("activity", {}).get("steps") or data.get("steps")
+                if step_count:
+                    steps.append(int(step_count))
+
+                # Resting heart rate
+                hr = data.get("vitals", {}).get("resting_heart_rate") or data.get("resting_hr")
+                if hr:
+                    resting_hr.append(float(hr))
+
+            except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+                pass
+
+        current += datetime.timedelta(days=1)
+
+    if days_with_data == 0:
+        return None
+
+    result = {"days_with_data": days_with_data}
+
+    if sleep_hours:
+        result["sleep_avg"] = round(sum(sleep_hours) / len(sleep_hours), 1)
+        result["sleep_min"] = round(min(sleep_hours), 1)
+        result["sleep_max"] = round(max(sleep_hours), 1)
+    if steps:
+        result["steps_avg"] = int(sum(steps) / len(steps))
+        result["steps_total"] = sum(steps)
+    if resting_hr:
+        result["resting_hr_avg"] = round(sum(resting_hr) / len(resting_hr), 0)
+
+    return result
+
+
+def count_new_patterns(start, end):
+    """Count patterns compiled this week."""
+    if not PATTERNS_YAML.exists():
+        return 0
+    try:
+        data = yaml.safe_load(PATTERNS_YAML.read_text()) or {}
+        count = 0
+        for p in data.get("patterns", []):
+            pdate = _parse_date(p.get("compiled_date"))
+            if pdate and start <= pdate <= end:
+                count += 1
+        return count
+    except Exception:
+        return 0
+
+
+def load_prev_review(prev_sunday):
+    """Load previous week's review for trend comparison."""
+    path = REVIEWS_DIR / f"weekly-{prev_sunday.isoformat()}.md"
+    if not path.exists():
+        return None
+    try:
+        content = path.read_text()
+        if content.startswith("---"):
+            fm_end = content.find("---", 3)
+            if fm_end > 0:
+                return yaml.safe_load(content[3:fm_end]) or {}
+    except Exception:
+        pass
+    return None
+
+
+def compute_metrics(work, start, end):
+    """Compute flow metrics and drift."""
+    try:
+        sys.path.insert(0, str(Path.home() / "aos" / "core" / "engine" / "work"))
+        import metrics as work_metrics
+        tasks = work.get("tasks", [])
+        goals = work.get("goals", [])
+        flow = work_metrics.compute_period_metrics(tasks, start, end)
+        drift = work_metrics.compute_drift(goals, tasks)
+        return flow, drift
+    except Exception:
+        return {}, {}
+
+
+# ── Trend Arrows ──────────────────────────────────────────
+
+def trend(current, previous, higher_is_better=True):
+    """Return a trend arrow comparing current to previous."""
+    if previous is None:
+        return ""
+    if current > previous:
+        return " +" if higher_is_better else " +"
+    elif current < previous:
+        return " -" if not higher_is_better else " -"
+    return " ="
+
+
+# ── Report Generation ────────────────────────────────────
+
+def generate_report(
+    date_range, start, end,
+    task_data, sessions, daily, patterns_count,
+    flow_metrics, drift, prev_review, health_data=None
+):
+    """Generate the full weekly review markdown."""
+    now = datetime.datetime.now()
+
+    # Previous week stats for trends
+    prev_completed = None
+    prev_sessions = None
+    if prev_review:
+        prev_completed = prev_review.get("tasks_completed")
+        prev_sessions = prev_review.get("session_count")
+
+    # Completed task list
+    if task_data["completed"]:
+        completed_lines = "\n".join(f"  - {t}" for t in task_data["completed"])
+    else:
+        completed_lines = "  - (none)"
+
+    # Stalled tasks
+    stalled_lines = ""
+    if task_data["stalled"]:
+        stalled_lines = "\n### Stalled\n\n" + "\n".join(f"  - {t}" for t in task_data["stalled"])
+
+    # Project breakdown
+    project_lines = ""
+    if sessions["projects"]:
+        project_lines = "\n### By Project\n\n"
+        for proj, count in sessions["projects"].most_common(5):
+            project_lines += f"  - **{proj}**: {count} sessions\n"
+
+    # Top tools
+    tool_lines = ""
+    if sessions["tools"]:
+        top = sessions["tools"].most_common(8)
+        tool_lines = "\n### Top Tools\n\n"
+        for tool, count in top:
+            tool_lines += f"  - {tool}: {count}x\n"
+
+    # Energy
+    energy_str = "no data"
+    if daily["energy_values"]:
+        try:
+            nums = [float(v) for v in daily["energy_values"]]
+            avg = sum(nums) / len(nums)
+            energy_str = f"avg {avg:.1f}/10 over {len(nums)} days"
+        except (ValueError, TypeError):
+            energy_str = ", ".join(daily["energy_values"])
+
+    # Flow metrics
+    metrics_section = ""
+    if flow_metrics:
+        cycle = flow_metrics.get("cycle_time_avg_days")
+        lead = flow_metrics.get("lead_time_avg_days")
+        metrics_section = f"""
+## Flow
+
+| Metric | Value |
+|--------|-------|
+| Throughput | {flow_metrics.get('throughput', 0)} tasks |
+| Cycle time | {f'{cycle}d' if cycle else 'n/a'} |
+| Lead time | {f'{lead}d' if lead else 'n/a'} |
+| WIP | {flow_metrics.get('wip_current', 0)} active |
+"""
+
+    # Drift
+    drift_section = ""
+    if drift and drift.get("has_drift_data"):
+        status = "Aligned" if drift.get("aligned") else "Drifting"
+        drift_section = f"\n## Drift\n\n**Status**: {status} (max drift: {drift.get('max_drift', '?')})\n\n"
+        for g in drift.get("goals", []):
+            intended = int(g["intended_weight"] * 100)
+            actual = int(g["actual_share"] * 100)
+            drift_section += f"  - {g['goal_title']}: intended {intended}%, actual {actual}% ({g['direction']})\n"
+
+    # Focus suggestions (the actionable part)
+    focus_items = []
+    if task_data["stalled"]:
+        focus_items.append(f"Unstall **{task_data['stalled'][0]}** — it's been active 7+ days")
+    if daily["days_with_notes"] < 3:
+        focus_items.append("Write daily notes more consistently (only {}/7 this week)".format(daily["days_with_notes"]))
+    if sessions["count"] > 0 and sessions["total_messages"] / sessions["count"] > 30:
+        focus_items.append("Sessions are long (avg {} messages) — consider breaking into smaller tasks".format(
+            sessions["total_messages"] // sessions["count"]))
+    if len(task_data["added"]) > len(task_data["completed"]) * 2:
+        focus_items.append("Adding tasks faster than completing — triage the backlog")
+    if not focus_items:
+        focus_items.append("Momentum is good — keep going")
+
+    focus_section = "## Focus for Next Week\n\n"
+    for item in focus_items[:3]:
+        focus_section += f"  - {item}\n"
+
+    # Patterns
+    patterns_line = ""
+    if patterns_count > 0:
+        patterns_line = f"\n**New patterns compiled**: {patterns_count}\n"
+
+    # Health data
+    health_section = ""
+    if health_data:
+        health_section = "\n## Health\n\n"
+        health_section += f"  - Data: {health_data['days_with_data']}/7 days tracked\n"
+        if "sleep_avg" in health_data:
+            health_section += f"  - Sleep: avg {health_data['sleep_avg']}h (range {health_data['sleep_min']}-{health_data['sleep_max']}h)\n"
+        if "steps_avg" in health_data:
+            health_section += f"  - Steps: avg {health_data['steps_avg']:,}/day ({health_data['steps_total']:,} total)\n"
+        if "resting_hr_avg" in health_data:
+            health_section += f"  - Resting HR: avg {int(health_data['resting_hr_avg'])} bpm\n"
+
+    content = f"""---
+type: weekly-review
+week_start: "{start.isoformat()}"
+week_end: "{end.isoformat()}"
+generated: "{now.isoformat(timespec='seconds')}"
+tasks_completed: {len(task_data['completed'])}
+tasks_added: {len(task_data['added'])}
+session_count: {sessions['count']}
+---
+
+# Weekly Review — {date_range}
+
+## Work
+
+| | This Week |{f' Last Week |' if prev_completed is not None else ''}
+|---|---|{'----|' if prev_completed is not None else ''}
+| Completed | {len(task_data['completed'])}{trend(len(task_data['completed']), prev_completed)} |{f' {prev_completed} |' if prev_completed is not None else ''}
+| Added | {len(task_data['added'])} |{f' |' if prev_completed is not None else ''}
+| Active | {task_data['active_count']} |{f' |' if prev_completed is not None else ''}
+
+### Completed
+
+{completed_lines}
+{stalled_lines}
+{metrics_section}
+## Sessions
+
+| | Value |
+|---|---|
+| Total | {sessions['count']}{trend(sessions['count'], prev_sessions)} |
+| Messages | {sessions['total_messages']} |
+| Time | {sessions['total_duration_min']}min (~{sessions['avg_duration_min']}min avg) |
+{project_lines}
+{tool_lines}
+## Daily Notes
+
+  - Days with notes: {daily['days_with_notes']}/7
+  - Energy: {energy_str}
+{patterns_line}
+{health_section}
+{drift_section}
+{focus_section}
+"""
+
+    return content
+
+
+# ── Telegram ──────────────────────────────────────────────
+
+def send_telegram(task_data, sessions, daily, focus_items, date_range):
+    """Send a concise Telegram summary."""
+    if NO_TELEGRAM:
+        return
+
+    try:
+        lines = [
+            f"Weekly Review — {date_range}",
+            "",
+            f"Tasks: {len(task_data['completed'])} done, {len(task_data['added'])} added, {task_data['active_count']} active",
+            f"Sessions: {sessions['count']} ({sessions['total_duration_min']}min)",
+            f"Daily notes: {daily['days_with_notes']}/7",
+            "",
+            "Focus:",
+        ]
+        for item in focus_items[:3]:
+            lines.append(f"  {item}")
+
+        msg = "\n".join(lines)
+
+        # Topic-routed delivery (daily topic; falls back General -> DM)
+        result = subprocess.run(
+            [str(Path.home() / "aos" / "core" / "bin" / "cli" / "aos-notify"),
+             msg, "--topic", "daily", "--plain"],
+            capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode == 0:
+            print("Telegram summary sent")
+        else:
+            print(f"Telegram send skipped: {result.stderr.strip()[:200]}")
+    except Exception as e:
+        print(f"Telegram send failed: {e}")
+
+
+# ── Main ──────────────────────────────────────────────────
+
+def main():
+    print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] weekly-digest starting")
+
+    start, end = week_bounds(OVERRIDE_DATE)
+    prev_start, prev_end = prev_week_bounds(OVERRIDE_DATE)
+    date_range = format_date_range(start, end)
+
+    work = load_work()
+    task_data = analyze_tasks(work, start, end)
+    sessions = scan_sessions(start, end)
+    if sessions["count"] == 0:
+        print(
+            f"WARNING: 0 sessions found for {date_range} in {SESSIONS_DIR} "
+            "— review may be incomplete (check that sessions are exporting)",
+            file=sys.stderr,
+        )
+    daily = scan_daily_notes(start, end)
+    patterns_count = count_new_patterns(start, end)
+    health_data = scan_health_data(start, end)
+    flow_metrics, drift = compute_metrics(work, start, end)
+    prev_review = load_prev_review(prev_end)
+
+    # Generate report
+    content = generate_report(
+        date_range, start, end,
+        task_data, sessions, daily, patterns_count,
+        flow_metrics, drift, prev_review, health_data
+    )
+
+    # Write to vault
+    REVIEWS_DIR.mkdir(parents=True, exist_ok=True)
+    output_path = REVIEWS_DIR / f"weekly-{end.isoformat()}.md"
+    output_path.write_text(content)
+
+    print(f"Review written: {output_path}")
+    print(f"  Tasks: {len(task_data['completed'])} completed, {len(task_data['added'])} added, {task_data['active_count']} active")
+    print(f"  Sessions: {sessions['count']}, Duration: {sessions['total_duration_min']}min")
+    print(f"  Daily notes: {daily['days_with_notes']}/7")
+    if task_data["stalled"]:
+        print(f"  Stalled: {', '.join(task_data['stalled'][:3])}")
+
+    # Build focus items for Telegram
+    focus_items = []
+    if task_data["stalled"]:
+        focus_items.append(f"Unstall: {task_data['stalled'][0]}")
+    if daily["days_with_notes"] < 3:
+        focus_items.append(f"Daily notes: {daily['days_with_notes']}/7")
+    if len(task_data["added"]) > len(task_data["completed"]) * 2:
+        focus_items.append("More tasks added than completed")
+    if not focus_items:
+        focus_items.append("Good momentum — keep going")
+
+    send_telegram(task_data, sessions, daily, focus_items, date_range)
+
+    print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] weekly-digest done")
+
+
+if __name__ == "__main__":
+    main()

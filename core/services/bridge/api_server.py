@@ -1,0 +1,310 @@
+"""Bridge API — SSE stream + message endpoint for Mission Control.
+
+Runs as a background task inside the bridge's asyncio loop.
+Localhost only, no auth (same security model as dashboard :4096).
+
+Endpoints:
+    GET  /stream   — SSE stream of live conversation events
+    POST /send     — send a message to the persistent session
+    GET  /history  — recent conversation events for initial load
+    GET  /health   — alive check
+"""
+
+import asyncio
+import html
+import json
+import logging
+import time
+from collections import deque
+
+from aiohttp import web
+
+logger = logging.getLogger("aos.bridge.api")
+
+# Ring buffer of recent events for /history (last 200 events)
+_event_history: deque[dict] = deque(maxlen=200)
+
+# Active SSE subscribers
+_subscribers: list[asyncio.Queue] = []
+
+API_PORT = 4098
+
+
+def _serialize_event(event) -> dict:
+    """Convert a StreamEvent to a JSON-serializable dict."""
+    from session_manager import (
+        RateLimit,
+        SessionInit,
+        SessionResult,
+        TextComplete,
+        TextDelta,
+        ToolResult,
+        ToolStart,
+    )
+
+    base = {"ts": time.time()}
+
+    if isinstance(event, TextDelta):
+        return {**base, "type": "text_delta", "text": event.text}
+    elif isinstance(event, TextComplete):
+        return {**base, "type": "text_complete", "text": event.text}
+    elif isinstance(event, ToolStart):
+        return {**base, "type": "tool_start", "tool_id": event.tool_id,
+                "name": event.name, "preview": event.input_preview}
+    elif isinstance(event, ToolResult):
+        return {**base, "type": "tool_result", "tool_id": event.tool_id,
+                "is_error": event.is_error, "preview": event.preview}
+    elif isinstance(event, SessionInit):
+        return {**base, "type": "session_init", "session_id": event.session_id,
+                "model": event.model}
+    elif isinstance(event, RateLimit):
+        return {**base, "type": "rate_limit", "status": event.status,
+                "resets_at": event.resets_at}
+    elif isinstance(event, SessionResult):
+        return {**base, "type": "result", "session_id": event.session_id,
+                "text": event.text, "is_error": event.is_error,
+                "duration_ms": event.duration_ms, "cost_usd": event.cost_usd,
+                "input_tokens": event.input_tokens,
+                "output_tokens": event.output_tokens,
+                "num_turns": event.num_turns}
+    else:
+        return {**base, "type": "unknown", "data": str(event)}
+
+
+def publish_event(event):
+    """Called by the renderer/session manager to broadcast an event.
+
+    This is the hook point — call this for every event that flows through
+    the bridge so Mission Control sees it in real-time.
+    """
+    serialized = _serialize_event(event)
+    _event_history.append(serialized)
+
+    # Push to all SSE subscribers
+    dead = []
+    for q in _subscribers:
+        try:
+            q.put_nowait(serialized)
+        except asyncio.QueueFull:
+            dead.append(q)
+    for q in dead:
+        _subscribers.remove(q)
+
+
+def publish_user_message(text: str, source: str = "telegram"):
+    """Record a user message in the event stream."""
+    msg = {
+        "ts": time.time(),
+        "type": "user_message",
+        "text": text,
+        "source": source,
+    }
+    _event_history.append(msg)
+    for q in _subscribers:
+        try:
+            q.put_nowait(msg)
+        except asyncio.QueueFull:
+            pass
+
+
+# ── Handlers ─────────────────────────────────────────────
+
+
+async def handle_stream(request):
+    """SSE endpoint — streams live events to Mission Control."""
+    response = web.StreamResponse(
+        status=200,
+        reason="OK",
+        headers={
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "Access-Control-Allow-Origin": "*",
+        },
+    )
+    await response.prepare(request)
+
+    q: asyncio.Queue = asyncio.Queue(maxsize=100)
+    _subscribers.append(q)
+    logger.info(f"SSE client connected ({len(_subscribers)} total)")
+
+    try:
+        while True:
+            event = await q.get()
+            data = json.dumps(event)
+            await response.write(f"data: {data}\n\n".encode())
+    except (asyncio.CancelledError, ConnectionResetError):
+        pass
+    finally:
+        if q in _subscribers:
+            _subscribers.remove(q)
+        logger.info(f"SSE client disconnected ({len(_subscribers)} total)")
+
+    return response
+
+
+_telegram_bot = None
+_telegram_chat_id = None
+_telegram_thread_id = None
+
+
+def set_telegram_bot(bot, chat_id: int, thread_id: int | None = None):
+    """Called by telegram_channel to register the bot for MC→Telegram forwarding.
+
+    chat_id is the forum group when one is configured (with thread_id for the
+    daily topic), otherwise the operator DM.
+    """
+    global _telegram_bot, _telegram_chat_id, _telegram_thread_id
+    _telegram_bot = bot
+    _telegram_chat_id = chat_id
+    _telegram_thread_id = thread_id
+
+
+async def _forward_to_telegram(user_text: str, response_text: str):
+    """Forward a Mission Control exchange to Telegram so both sides see it."""
+    if not _telegram_bot or not _telegram_chat_id:
+        return
+    try:
+        # Send the user's message as a quote + the response
+        import re
+        # Clean HTML tags for Telegram
+        clean = re.sub(r"<[^>]+>", "", response_text)
+        # user_text is escaped: it is operator input, but an unescaped "<" or
+        # "&" breaks Telegram's HTML parse and drops the message. `clean` has
+        # already had its tags stripped by the regex above.
+        msg = (f"<i>[from Mission Control]</i>\n"
+               f"<b>You:</b> {html.escape(str(user_text), quote=False)}\n\n{clean}")
+        if len(msg) > 4096:
+            msg = msg[:4090] + "..."
+        kwargs = {"chat_id": _telegram_chat_id, "text": msg, "parse_mode": "HTML"}
+        if _telegram_thread_id:
+            kwargs["message_thread_id"] = _telegram_thread_id
+        await _telegram_bot.send_message(**kwargs)
+    except Exception as e:
+        logger.warning(f"Failed to forward to Telegram: {e}")
+
+
+async def handle_send(request):
+    """POST /send — send a message to the persistent session."""
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON"}, status=400)
+
+    text = body.get("text", "").strip()
+    if not text:
+        return web.json_response({"error": "empty message"}, status=400)
+
+    source = body.get("source", "mission-control")
+
+    # Record the user message
+    publish_user_message(text, source=source)
+
+    # Send to persistent session
+    from session_manager import get_persistent_session
+    session = get_persistent_session()
+
+    if not session.alive:
+        await session.start()
+
+    # Collect events and publish them as they arrive
+    result_event = None
+    response_text = ""
+    async for event in session.send(text):
+        publish_event(event)
+        from session_manager import SessionResult, TextComplete
+        if isinstance(event, TextComplete):
+            response_text = event.text
+        if isinstance(event, SessionResult):
+            result_event = event
+            response_text = response_text or event.text
+
+    # Forward to Telegram so both interfaces see the conversation
+    if result_event and response_text:
+        await _forward_to_telegram(text, response_text)
+
+    if result_event:
+        return web.json_response({
+            "ok": True,
+            "text": result_event.text,
+            "duration_ms": result_event.duration_ms,
+            "cost_usd": result_event.cost_usd,
+        })
+    else:
+        return web.json_response({"ok": True, "text": "(no result)"})
+
+
+async def handle_history(request):
+    """GET /history — return recent events for initial page load."""
+    return web.json_response(
+        list(_event_history),
+        headers={"Access-Control-Allow-Origin": "*"},
+    )
+
+
+async def handle_health(request):
+    """GET /health — alive check.
+
+    Includes the Telegram poll-liveness heartbeat (last successful getUpdates
+    and its age in seconds) so the poll loop can be monitored independently of
+    process liveness — a wedged loop keeps the process up but stops advancing
+    last_poll_ts.
+    """
+    from session_manager import get_persistent_session
+    session = get_persistent_session()
+
+    from poll_heartbeat import last_poll_age, last_poll_ts
+    poll_ts = last_poll_ts()
+    poll_age = last_poll_age()
+
+    return web.json_response({
+        "ok": True,
+        "persistent_session": session.alive,
+        "session_id": (session.session_id or "")[:16],
+        "subscribers": len(_subscribers),
+        "history_size": len(_event_history),
+        "last_poll_ts": poll_ts or None,
+        "last_poll_age_s": round(poll_age, 1) if poll_age is not None else None,
+    }, headers={"Access-Control-Allow-Origin": "*"})
+
+
+async def handle_cancel(request):
+    """POST /cancel — stop current generation."""
+    from session_manager import get_persistent_session
+    session = get_persistent_session()
+    cancelled = await session.cancel()
+    return web.json_response(
+        {"ok": True, "cancelled": cancelled},
+        headers={"Access-Control-Allow-Origin": "*"},
+    )
+
+
+async def handle_options(request):
+    """CORS preflight."""
+    return web.Response(headers={
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type",
+    })
+
+
+# ── Server lifecycle ─────────────────────────────────────
+
+
+async def start_api_server():
+    """Start the API server as a background task. Call from bridge main."""
+    app = web.Application()
+    app.router.add_get("/stream", handle_stream)
+    app.router.add_post("/send", handle_send)
+    app.router.add_post("/cancel", handle_cancel)
+    app.router.add_get("/history", handle_history)
+    app.router.add_get("/health", handle_health)
+    app.router.add_route("OPTIONS", "/send", handle_options)
+    app.router.add_route("OPTIONS", "/cancel", handle_options)
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", API_PORT)
+    await site.start()
+    logger.info(f"Bridge API started on http://127.0.0.1:{API_PORT}")
+    return runner

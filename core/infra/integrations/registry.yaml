@@ -1,0 +1,299 @@
+# AOS Integration Registry
+# Each integration has a directory in core/integrations/ with a manifest.yaml
+# Activated during onboarding or later via 'aos integrate <name>'
+#
+# Tiers:
+#   1. auto    — Apple native apps, already on macOS. Just need permission grant.
+#   2. builtin — Ship with AOS, have setup scripts. Core to the system.
+#   3. catalog — Common SaaS tools. Templates provided, operator activates.
+#   4. custom  — Anything else. Operator names it, Sahib helps configure.
+#
+# Setup interface (all setup.sh scripts follow this):
+#   setup.sh              — interactive setup (prompts for input)
+#   setup.sh --check      — health check only (no prompts, exit 0/1)
+#   setup.sh --configure  — non-interactive (reads from env/args)
+#
+# An entry with a manifest but no setup.sh is not automatically a gap: if it
+# carries setup_hint and no `setup:` key, that's a deliberate manual-setup
+# integration (ship-check skips it). A `setup:` key must point to a real path —
+# ship-check warns if it doesn't.
+
+# ─── Tier 1: Apple Native ─────────────────────────────────
+# Already on the Mac. Access via AppleScript, EventKit, or file system.
+# Setup = permission acknowledgment + optional config.
+
+apple_native:
+
+  calendar:
+    name: Calendar
+    tier: 1
+    category: productivity
+    status: available
+    description: Read and create events, schedule awareness, conflict detection.
+    access: applescript
+    provides: [event reading, event creation, schedule awareness]
+    requires: [calendar permission]
+    # Shadowed on this machine by google_suite (gws CLI) — see ~/.aos/config/integrations.yaml.
+    setup_hint: "Manual: macOS grants Calendar permission on first EventKit access, no setup script needed."
+
+  notes:
+    name: Notes
+    tier: 1
+    category: knowledge
+    status: available
+    description: Read and create Apple Notes. Quick capture from agents.
+    access: applescript
+    provides: [note reading, note creation, search]
+    requires: [notes permission]
+
+  reminders:
+    name: Reminders
+    tier: 1
+    category: productivity
+    status: available
+    description: Create and manage reminders and lists.
+    access: applescript
+    provides: [reminder creation, list management, due dates]
+    requires: [reminders permission]
+
+  messages:
+    name: Messages (iMessage)
+    tier: 1
+    category: communication
+    status: available
+    description: Send and read iMessages. Already working via AppleScript.
+    access: applescript
+    provides: [send message, read recent, contact lookup]
+    requires: [messages permission]
+
+  mail:
+    name: Mail
+    tier: 1
+    category: communication
+    status: available
+    description: Read and compose email via Apple Mail app.
+    access: applescript
+    provides: [inbox reading, email composing, search]
+    requires: [mail permission, accounts configured in Mail.app]
+
+  voice_memos:
+    name: Voice Memos
+    tier: 1
+    category: input
+    status: available
+    description: Access voice recordings for transcription and capture.
+    access: filesystem
+    provides: [recording access, transcription input]
+    requires: [voice memos sync path]
+
+  contacts:
+    name: Contacts
+    tier: 1
+    category: data
+    status: available
+    description: Look up contact info. Already working via contacts_reader.py.
+    access: script
+    provides: [contact lookup, phone/email resolution]
+    requires: []
+
+# ─── Tier 2: Built-in ─────────────────────────────────────
+# Ship with AOS. Have setup scripts and manifests.
+# Core integrations that most operators will use.
+
+builtin:
+
+  telegram:
+    name: Telegram
+    tier: 2
+    category: communication
+    status: available
+    priority: high
+    description: Primary command interface. Talk to agents from your phone.
+    provides: [messaging, slash commands, heartbeat alerts]
+    requires: [bot_token, chat_id]
+    setup: core/infra/integrations/telegram/setup.sh
+
+  whatsapp:
+    name: WhatsApp
+    tier: 2
+    category: communication
+    status: available
+    priority: medium
+    description: Read and send WhatsApp messages via whatsmeow bridge.
+    provides: [messaging, contact lookup, message history]
+    requires: [whatsmeow service, QR pairing]
+    setup: core/infra/integrations/whatsapp/setup.sh
+
+  email:
+    name: Email Accounts
+    tier: 2
+    category: communication
+    status: available
+    priority: medium
+    description: IMAP/SMTP email. Supports multiple accounts.
+    provides: [inbox reading, email sending, auto-reply]
+    requires: [credentials per account]
+    setup: core/infra/integrations/email/setup.sh
+
+  obsidian:
+    name: Obsidian Vault
+    tier: 2
+    category: knowledge
+    status: available
+    priority: high
+    description: Knowledge vault with daily notes, sessions, QMD search.
+    provides: [note storage, daily notes, search, backlinks]
+    requires: [vault_path]
+    setup: core/infra/integrations/obsidian/setup.sh
+
+  github:
+    name: GitHub
+    tier: 2
+    category: development
+    status: available
+    priority: medium
+    description: Repos, PRs, issues via gh CLI.
+    provides: [repo management, PR workflow, issue tracking]
+    requires: [gh auth]
+    setup: core/infra/integrations/github/setup.sh
+
+  health:
+    name: HealthKit Sync
+    tier: 2
+    category: personal
+    status: available
+    priority: low
+    description: Health metrics from iOS via HealthSync app.
+    provides: [sleep data, activity metrics, energy tracking]
+    requires: [HealthSync iOS app, sync endpoint]
+    setup_hint: "Manual: install HealthSync on iPhone, point it at this Mac's sync endpoint. No setup script ships — see manifest.yaml for steps."
+
+# ─── Tier 3: Catalog ──────────────────────────────────────
+# Common SaaS tools. We provide config templates.
+# Operator picks what they use, Sahib helps connect.
+
+catalog:
+
+  notion:
+    name: Notion
+    tier: 3
+    category: productivity
+    status: available
+    description: Pages, databases, and blocks via Notion API or MCP plugin.
+    access: api
+    provides: [page CRUD, database queries, block editing]
+    requires: [api_token or MCP plugin]
+    setup_hint: "Enable Notion plugin in Claude Code, or provide API token"
+
+  linear:
+    name: Linear
+    tier: 3
+    category: project_management
+    status: available
+    description: Issue tracking and project management.
+    access: api
+    provides: [issue CRUD, project views, cycle tracking]
+    requires: [api_key]
+    setup_hint: "Get API key from Linear Settings > API"
+
+  slack:
+    name: Slack
+    tier: 3
+    category: communication
+    status: available
+    description: Workspace messaging, channels, and threads.
+    access: api
+    provides: [messaging, channel management, file sharing]
+    requires: [bot_token, workspace]
+    setup_hint: "Create Slack app at api.slack.com, get Bot User OAuth Token"
+
+  discord:
+    name: Discord
+    tier: 3
+    category: communication
+    status: available
+    description: Server messaging and management via bot.
+    access: api
+    provides: [messaging, channel management]
+    requires: [bot_token, server_id]
+    setup_hint: "Create bot at discord.com/developers, get token"
+
+  google_suite:
+    name: Google Workspace
+    tier: 2
+    category: productivity
+    status: active
+    description: Gmail, Calendar, Docs, Sheets, Slides, Drive, Forms, Tasks, Contacts, Chat, Apps Script via gws CLI.
+    access: cli
+    binary: gws
+    wrapper: core/bin/internal/gws-account
+    provides: [email, calendar, docs, sheets, slides, drive, forms, tasks, contacts, chat, apps_script]
+    requires: [OAuth credentials in Keychain]
+    setup_hint: "brew install googleworkspace-cli. Credentials in Keychain (GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET, GOOGLE_PRIMARY_EMAIL). Multi-account wrapper at core/bin/internal/gws-account."
+
+  google_workspace:
+    name: Google Workspace (manifest)
+    tier: 3
+    category: productivity
+    status: available
+    # Directory is core/infra/integrations/google-workspace/; shadowed on this
+    # machine by google_suite (gws CLI, the integration actually configured).
+    description: Manifest-only entry for the google-workspace MCP server. No standalone setup — activated via google_suite (gws CLI).
+    access: mcp
+    provides: [email, calendar, drive, docs, sheets, slides, forms, tasks, contacts, chat, apps_script]
+    requires: [MCP plugin, or use google_suite via gws CLI instead]
+    setup_hint: "Manual: no setup script ships; see core/infra/integrations/google-workspace/manifest.yaml for MCP setup steps."
+
+  clickup:
+    name: ClickUp
+    tier: 3
+    category: project_management
+    status: available
+    description: Task and project management.
+    access: api
+    provides: [task CRUD, list management, time tracking]
+    requires: [api_key]
+    setup_hint: "Get API key from ClickUp Settings > Apps"
+
+  todoist:
+    name: Todoist
+    tier: 3
+    category: productivity
+    status: available
+    description: Personal task management.
+    access: api
+    provides: [task CRUD, project management, labels]
+    requires: [api_token]
+    setup_hint: "Get token from todoist.com/app/settings/integrations/developer"
+
+  plane:
+    name: Plane
+    tier: 3
+    category: project_management
+    status: available
+    description: Self-hosted project management (open source).
+    access: api
+    provides: [issue CRUD, project views, cycles]
+    requires: [instance URL, api_token]
+    setup_hint: "Self-hosted on :8880 or provide instance URL"
+
+  superwhisper:
+    name: SuperWhisper
+    tier: 3
+    category: input
+    status: available
+    description: Voice-to-text transcription for quick captures.
+    access: app
+    provides: [voice input, transcription]
+    requires: [app installed, hotkey configured]
+    setup_hint: "Install SuperWhisper, configure hotkey in System Settings"
+
+# ─── Tier 4: Custom ───────────────────────────────────────
+# Not predefined. Operator says "I also use X" and Sahib
+# helps configure it. Stored in ~/.aos/config/custom_integrations.yaml
+#
+# Custom integrations follow one of these patterns:
+#   - API: operator provides base URL + API key
+#   - MCP: operator points to an MCP server
+#   - Web: operator gives a URL, Chrome MCP handles it
+#   - App: native/electron app, AppleScript or Chrome MCP handles it

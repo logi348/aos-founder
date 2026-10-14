@@ -1,0 +1,37 @@
+#!/bin/bash
+# vault-maintenance — Nightly lint pass over the vault.
+#
+# Runs the maintenance pipeline:
+#   1. Refreshes vault_inventory
+#   2. Detects orphans + stale docs (heuristic)
+#   3. Refreshes topic orientations (Sonnet)
+#   4. Drafts synthesis suggestions (Sonnet)
+#   5. Writes daily report to ~/vault/log/YYYY-MM-DD-maintenance.md
+#
+# Invoked nightly by cron, wrapped through cron-wrap for telemetry.
+set -e
+
+LINT_PYTHON="$HOME/.aos/services/crawler/.venv/bin/python"
+AOS_ROOT="$HOME/aos"
+
+if [ ! -x "$LINT_PYTHON" ]; then
+    echo "[vault-maintenance] crawler venv python not found: $LINT_PYTHON" >&2
+    exit 1
+fi
+
+if [ ! -d "$AOS_ROOT/core/engine/intelligence/lint" ]; then
+    echo "[vault-maintenance] lint package not found at $AOS_ROOT" >&2
+    exit 1
+fi
+
+cd "$AOS_ROOT/core"
+# --skip-llm (aos#240.5, cron audit 2026-09-13): the two Sonnet steps (topic-
+# orientation refresh, synthesis drafts) call core.engine.execution.router.
+# ExecutionRouter, which has never existed anywhere in this tree (`git log`
+# on core/engine/execution/ is empty — it was written against, never built).
+# Every nightly run hit this as one guaranteed "No module named 'core'"
+# error with 0 tokens ever spent, before any network call. The deterministic
+# lint (orphans + stale detection) is real and unaffected by this flag.
+# Drop --skip-llm here once ExecutionRouter (or an equivalent) actually
+# exists.
+exec "$LINT_PYTHON" -m engine.intelligence.lint.runner --skip-llm "$@"

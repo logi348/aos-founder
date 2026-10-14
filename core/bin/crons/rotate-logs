@@ -1,0 +1,93 @@
+#!/bin/bash
+# rotate-logs — rotate .log files in ~/.aos/logs/
+# Keeps 5 rotated copies, rotates at 10MB, compresses with gzip.
+# Also rotates cron job logs in ~/.aos/logs/crons/
+# Usage: rotate-logs [--force]  (--force ignores size threshold)
+
+set -euo pipefail
+
+LOG_DIRS=(
+    "$HOME/.aos/logs"
+    "$HOME/.aos/logs/crons"
+)
+
+# JSONL log directories — rotate files older than 90 days
+JSONL_DIRS=(
+    "$HOME/.aos/logs/trust"
+)
+
+MAX_SIZE=$((10 * 1024 * 1024))  # 10MB in bytes
+KEEP=5
+FORCE=false
+
+[[ "${1:-}" == "--force" ]] && FORCE=true
+
+rotate_file() {
+    local f="$1"
+    local base
+    base="$(basename "$f")"
+
+    echo "Rotating: $base"
+
+    # Delete oldest if it exists
+    rm -f "${f}.${KEEP}.gz"
+
+    # Shift numbered copies up: 4→5, 3→4, ..., 1→2
+    for ((i = KEEP - 1; i >= 1; i--)); do
+        local next=$((i + 1))
+        [[ -f "${f}.${i}.gz" ]] && mv "${f}.${i}.gz" "${f}.${next}.gz"
+    done
+
+    # Current → .1, then compress
+    cp "$f" "${f}.1"
+    gzip -f "${f}.1"
+
+    # Truncate the original (preserves file descriptor for services writing to it)
+    : > "$f"
+
+    echo "  Done. $(du -h "${f}.1.gz" | cut -f1) compressed"
+}
+
+count=0
+for log_dir in "${LOG_DIRS[@]}"; do
+    [[ -d "$log_dir" ]] || continue
+
+    for logfile in "$log_dir"/*.log; do
+        [[ -f "$logfile" ]] || continue
+
+        size=$(stat -f%z "$logfile" 2>/dev/null || stat --printf="%s" "$logfile" 2>/dev/null || echo 0)
+
+        if $FORCE || [[ "$size" -gt "$MAX_SIZE" ]]; then
+            rotate_file "$logfile"
+            ((count++)) || true
+        fi
+    done
+done
+
+# Rotate old JSONL daily logs (compress files older than 90 days)
+jsonl_count=0
+for jsonl_dir in "${JSONL_DIRS[@]}"; do
+    [[ -d "$jsonl_dir" ]] || continue
+    for jsonl_file in "$jsonl_dir"/*.jsonl; do
+        [[ -f "$jsonl_file" ]] || continue
+        # Extract date from filename (YYYY-MM-DD.jsonl)
+        fname=$(basename "$jsonl_file" .jsonl)
+        # Check if file is older than 90 days
+        file_epoch=$(date -j -f "%Y-%m-%d" "$fname" "+%s" 2>/dev/null || echo 0)
+        now_epoch=$(date "+%s")
+        age_days=$(( (now_epoch - file_epoch) / 86400 ))
+        if [[ "$age_days" -gt 90 ]]; then
+            gzip -f "$jsonl_file"
+            ((jsonl_count++)) || true
+        fi
+    done
+done
+
+if [[ "$count" -eq 0 ]] && [[ "$jsonl_count" -eq 0 ]]; then
+    echo "No logs need rotation."
+else
+    [[ "$count" -gt 0 ]] && echo "Rotated $count log file(s)."
+    [[ "$jsonl_count" -gt 0 ]] && echo "Compressed $jsonl_count old trust log(s)."
+fi
+
+exit 0

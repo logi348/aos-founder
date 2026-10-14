@@ -1,0 +1,80 @@
+#!/bin/bash
+# pre-push-guard — the last door before origin (aos#192).
+#
+# Installed into .git/hooks/pre-push of the dev workspace by the
+# push_guard reconcile check. Blocks the failure classes that hit main
+# on 2026-07-21: personal-data leaks (ungated sibling push), oversized
+# binaries (28MB whatsmeow-new), and stale-tree clobbers that delete
+# shipped migrations/tests (the envoy revert). Override for a genuinely
+# intended push: FORCE_GUARD=1 git push ...
+#
+# stdin: <local ref> <local sha> <remote ref> <remote sha> per line.
+
+# Always resolve Python through the AOS resolver — a python3 on PATH can be
+# present, correctly versioned, and unusable (Homebrew 3.14's pyexpat).
+AOS_PY="${AOS_PY:-$HOME/aos/core/bin/internal/aos-python}"
+set -u
+[ "${FORCE_GUARD:-0}" = "1" ] && exit 0
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+fail() { echo "✋ pre-push-guard: $1" >&2; echo "   (override: FORCE_GUARD=1 git push)" >&2; exit 1; }
+
+while read -r _local_ref local_sha _remote_ref remote_sha; do
+    [ "$local_sha" = "0000000000000000000000000000000000000000" ] && continue  # deletion
+
+    # A ref that lands on a commit the remote already carries adds no content:
+    # every object is already on the server, and already passed this guard on
+    # the way to main. `aos promote` is exactly this — it moves the `stable`
+    # tag onto a commit that IS origin/main. But the range below is computed
+    # against the ref's OLD value (July's tag), so the months of real history
+    # in between read as deleted migrations/tests and the push is refused as a
+    # stale-tree clobber. That trains the operator to reflex-override the one
+    # hook standing between a bad tree and main, which is worse than the false
+    # positive itself. A tag onto unpushed local work still has no containing
+    # remote branch, so it stays fully checked.
+    if git branch -r --contains "$local_sha" 2>/dev/null | grep -q .; then
+        continue
+    fi
+
+    if [ "$remote_sha" = "0000000000000000000000000000000000000000" ]; then
+        # A ref the remote has never seen (new branch, or a new tag). The
+        # intent was "check the tip commit only", but `git diff <sha>` diffs
+        # the WORKING TREE against that commit — which is empty immediately
+        # after committing, so all three checks below silently found nothing
+        # and every new ref sailed straight through. Diff from the last commit
+        # the remote already carries instead, so a new ref is checked on
+        # exactly what it introduces.
+        oldest_new=$(git rev-list "$local_sha" --not --remotes 2>/dev/null | tail -1)
+        if [ -n "$oldest_new" ] && git rev-parse -q --verify "${oldest_new}^{commit}" >/dev/null 2>&1 \
+           && git rev-parse -q --verify "${oldest_new}^" >/dev/null 2>&1; then
+            range="${oldest_new}^..$local_sha"
+        else
+            # Root commit: diff against the empty tree so the checks still see
+            # every file the push introduces.
+            range="4b825dc642cb6eb9a060e54bf8d69288fbee4904..$local_sha"
+        fi
+    else
+        range="$remote_sha..$local_sha"
+    fi
+
+    # 1. Shipped-artifact deletion (stale-tree clobber signature)
+    deleted=$(git diff --diff-filter=D --name-only "$range" 2>/dev/null \
+        | grep -E "^core/infra/migrations/[0-9]+_.*\.py$|^tests/.*\.py$" | head -5)
+    [ -n "$deleted" ] && fail "push DELETES shipped migrations/tests — stale-tree clobber? $(echo "$deleted" | tr '\n' ' ')"
+
+    # 2. Oversized binaries
+    big=$(git diff --diff-filter=AM --name-only "$range" 2>/dev/null | while read -r f; do
+        sz=$(git cat-file -s "$local_sha:$f" 2>/dev/null || echo 0)
+        [ "$sz" -gt 5242880 ] && echo "$f ($((sz / 1048576))MB)"
+    done | head -3)
+    [ -n "$big" ] && fail "push adds files >5MB: $big"
+
+    # 3. Personal data (the same scanner ship-check runs)
+    if [ -x "$REPO_ROOT/core/bin/cli/privacy-scan" ]; then
+        if ! "$AOS_PY" "$REPO_ROOT/core/bin/cli/privacy-scan" "$range" >/dev/null 2>&1; then
+            "$AOS_PY" "$REPO_ROOT/core/bin/cli/privacy-scan" "$range" 2>&1 | tail -8 >&2
+            fail "privacy-scan found personal data in the push range"
+        fi
+    fi
+done
+exit 0

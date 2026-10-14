@@ -1,0 +1,590 @@
+#!/usr/bin/env bash
+# release-manager — immutable versioned releases for AOS
+#
+# Architecture:
+#   Git clone lives at ONE of (checked in order):
+#     1. ~/project/aos/   (dev machines with AOS-X)
+#     2. ~/.aos/repo/     (release installs, created during conversion)
+#   ~/aos-releases/       Versioned release directories (read-only)
+#   ~/aos                 Symlink → ~/aos-releases/<active version>/
+#
+# Each release is an immutable snapshot extracted from origin/main.
+# Releases are chmod a-w after creation. The symlink switch is atomic.
+#
+# Usage:
+#   release-manager create [ref]        Create release from a ref (default origin/main)
+#   release-manager activate <ver> [h]  Switch ~/aos to a release (record hash h if given)
+#   release-manager rollback            Switch to the previous release
+#   release-manager list                Show all releases
+#   release-manager prune [keep]        Keep last N releases (default 5)
+#   release-manager current             Show active release version
+#   release-manager convert             Convert git-clone ~/aos/ to release system
+
+
+# Always resolve Python through the AOS resolver — a python3 on PATH can be
+# present, correctly versioned, and unusable (Homebrew 3.14's pyexpat).
+AOS_PY="${AOS_PY:-$HOME/aos/core/bin/internal/aos-python}"
+set -euo pipefail
+
+RELEASES_DIR="$HOME/aos-releases"
+AOS_LINK="$HOME/aos"
+STATE_DIR="$HOME/.aos/data"
+LOCK_FILE="$STATE_DIR/deploy.lock"
+HASH_FILE="$STATE_DIR/deployed-hash"
+PREV_FILE="$STATE_DIR/previous-release"
+
+# Find the repo — prefer ~/project/aos/ (dev), fall back to ~/.aos/repo/ (release)
+_find_repo() {
+    if [ -d "$HOME/project/aos/.git" ]; then
+        echo "$HOME/project/aos"
+    elif [ -d "$HOME/.aos/repo/.git" ]; then
+        echo "$HOME/.aos/repo"
+    else
+        echo ""
+    fi
+}
+
+DEV_REPO="$(_find_repo)"
+
+mkdir -p "$RELEASES_DIR" "$STATE_DIR"
+
+log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
+
+# ── Symlink swap ────────────────────────────────────────────────────────────
+#
+# Point ~/aos at a release directory. ~/aos is always a symlink in the release
+# system, and release dirs are read-only (chmod a-w).
+#
+# The naive `mv -f tmp ~/aos` is WRONG on macOS/BSD: when the destination is a
+# symlink to a directory, BSD `mv` follows it and moves the source INTO that
+# (read-only) directory → "Permission denied", so activation never switches.
+# GNU `mv -T` replaces atomically without following; BSD `mv` has no -T. So we
+# try `mv -fT` first (atomic on Linux) and fall back to `ln -sfn`, which
+# replaces the symlink in place — the same approach convert() already uses.
+_swap_link() {
+    local target_dir="$1"
+    local tmp_link="${AOS_LINK}.new.$$"
+    ln -sfn "$target_dir" "$tmp_link"
+    if mv -fT "$tmp_link" "$AOS_LINK" 2>/dev/null; then
+        return 0
+    fi
+    # BSD/macOS: -T unsupported. Clean up and replace the symlink directly.
+    rm -f "$tmp_link"
+    ln -sfn "$target_dir" "$AOS_LINK"
+}
+
+# ── Lock management ────────────────────────────────────────────────────────
+
+acquire_lock() {
+    if [ -f "$LOCK_FILE" ]; then
+        local pid
+        pid=$(cat "$LOCK_FILE" 2>/dev/null || echo "")
+        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+            log "ERROR: Deploy already in progress (PID $pid)"
+            exit 1
+        fi
+        log "WARN: Stale lock from PID $pid — removing"
+        rm -f "$LOCK_FILE"
+    fi
+    echo $$ > "$LOCK_FILE"
+}
+
+release_lock() {
+    rm -f "$LOCK_FILE"
+}
+
+trap release_lock EXIT
+
+# ── Frontend builds ────────────────────────────────────────────────────────
+# `git archive` extracts only tracked files — gitignored build artifacts
+# (screen/dist) never land in a release. Any vite frontend the runtime serves
+# as static files from dist/ must be built INTO the release before it is
+# frozen read-only. Frontends are DISCOVERED, not hardcoded: every tracked
+# package.json (outside node_modules) whose "build" script invokes vite.
+#
+# node_modules strategy: reuse the dev repo's installed modules for the same
+# package path via a temporary symlink (fast path, dev machines). If absent,
+# `npm ci` into the release copy (release installs). Either way node_modules is
+# removed after the build — releases ship dist/ only.
+#
+# Failures are non-fatal (backend runs without UI — graceful skip per the
+# component-lifecycle rule) but logged loudly, and activate() warns when a
+# frontend has no dist.
+
+build_frontends() {
+    local dir="$1"   # extracted release tree (still writable)
+
+    if ! command -v npm >/dev/null 2>&1; then
+        log "WARN: npm not found — skipping frontend builds (release UIs will be absent)"
+        return 0
+    fi
+
+    local pkg pkgdir rel devmods linked
+    while IFS= read -r pkg; do
+        # Only vite-built static frontends; Next.js etc. need their own server
+        grep -q '"build"[^,]*vite build' "$pkg" || continue
+        pkgdir=$(dirname "$pkg")
+        rel="${pkgdir#"$dir"/}"
+        log "Building frontend: $rel ..."
+
+        linked=0
+        devmods="$DEV_REPO/$rel/node_modules"
+        if [ -n "$DEV_REPO" ] && [ -d "$devmods" ]; then
+            ln -s "$devmods" "$pkgdir/node_modules"
+            linked=1
+        elif ! (cd "$pkgdir" && npm ci --silent --no-audit --no-fund >/dev/null 2>&1); then
+            log "WARN: npm ci failed for $rel — skipping build (UI will be absent)"
+            continue
+        fi
+
+        # Prefer the package's build script; fall back to plain vite build so
+        # tsc type errors can't block a release (dev live-deploy also runs
+        # vite directly).
+        if ! (cd "$pkgdir" && npm run build --silent >/dev/null 2>&1); then
+            log "WARN: npm run build failed for $rel — retrying with vite only"
+            (cd "$pkgdir" && ./node_modules/.bin/vite build --logLevel error >/dev/null 2>&1) || true
+        fi
+
+        # Releases ship dist/ only — drop node_modules (symlink or installed)
+        if [ "$linked" = 1 ]; then
+            rm -f "$pkgdir/node_modules"
+        else
+            rm -rf "$pkgdir/node_modules"
+        fi
+
+        if [ -f "$pkgdir/dist/index.html" ]; then
+            log "  ✓ $rel/dist built ($(du -sh "$pkgdir/dist" | cut -f1))"
+        else
+            log "WARN: $rel build produced no dist/index.html — UI will be absent"
+        fi
+    done < <(find "$dir/core" "$dir/apps" -name package.json -not -path "*/node_modules/*" 2>/dev/null)
+}
+
+# ── Create a new release ───────────────────────────────────────────────────
+
+create() {
+    # Build from an arbitrary ref (default origin/main). The channel system
+    # passes the stable tag for stable-channel machines; edge passes main.
+    local ref="${1:-origin/main}"
+
+    if [ ! -d "$DEV_REPO/.git" ]; then
+        log "ERROR: Dev repo not found at $DEV_REPO"
+        exit 1
+    fi
+
+    log "Fetching origin/main (+ stable tag)..."
+    cd "$DEV_REPO"
+    git fetch origin main --quiet 2>/dev/null || {
+        log "ERROR: git fetch failed (network?)"
+        exit 1
+    }
+    # The stable tag moves on promotion — keep the local copy current.
+    git fetch origin "+refs/tags/stable:refs/tags/stable" --quiet 2>/dev/null || true
+
+    local remote_hash
+    remote_hash=$(git rev-parse "$ref" 2>/dev/null)
+    if [ -z "$remote_hash" ]; then
+        log "ERROR: could not resolve ref '$ref'"
+        exit 1
+    fi
+
+    # Check if already deployed
+    local deployed_hash
+    deployed_hash=$(cat "$HASH_FILE" 2>/dev/null || echo "none")
+    if [ "$remote_hash" = "$deployed_hash" ]; then
+        log "Already at $remote_hash — no new release needed"
+        return 0
+    fi
+
+    # Determine version from VERSION file at the target ref
+    local version
+    version=$(git show "$remote_hash:VERSION" 2>/dev/null || echo "unknown")
+    local release_name
+    release_name="${version}-$(echo "$remote_hash" | head -c 7)"
+    local release_dir="$RELEASES_DIR/$release_name"
+
+    if [ -d "$release_dir" ]; then
+        log "Release $release_name already exists"
+        echo "$release_name"
+        return 0
+    fi
+
+    log "Creating release $release_name from $ref..."
+    acquire_lock
+
+    # Extract the target commit into a new release directory
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    cd "$DEV_REPO"
+    git archive "$remote_hash" | tar -xf - -C "$tmpdir"
+
+    # Build frontends into the release before it is frozen read-only.
+    # git archive ships only tracked files — screen/dist is gitignored, so
+    # without this step every release serves a UI-less backend (v0.6.16 bug).
+    build_frontends "$tmpdir"
+
+    # Move to releases dir
+    mv "$tmpdir" "$release_dir"
+
+    # Make read-only
+    chmod -R a-w "$release_dir"
+
+    log "Release $release_name created ($(du -sh "$release_dir" | cut -f1))"
+    echo "$release_name"
+}
+
+# ── Activate a release ─────────────────────────────────────────────────────
+
+activate() {
+    local target="${1:-}"
+    # Optional explicit commit hash to record as deployed. The channel system
+    # passes the exact channel target so deployed-hash reflects the stable tag
+    # commit, not origin/main. Falls back to origin/main when omitted.
+    local explicit_hash="${2:-}"
+    if [ -z "$target" ]; then
+        log "ERROR: No version specified"
+        echo "Usage: release-manager activate <version> [hash]"
+        exit 1
+    fi
+
+    local release_dir="$RELEASES_DIR/$target"
+    if [ ! -d "$release_dir" ]; then
+        log "ERROR: Release $target not found"
+        exit 1
+    fi
+
+    # Run self-test against the NEW release before switching
+    log "Validating release $target..."
+    local test_errors=0
+
+    # Minimal validation — can Python scripts parse? Do critical files exist?
+    if [ ! -f "$release_dir/VERSION" ]; then
+        log "ERROR: Release missing VERSION file"
+        test_errors=1
+    fi
+    if [ ! -f "$release_dir/core/bin/cli/aos" ]; then
+        log "ERROR: Release missing aos CLI"
+        test_errors=1
+    fi
+    if [ ! -d "$release_dir/core" ]; then
+        log "ERROR: Release missing core/"
+        test_errors=1
+    fi
+
+    # Frontend dist presence — warn only (backend runs, UI would be absent)
+    local fe_pkg
+    while IFS= read -r fe_pkg; do
+        if grep -q '"build"[^,]*vite build' "$fe_pkg" && [ ! -f "$(dirname "$fe_pkg")/dist/index.html" ]; then
+            log "WARN: ${fe_pkg#"$release_dir"/} frontend has no built dist/ — UI will be absent"
+        fi
+    done < <(find "$release_dir/core" "$release_dir/apps" -name package.json -not -path "*/node_modules/*" 2>/dev/null)
+
+    # Check Python scripts parse in the new release
+    local parse_fail=0
+    for script in "$release_dir"/core/bin/cli/* "$release_dir"/core/bin/crons/* "$release_dir"/core/bin/internal/*; do
+        [ -f "$script" ] || continue
+        if head -1 "$script" 2>/dev/null | grep -q python; then
+            # Parse-check in memory. py_compile would try to write a .pyc into
+            # the release dir, which is read-only (chmod a-w) → false failures.
+            if ! "$AOS_PY" -c "compile(open('$script','rb').read(), '$script', 'exec')" 2>/dev/null; then
+                log "WARN: Script $(basename "$script") fails to parse"
+                ((parse_fail++))
+            fi
+        fi
+    done
+    if [ "$parse_fail" -gt 0 ]; then
+        log "WARN: $parse_fail Python script(s) have parse errors"
+    fi
+
+    if [ "$test_errors" -gt 0 ]; then
+        log "ERROR: Validation failed — not activating $target"
+        release_lock
+        return 1
+    fi
+
+    # Record the current release for rollback
+    if [ -L "$AOS_LINK" ]; then
+        local current
+        current=$(basename "$(readlink "$AOS_LINK")")
+        echo "$current" > "$PREV_FILE"
+    fi
+
+    # Switch ~/aos → new release (handles macOS symlink-to-dir correctly)
+    _swap_link "$release_dir"
+
+    # Record deployed hash. Its mtime doubles as this release's deploy time,
+    # which `aos promote` reads as the promotion soak clock.
+    local version_hash="$explicit_hash"
+    if [ -z "$version_hash" ]; then
+        cd "$DEV_REPO"
+        version_hash=$(git rev-parse origin/main 2>/dev/null || echo "unknown")
+    fi
+    echo "$version_hash" > "$HASH_FILE"
+
+    log "Activated: $target"
+    log "  ~/aos → $release_dir"
+}
+
+# ── Rollback ───────────────────────────────────────────────────────────────
+
+rollback() {
+    if [ ! -f "$PREV_FILE" ]; then
+        log "ERROR: No previous release recorded — cannot rollback"
+        exit 1
+    fi
+
+    local prev
+    prev=$(cat "$PREV_FILE")
+    local prev_dir="$RELEASES_DIR/$prev"
+
+    if [ ! -d "$prev_dir" ]; then
+        log "ERROR: Previous release $prev no longer exists"
+        exit 1
+    fi
+
+    log "Rolling back to $prev..."
+
+    # Record current as the new "previous" (so you can roll forward)
+    if [ -L "$AOS_LINK" ]; then
+        local current
+        current=$(basename "$(readlink "$AOS_LINK")")
+        echo "$current" > "$PREV_FILE"
+    fi
+
+    # Switch ~/aos → previous release (handles macOS symlink-to-dir correctly)
+    _swap_link "$prev_dir"
+
+    log "Rolled back: ~/aos → $prev_dir"
+}
+
+# ── List releases ──────────────────────────────────────────────────────────
+
+list_releases() {
+    local current_target=""
+    if [ -L "$AOS_LINK" ]; then
+        current_target=$(basename "$(readlink "$AOS_LINK")")
+    fi
+
+    echo "Releases:"
+    for dir in "$RELEASES_DIR"/*/; do
+        [ -d "$dir" ] || continue
+        local name
+        name=$(basename "$dir")
+        local size
+        size=$(du -sh "$dir" 2>/dev/null | cut -f1)
+        local created
+        created=$(stat -f "%Sm" -t "%Y-%m-%d %H:%M" "$dir" 2>/dev/null || stat --format="%y" "$dir" 2>/dev/null | cut -d' ' -f1,2 | cut -d'.' -f1)
+
+        if [ "$name" = "$current_target" ]; then
+            echo "  → $name  ($size, $created)  [ACTIVE]"
+        else
+            echo "    $name  ($size, $created)"
+        fi
+    done
+}
+
+# ── Prune old releases ─────────────────────────────────────────────────────
+
+prune() {
+    local keep="${1:-5}"
+    local current_target=""
+    if [ -L "$AOS_LINK" ]; then
+        current_target=$(basename "$(readlink "$AOS_LINK")")
+    fi
+    local prev_target=""
+    if [ -f "$PREV_FILE" ]; then
+        prev_target=$(cat "$PREV_FILE")
+    fi
+
+    # Sort releases by creation time, oldest first
+    local releases=()
+    while IFS= read -r dir; do
+        [ -d "$dir" ] || continue
+        releases+=("$(basename "$dir")")
+    done < <(ls -dt "$RELEASES_DIR"/*/ 2>/dev/null | tail -r)
+
+    local total=${#releases[@]}
+    if [ "$total" -le "$keep" ]; then
+        log "Only $total release(s), keeping all (threshold: $keep)"
+        return 0
+    fi
+
+    local to_prune=$((total - keep))
+    local pruned=0
+    for name in "${releases[@]}"; do
+        [ "$pruned" -ge "$to_prune" ] && break
+        # Never prune active or previous
+        [ "$name" = "$current_target" ] && continue
+        [ "$name" = "$prev_target" ] && continue
+
+        log "Pruning $name..."
+        chmod -R u+w "$RELEASES_DIR/$name" 2>/dev/null || true
+        rm -rf "${RELEASES_DIR:?}/$name"
+        ((pruned++))
+    done
+
+    log "Pruned $pruned release(s), $((total - pruned)) remaining"
+}
+
+# ── Current release ────────────────────────────────────────────────────────
+
+current() {
+    if [ -L "$AOS_LINK" ]; then
+        local target
+        target=$(readlink "$AOS_LINK")
+        echo "$(basename "$target")"
+    else
+        echo "NOT A SYMLINK — ~/aos is a direct directory"
+        exit 1
+    fi
+}
+
+# ── Convert from git clone to release system ──────────────────────────────
+#
+# Safe one-time migration. Moves ~/aos/ (git clone) to ~/.aos/repo/ or
+# preserves ~/project/aos/ if it exists. Creates first release from current
+# state. Replaces ~/aos/ with a symlink. Full backup at ~/aos-backup/.
+#
+# If any step fails, the backup is restored automatically.
+
+convert() {
+    log "Converting to release system..."
+
+    # Already converted?
+    if [ -L "$AOS_LINK" ]; then
+        log "Already converted — ~/aos is a symlink"
+        return 0
+    fi
+
+    # Must be a git clone
+    if [ ! -d "$AOS_LINK/.git" ]; then
+        log "ERROR: ~/aos exists but is not a git clone — cannot convert"
+        exit 1
+    fi
+
+    acquire_lock
+
+    # Step 1: Ensure we're on latest main
+    log "Step 1/6: Pulling latest code..."
+    cd "$AOS_LINK"
+    git checkout -- . 2>/dev/null || true
+    git pull --ff-only origin main 2>/dev/null || {
+        log "ERROR: git pull failed — aborting conversion"
+        release_lock
+        exit 1
+    }
+
+    local current_hash
+    current_hash=$(git rev-parse HEAD 2>/dev/null)
+    local version
+    version=$(cat "$AOS_LINK/VERSION" 2>/dev/null || echo "unknown")
+    local release_name
+    release_name="${version}-$(echo "$current_hash" | head -c 7)"
+
+    # Step 2: Determine where the git clone should live
+    log "Step 2/6: Setting up git repo location..."
+    local repo_dest
+    if [ -d "$HOME/project/aos/.git" ]; then
+        repo_dest="$HOME/project/aos"
+        log "  Dev workspace exists at $repo_dest — will use it"
+        # Make sure dev repo has latest main
+        cd "$repo_dest"
+        git fetch origin main --quiet 2>/dev/null || true
+    else
+        repo_dest="$HOME/.aos/repo"
+        log "  Release install — will move clone to $repo_dest"
+    fi
+
+    # Step 3: Create backup
+    log "Step 3/6: Backing up ~/aos/ → ~/aos-backup/..."
+    if [ -d "$HOME/aos-backup" ]; then
+        log "  Previous backup exists — removing it"
+        rm -rf "$HOME/aos-backup"
+    fi
+    cp -a "$AOS_LINK" "$HOME/aos-backup"
+
+    # Step 4: Create first release from current state
+    log "Step 4/6: Creating release $release_name..."
+    mkdir -p "$RELEASES_DIR"
+    local release_dir="$RELEASES_DIR/$release_name"
+
+    cd "$AOS_LINK"
+    git archive HEAD | tar -xf - -C "$(mktemp -d)"  # test archive works
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    git archive HEAD | tar -xf - -C "$tmpdir"
+    build_frontends "$tmpdir"
+    mv "$tmpdir" "$release_dir"
+    chmod -R a-w "$release_dir"
+
+    # Step 5: Move git clone to its permanent home (if needed)
+    log "Step 5/6: Moving git clone..."
+    if [ "$repo_dest" = "$HOME/.aos/repo" ]; then
+        mkdir -p "$(dirname "$repo_dest")"
+        # Move the actual git clone (~/aos/) to ~/.aos/repo/
+        mv "$AOS_LINK" "$repo_dest"
+    else
+        # Dev workspace already exists — just remove the old git clone
+        rm -rf "$AOS_LINK"
+    fi
+
+    # Step 6: Create symlink
+    log "Step 6/6: Creating symlink..."
+    ln -sfn "$release_dir" "$AOS_LINK"
+
+    # Record state
+    echo "$current_hash" > "$HASH_FILE"
+
+    # Update DEV_REPO for any subsequent commands in this session
+    DEV_REPO="$repo_dest"
+
+    # Verify
+    if [ ! -L "$AOS_LINK" ]; then
+        log "ERROR: Symlink creation failed — restoring backup"
+        rm -f "$AOS_LINK" 2>/dev/null
+        mv "$HOME/aos-backup" "$AOS_LINK"
+        release_lock
+        exit 1
+    fi
+
+    if [ ! -f "$AOS_LINK/VERSION" ]; then
+        log "ERROR: Symlink doesn't resolve to valid release — restoring backup"
+        rm -f "$AOS_LINK"
+        mv "$HOME/aos-backup" "$AOS_LINK"
+        release_lock
+        exit 1
+    fi
+
+    log ""
+    log "Conversion complete!"
+    log "  ~/aos → $release_dir"
+    log "  Git clone: $repo_dest"
+    log "  Backup: ~/aos-backup/ (safe to delete after verification)"
+    log ""
+    log "Run 'aos self-test' to verify, then 'rm -rf ~/aos-backup' when satisfied."
+}
+
+# ── Main ───────────────────────────────────────────────────────────────────
+
+case "${1:-help}" in
+    create)   create "${2:-}" ;;
+    activate) activate "${2:-}" "${3:-}" ;;
+    rollback) rollback ;;
+    list)     list_releases ;;
+    prune)    prune "${2:-5}" ;;
+    current)  current ;;
+    convert)  convert ;;
+    *)
+        echo "Usage: release-manager <command>"
+        echo ""
+        echo "Commands:"
+        echo "  create [ref]        Create release from a ref (default origin/main)"
+        echo "  activate <ver> [h]  Switch ~/aos to a release (record hash h if given)"
+        echo "  rollback            Switch to previous release"
+        echo "  list                Show all releases"
+        echo "  prune [N]           Keep last N releases (default 5)"
+        echo "  current             Show active release"
+        echo "  convert             Convert git-clone ~/aos/ to release system"
+        exit 1
+        ;;
+esac

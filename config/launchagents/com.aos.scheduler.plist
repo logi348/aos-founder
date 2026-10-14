@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.aos.scheduler</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__HOME__/aos/core/bin/internal/aos-python</string>
+        <string>__HOME__/aos/core/bin/internal/scheduler</string>
+    </array>
+
+    <!-- Every 5 minutes via StartCalendarInterval (survives sleep/wake) -->
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict><key>Minute</key><integer>0</integer></dict>
+        <dict><key>Minute</key><integer>5</integer></dict>
+        <dict><key>Minute</key><integer>10</integer></dict>
+        <dict><key>Minute</key><integer>15</integer></dict>
+        <dict><key>Minute</key><integer>20</integer></dict>
+        <dict><key>Minute</key><integer>25</integer></dict>
+        <dict><key>Minute</key><integer>30</integer></dict>
+        <dict><key>Minute</key><integer>35</integer></dict>
+        <dict><key>Minute</key><integer>40</integer></dict>
+        <dict><key>Minute</key><integer>45</integer></dict>
+        <dict><key>Minute</key><integer>50</integer></dict>
+        <dict><key>Minute</key><integer>55</integer></dict>
+    </array>
+
+    <!-- Low priority — don't compete with user activity -->
+    <key>ProcessType</key>
+    <string>Background</string>
+
+    <key>StandardOutPath</key>
+    <string>__HOME__/.aos/logs/crons/scheduler.log</string>
+    <key>StandardErrorPath</key>
+    <string>__HOME__/.aos/logs/crons/scheduler.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <!-- __HOME__/.aos/python/bin must come first. 17 cron scripts start with
+             `#!/usr/bin/env python3`, and a shebang cannot call the aos-python
+             resolver, so PATH order is the only thing that decides which
+             interpreter they get. Without this they resolve to Homebrew's
+             python, which has none of the AOS runtime dependencies installed —
+             that is how ascbuild-sync and morning-context ended up failing on
+             ModuleNotFoundError while CI stayed green. -->
+        <key>PATH</key>
+        <string>__HOME__/.aos/python/bin:__HOME__/.local/bin:/opt/homebrew/bin:__HOME__/.bun/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+</dict>
+</plist>

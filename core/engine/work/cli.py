@@ -1,0 +1,1642 @@
+#!/usr/bin/env python3
+"""
+AOS Work CLI — v2 with project-scoped IDs, fuzzy resolution, subtasks, and handoffs.
+
+Usage:
+    work add "Buy groceries"
+    work add "Fix login" --priority 2 --project website
+    work add "Fix login" (auto-detects project from cwd)
+    work list
+    work list --project aos-v2
+    work done "sse push"              (fuzzy resolve)
+    work done aos#3                   (exact ID)
+    work start 3                      (scoped to cwd project)
+    work subtask aos#3 "Base variables and typography"
+    work handoff aos#3 --state "Extracted base vars..." --next "Component styles"
+    work show aos#3                   (shows task + subtasks + handoff)
+    work migrate                      (migrate old t1,t2 IDs to new format)
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+
+# Add parent dir to path so we can import backend/query
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import actor as actor_mod
+import backend as engine  # Drop-in replacement for old engine
+import query
+
+# ── Attribution helper ────────────────────────────────
+
+def _take_actor(args: list) -> tuple[list, str | None]:
+    """Strip ``--actor <spec>`` out of an arg list.
+
+    Returns (remaining_args, actor_spec). Every mutation command runs its args
+    through this first so the signature never leaks into a task title.
+    """
+    if "--actor" not in args:
+        return args, None
+    i = args.index("--actor")
+    spec = args[i + 1] if i + 1 < len(args) else None
+    return args[:i] + args[i + 2:], spec
+
+
+def _print_signature(sig: dict | None, label: str) -> None:
+    """One-line 'who did this' under a mutation's output. Silent if unsigned."""
+    a = actor_mod.actor_from_dict(sig)
+    if a is None:
+        return
+    who = actor_mod.display_name(a)
+    if a.kind == "operator":
+        who = "you"
+    print(f"  {label} {who}")
+
+
+# ── Resolution helpers ────────────────────────────────
+
+def _resolve(query_str: str, require: bool = True) -> dict | None:
+    """Resolve a task from user input. Supports exact ID, fuzzy title, and scoped shorthand."""
+    # Fast path: an exact ID needs no search. TaskResolver's own priority list
+    # puts exact-ID first, but it loads every task before checking — and each
+    # loaded task drags in its session links (116k rows across the store), so
+    # `work done aos#3` was paying ~14s to look up a key it already had.
+    # Semantics are unchanged: this is the resolver's own tier 1.
+    # Guarded: on a miss the adapter's generic get() walks every entity table
+    # looking for the id and raises on a work.db that has no `sessions` table.
+    # A lookup miss must fall through to the search, not crash the command.
+    if query_str and ("#" in query_str or query_str.startswith("t")):
+        try:
+            exact = engine.get_task(query_str.strip())
+        except Exception:
+            exact = None
+        if exact:
+            return exact
+
+    # Detect project from cwd for scoped resolution
+    project_id = engine.detect_project_from_cwd()
+    task = engine.resolve_task_in_project(query_str, project_id)
+
+    if not task and require:
+        print(f"Could not resolve task: '{query_str}'")
+        # Suggest close matches
+        tasks = engine.get_all_tasks()
+        matches = query.search_tasks(tasks, query_str)
+        if matches:
+            print("  Did you mean:")
+            for m in matches[:3]:
+                print(f"    {m['id']}  {m['title']}")
+        sys.exit(1)
+
+    return task
+
+
+# Exit code for "I found several and will not choose". Distinct from 1 ("not
+# found") so a caller — the Telegram handler, a script, an agent — can tell the
+# two apart without parsing prose.
+EXIT_AMBIGUOUS = 2
+
+
+def _resolve_for_mutation(query_str: str) -> dict:
+    """Resolve a task for a command that is about to change it, or exit.
+
+    Titles still work. What stops here is the guess: `resolve` ends in a scored
+    fuzzy tier and returns the single best hit, so with tied scores the task
+    that got mutated depended on the order the adapter listed rows in. The live
+    DB held 64 tasks titled "Fix the login bug" — `work done "fix the login
+    bug"` flipped one of sixty-four, silently, and nothing recorded which.
+
+    Exact IDs always win. An ambiguous title prints every candidate and exits
+    EXIT_AMBIGUOUS, having changed nothing.
+    """
+    task, candidates = engine.resolve_task_for_mutation(
+        query_str, engine.detect_project_from_cwd()
+    )
+    if task:
+        return task
+
+    if candidates:
+        print(f"Ambiguous: '{query_str}' matches {len(candidates)} tasks equally well.")
+        print("  Nothing was changed. Re-run with the exact ID:")
+        for c in candidates:
+            project = f"  [{c.get('project')}]" if c.get("project") else ""
+            status = c.get("status", "")
+            print(f"    {c['id']:12s}  {status:10s}  {c['title']}{project}")
+        sys.exit(EXIT_AMBIGUOUS)
+
+    print(f"Could not resolve task: '{query_str}'")
+    tasks = engine.get_all_tasks()
+    matches = query.search_tasks(tasks, query_str)
+    if matches:
+        print("  Did you mean:")
+        for m in matches[:3]:
+            print(f"    {m['id']}  {m['title']}")
+    sys.exit(1)
+
+
+def _auto_project() -> str | None:
+    """Auto-detect project from current directory."""
+    return engine.detect_project_from_cwd()
+
+
+# ── Commands ──────────────────────────────────────────
+
+def cmd_add(args):
+    if not args:
+        print("Usage: add <title> [--priority N] [--project ID] [--tags t1,t2] [--due DATE] [--energy low|medium|high] [--actor WHO]")
+        sys.exit(1)
+
+    args, actor_spec = _take_actor(args)
+    title_parts = []
+    priority = 3
+    project = _auto_project()  # Auto-detect from cwd
+    tags = None
+    due = None
+    energy = None
+    status = "todo"
+    source_ref = None
+    notes = None
+
+    i = 0
+    while i < len(args):
+        if args[i] == "--priority" and i + 1 < len(args):
+            priority = int(args[i + 1])
+            i += 2
+        elif args[i] == "--project" and i + 1 < len(args):
+            project = args[i + 1]  # Explicit overrides auto-detect
+            i += 2
+        elif args[i] == "--no-project":
+            project = None
+            i += 1
+        elif args[i] == "--tags" and i + 1 < len(args):
+            tags = args[i + 1].split(",")
+            i += 2
+        elif args[i] == "--due" and i + 1 < len(args):
+            due = args[i + 1]
+            i += 2
+        elif args[i] == "--energy" and i + 1 < len(args):
+            energy = args[i + 1]
+            i += 2
+        elif args[i] == "--status" and i + 1 < len(args):
+            status = args[i + 1]
+            i += 2
+        elif args[i] == "--source-ref" and i + 1 < len(args):
+            source_ref = args[i + 1]
+            i += 2
+        elif args[i] == "--notes" and i + 1 < len(args):
+            notes = args[i + 1]
+            i += 2
+        elif args[i].startswith("--"):
+            i += 1  # Skip unknown flags instead of capturing as title
+        else:
+            title_parts.append(args[i])
+            i += 1
+
+    title = " ".join(title_parts)
+    if not title:
+        print("Error: title is required")
+        sys.exit(1)
+
+    # Auto-split: if title > 80 chars, split at first — or . into title + notes
+    if len(title) > 80 and not notes:
+        for sep in [" — ", " - ", ". "]:
+            idx = title.find(sep)
+            if 0 < idx <= 80:
+                notes = title[idx + len(sep):]
+                title = title[:idx]
+                break
+        else:
+            # No separator found — hard truncate at 80, rest to notes
+            notes = title[80:]
+            title = title[:80].rstrip()
+
+    task = engine.add_task(title, priority=priority, project=project,
+                           tags=tags, due=due, energy=energy, status=status,
+                           source_ref=source_ref, notes=notes,
+                           actor=actor_spec)
+    proj_info = f" [{task.get('project', '')}]" if task.get("project") else ""
+    print(f"Created {task['id']}: {task['title']}{proj_info}")
+    _print_signature(task.get("created_by"), "Created by")
+
+
+def cmd_done(args):
+    args, actor_spec = _take_actor(args)
+    if not args:
+        print("Usage: done <task_id or search> [--actor WHO]")
+        sys.exit(1)
+    query_str = " ".join(args)
+    task = _resolve_for_mutation(query_str)
+    result = engine.complete_task(task["id"], actor=actor_spec)
+    if result:
+        print(f"Completed {result['id']}: {result['title']}")
+        _print_signature(result.get("completed_by"), "Signed off by")
+        if result.get("auto_completed"):
+            print("  (auto-completed by subtask cascade)")
+    else:
+        print(f"Task {task['id']} not found")
+        sys.exit(1)
+
+
+def cmd_start(args):
+    args, actor_spec = _take_actor(args)
+    if not args:
+        print("Usage: start <task_id or search> [--actor WHO]")
+        sys.exit(1)
+    query_str = " ".join(args)
+    task = _resolve_for_mutation(query_str)
+
+    # Pass the session id if we're inside one. This read used to name
+    # CLAUDE_SESSION_ID, which Claude Code does not set — so session linking
+    # silently received None on every start. actor.session_id_from_env() knows
+    # the variable that actually exists.
+    session_id = actor_mod.session_id_from_env()
+    result = engine.start_task(task["id"], session_id=session_id,
+                               actor=actor_spec)
+    if result:
+        print(f"Started {result['id']}: {result['title']}")
+        _print_signature(result.get("started_by"), "Started by")
+        print("  → Live context set. All work will be attributed to this task.")
+    else:
+        print(f"Task {task['id']} not found")
+        sys.exit(1)
+
+
+def cmd_stop(args):
+    """Stop tracking the current task without completing it."""
+    ctx = engine.get_live_context()
+    if not ctx:
+        print("No active task being tracked.")
+        return
+    task_id = ctx["task_id"]
+    title = ctx.get("title", "")
+    engine.clear_live_context()
+    print(f"Stopped tracking {task_id}: {title}")
+    print("  → Task remains active but work won't be auto-attributed.")
+
+
+def cmd_active(args):
+    """Show what's currently being tracked."""
+    ctx = engine.get_live_context()
+    if not ctx:
+        print("No active live context. Use 'work start <task>' to begin tracking.")
+        return
+    print(f"  🔵 {ctx['task_id']}: {ctx.get('title', '')}")
+    print(f"     Project:  {ctx.get('project', 'none')}")
+    print(f"     Started:  {ctx.get('started_at', '?')}")
+    sid = ctx.get('session_id') or 'unknown'
+    print(f"     Session:  {sid[:12]}...")
+    print(f"     CWD:      {ctx.get('cwd', '?')}")
+
+
+def cmd_cancel(args):
+    args, actor_spec = _take_actor(args)
+    if not args:
+        print("Usage: cancel <task_id or search> [--actor WHO]")
+        sys.exit(1)
+    query_str = " ".join(args)
+    task = _resolve_for_mutation(query_str)
+    result = engine.cancel_task(task["id"], actor=actor_spec)
+    if result:
+        print(f"Cancelled {result['id']}: {result['title']}")
+    else:
+        print(f"Task {task['id']} not found")
+        sys.exit(1)
+
+
+def cmd_activity(args):
+    """Show or append a task's narrative activity log (Kanban Phase 2).
+
+    List:    activity <task>
+    Append:  activity <task> --kind attempt --body "..." [--data '{json}'] [--actor agent:advisor]
+
+    Appendable kinds: comment, attempt, proof, blocked, unblocked, linked.
+    Auto-narration (created/status_changed/delegated/held/edited) is written by
+    the system on every mutation — not appendable here.
+    """
+    if not args:
+        print("Usage: activity <task> [--kind K --body \"...\" [--data '{...}'] [--actor A]]")
+        sys.exit(1)
+
+    def _take(flag):
+        if flag in args:
+            i = args.index(flag)
+            return args[i + 1] if i + 1 < len(args) else None
+        return None
+
+    kind = _take("--kind")
+    body = _take("--body")
+    data_raw = _take("--data")
+    actor = _take("--actor") or os.environ.get("AOS_ACTOR")
+
+    # Everything before the first flag is the task query.
+    flag_idx = next((i for i, a in enumerate(args) if a.startswith("--")), len(args))
+    query_str = " ".join(args[:flag_idx])
+    if not query_str:
+        print("Usage: activity <task> ...")
+        sys.exit(1)
+    task = _resolve(query_str)
+
+    # No --kind → list the timeline.
+    if not kind:
+        entries = engine.get_task_activity(task["id"])
+        if not entries:
+            print(f"No activity yet for {task['id']}: {task['title']}")
+            return
+        print(f"\n  {task['id']}  {task['title']}")
+        print(f"  {'=' * 50}")
+        for e in entries:
+            ts = (e.get("ts") or "")[:16].replace("T", " ")
+            print(f"  {ts}  [{e['kind']:14}] {e['actor']:16} {e['body']}")
+        return
+
+    if not body:
+        print("Append requires --body")
+        sys.exit(1)
+    data = None
+    if data_raw:
+        try:
+            data = json.loads(data_raw)
+        except json.JSONDecodeError as e:
+            print(f"--data is not valid JSON: {e}")
+            sys.exit(1)
+    try:
+        entry = engine.append_activity(task["id"], kind, body, data=data, actor=actor)
+    except ValueError as e:
+        print(f"Error: {e}")
+        sys.exit(1)
+    if entry is None:
+        print(f"Task {task['id']} not found")
+        sys.exit(1)
+    print(f"Logged [{kind}] on {task['id']}: {body}")
+
+
+def cmd_show(args):
+    if not args:
+        print("Usage: show <task_id or search>")
+        sys.exit(1)
+    query_str = " ".join(args)
+    task = _resolve(query_str)
+    tree = engine.get_task_tree(task["id"])
+    if not tree:
+        print("Task not found")
+        sys.exit(1)
+
+    # Display task details
+    print(f"\n  {tree['id']}  {tree['title']}")
+    print(f"  {'=' * 50}")
+    print(f"  Status:   {tree.get('status', '?')}")
+    print(f"  Priority: P{tree.get('priority', 3)}")
+    if tree.get("source_ref"):
+        print(f"  Initiative: {tree['source_ref']}")
+    if tree.get("project"):
+        print(f"  Project:  {tree['project']}")
+    if tree.get("created"):
+        print(f"  Created:  {tree['created']}")
+    if tree.get("started"):
+        print(f"  Started:  {tree['started']}")
+    if tree.get("completed"):
+        print(f"  Done:     {tree['completed']}")
+    if tree.get("due"):
+        print(f"  Due:      {tree['due']}")
+    if tree.get("notes"):
+        print(f"  Notes:    {tree['notes']}")
+    if tree.get("sessions"):
+        print(f"  Sessions: {len(tree['sessions'])}")
+
+    # Subtasks
+    subtasks = tree.get("subtasks", [])
+    if subtasks:
+        done = sum(1 for s in subtasks if s.get("status") == "done")
+        print(f"\n  Subtasks ({done}/{len(subtasks)}):")
+        for sub in subtasks:
+            marker = "x" if sub.get("status") == "done" else ">" if sub.get("status") == "active" else " "
+            print(f"    [{marker}] {sub['id']}  {sub['title']}")
+
+    # Handoff
+    handoff = tree.get("handoff")
+    if handoff:
+        print(f"\n  Handoff (updated {handoff.get('updated', '?')}):")
+        if handoff.get("state"):
+            for line in handoff["state"].strip().split("\n"):
+                print(f"    {line}")
+        if handoff.get("next_step"):
+            print("\n  Next step:")
+            for line in handoff["next_step"].strip().split("\n"):
+                print(f"    {line}")
+        if handoff.get("files_touched"):
+            print(f"\n  Files: {', '.join(handoff['files_touched'])}")
+        if handoff.get("decisions"):
+            print("\n  Decisions:")
+            for d in handoff["decisions"]:
+                print(f"    - {d}")
+        if handoff.get("blockers"):
+            print("\n  Blockers:")
+            for b in handoff["blockers"]:
+                print(f"    ! {b}")
+
+    print()
+
+
+def cmd_list(args):
+    tasks = engine.get_all_tasks()
+
+    # Parse filters
+    status = None
+    project = None
+    priority = None
+    sort_by = "priority"
+    show_all = False
+    json_output = False
+
+    i = 0
+    while i < len(args):
+        if args[i] == "--status" and i + 1 < len(args):
+            status = args[i + 1]
+            i += 2
+        elif args[i] == "--project" and i + 1 < len(args):
+            project = args[i + 1]
+            i += 2
+        elif args[i] == "--priority" and i + 1 < len(args):
+            priority = int(args[i + 1])
+            i += 2
+        elif args[i] == "--sort" and i + 1 < len(args):
+            sort_by = args[i + 1]
+            i += 2
+        elif args[i] == "--all":
+            show_all = True
+            i += 1
+        elif args[i] == "--json":
+            json_output = True
+            i += 1
+        else:
+            i += 1
+
+    # Auto-detect project from cwd if not specified
+    if not project and not show_all:
+        _auto_project()
+        # Don't auto-filter — just note it for display
+        # (show all tasks, but highlight the current project)
+
+    if status:
+        tasks = query.filter_tasks(tasks, status=status)
+    if project:
+        tasks = query.filter_tasks(tasks, project=project)
+    if priority is not None:
+        tasks = query.filter_tasks(tasks, priority=priority)
+
+    # Default: hide done and cancelled unless explicitly requested
+    if not status:
+        tasks = [t for t in tasks if t.get("status") not in ("done", "cancelled")]
+
+    # Build trees (subtasks nested under parents)
+    trees = query.build_task_trees(tasks)
+    trees = query.sort_tasks(trees, by=sort_by)
+
+    if json_output:
+        import json as _json
+        # Strip internal fields, flatten for consumers
+        def _clean(t):
+            out = {k: v for k, v in t.items() if not k.startswith("_") and k != "subtasks"}
+            subs = t.get("subtasks", [])
+            if subs:
+                out["subtasks"] = [_clean(s) for s in subs]
+            return out
+        print(_json.dumps([_clean(t) for t in trees], default=str))
+        return
+
+    if not trees:
+        print("No tasks found.")
+        return
+
+    # Group by project for display
+    by_project = {}
+    unassigned = []
+    for t in trees:
+        proj = t.get("project")
+        if proj:
+            by_project.setdefault(proj, []).append(t)
+        else:
+            unassigned.append(t)
+
+    # Display
+    all_tasks = engine.get_all_tasks()
+    print()
+    for proj_id, proj_tasks in sorted(by_project.items()):
+        # Find project title
+        projects = engine.get_all_projects()
+        proj_title = proj_id
+        for p in projects:
+            if p["id"] == proj_id:
+                proj_title = p.get("title", proj_id)
+                break
+        progress = query.project_progress(proj_id, all_tasks)
+        pct = int(progress["done"] / progress["total"] * 100) if progress["total"] else 0
+        print(f"  {proj_title}")
+        print(f"  {progress['done']}/{progress['total']} done ({pct}%)")
+        print()
+        _print_task_list(proj_tasks)
+        print()
+
+    if unassigned:
+        print("  Unassigned")
+        print()
+        _print_task_list(unassigned)
+        print()
+
+
+def _print_task_list(tasks: list, indent: int = 2):
+    """Print tasks with clean formatting."""
+    STATUS = {"active": "\033[34m>\033[0m", "todo": " ", "done": "\033[32m\u2713\033[0m", "cancelled": "\033[90m-\033[0m"}
+    PRIORITY_COLOR = {1: "\033[31m", 2: "\033[33m", 3: "", 4: "\033[90m"}
+    RESET = "\033[0m"
+    DIM = "\033[90m"
+
+    for t in tasks:
+        status = t.get("status", "todo")
+        p = t.get("priority", 3)
+        icon = STATUS.get(status, " ")
+        p_color = PRIORITY_COLOR.get(p, "")
+
+        # Title — dim if done
+        title = t["title"]
+        if status == "done":
+            title = f"{DIM}{title}{RESET}"
+        elif p_color:
+            title = f"{p_color}{title}{RESET}"
+
+        # Metadata chips
+        chips = []
+        if p <= 2:
+            chips.append(f"{PRIORITY_COLOR[p]}P{p}{RESET}")
+        sessions = len(t.get("sessions", []))
+        if sessions:
+            chips.append(f"{DIM}{sessions}s{RESET}")
+        if t.get("handoff"):
+            chips.append(f"\033[35m\u2192{RESET}")
+        if t.get("due"):
+            chips.append(f"{DIM}due {t['due']}{RESET}")
+
+        subtasks = t.get("subtasks", [])
+        if subtasks:
+            sub_done = sum(1 for s in subtasks if s.get("status") == "done")
+            chips.append(f"{DIM}{sub_done}/{len(subtasks)}{RESET}")
+
+        chip_str = f"  {' '.join(chips)}" if chips else ""
+        tid = f"{DIM}{t['id']}{RESET}"
+
+        prefix = " " * indent
+        print(f"{prefix}  {icon}  {title}{chip_str}  {tid}")
+
+        # Subtasks
+        for sub in subtasks:
+            sub_icon = STATUS.get(sub.get("status", "todo"), " ")
+            sub_title = sub["title"]
+            if sub.get("status") == "done":
+                sub_title = f"{DIM}{sub_title}{RESET}"
+            sub_id = f"{DIM}{sub['id']}{RESET}"
+            print(f"{prefix}     {sub_icon}  {sub_title}  {sub_id}")
+
+
+def cmd_subtask(args):
+    """Add a subtask to an existing task."""
+    args, actor_spec = _take_actor(args)
+    if len(args) < 2:
+        print("Usage: subtask <parent_id or search> <title> [--done] [--active] [--actor WHO]")
+        sys.exit(1)
+
+    parent_query = args[0]
+    title_parts = []
+    status = "todo"
+    priority = None
+
+    i = 1
+    while i < len(args):
+        if args[i] == "--done":
+            status = "done"
+            i += 1
+        elif args[i] == "--active":
+            status = "active"
+            i += 1
+        elif args[i] == "--priority" and i + 1 < len(args):
+            priority = int(args[i + 1])
+            i += 2
+        else:
+            title_parts.append(args[i])
+            i += 1
+
+    title = " ".join(title_parts)
+    if not title:
+        print("Error: subtask title is required")
+        sys.exit(1)
+
+    parent = _resolve_for_mutation(parent_query)
+    sub = engine.add_subtask(parent["id"], title, priority=priority,
+                             status=status, actor=actor_spec)
+    if sub:
+        print(f"Created {sub['id']}: {sub['title']} (under {parent['id']})")
+        _print_signature(sub.get("created_by"), "Created by")
+    else:
+        print("Failed to create subtask")
+        sys.exit(1)
+
+
+def cmd_handoff(args):
+    """Write handoff context for a task."""
+    args, actor_spec = _take_actor(args)
+    if not args:
+        print("Usage: handoff <task_id or search> --state '...' [--next '...'] [--files f1,f2] [--decisions d1,d2] [--blockers b1,b2] [--actor WHO]")
+        sys.exit(1)
+
+    task_query = args[0]
+    state = None
+    next_step = None
+    files = None
+    decisions = None
+    blockers = None
+
+    i = 1
+    while i < len(args):
+        if args[i] == "--state" and i + 1 < len(args):
+            state = args[i + 1]
+            i += 2
+        elif args[i] == "--next" and i + 1 < len(args):
+            next_step = args[i + 1]
+            i += 2
+        elif args[i] == "--files" and i + 1 < len(args):
+            files = [f.strip() for f in args[i + 1].split(",")]
+            i += 2
+        elif args[i] == "--decisions" and i + 1 < len(args):
+            decisions = [d.strip() for d in args[i + 1].split("|")]
+            i += 2
+        elif args[i] == "--blockers" and i + 1 < len(args):
+            blockers = [b.strip() for b in args[i + 1].split("|")]
+            i += 2
+        else:
+            i += 1
+
+    if not state:
+        print("Error: --state is required")
+        sys.exit(1)
+
+    task = _resolve_for_mutation(task_query)
+    result = engine.write_handoff(
+        task["id"], state=state, next_step=next_step,
+        files_touched=files, decisions=decisions, blockers=blockers,
+        actor=actor_spec,
+    )
+    if result:
+        print(f"Handoff written for {result['id']}: {result['title']}")
+    else:
+        print("Failed to write handoff")
+        sys.exit(1)
+
+
+def cmd_dispatch(args):
+    """Generate a dispatch prompt for a task (for Chief to inject into agent prompts)."""
+    if not args:
+        print("Usage: dispatch <task_id or search>")
+        sys.exit(1)
+    query_str = " ".join(args)
+    task = _resolve(query_str)
+    prompt = engine.build_handoff_prompt(task["id"])
+    if prompt:
+        print(prompt)
+    else:
+        print(f"No dispatch prompt available for {task['id']}")
+
+
+def cmd_search(args):
+    if not args:
+        print("Usage: search <query>")
+        sys.exit(1)
+    tasks = engine.get_all_tasks()
+    results = query.search_tasks(tasks, " ".join(args))
+    if not results:
+        print("No matching tasks.")
+        return
+    for t in results:
+        proj = f" [{t['project']}]" if t.get("project") else ""
+        print(f"  {t['id']:12s}  {t['status']:9s}  {t['title']}{proj}")
+
+
+def cmd_summary(args):
+    s = engine.summary()
+    print(f"Tasks: {s['total_tasks']}  |  Projects: {s['projects']}  |  Goals: {s['goals']}  |  Threads: {s['threads']}  |  Inbox: {s['inbox']}")
+    if s["by_status"]:
+        parts = [f"{k}: {v}" for k, v in sorted(s["by_status"].items())]
+        print(f"  Status: {', '.join(parts)}")
+
+
+def cmd_inbox(args):
+    if not args:
+        # Show inbox
+        items = engine.get_inbox()
+        if not items:
+            print("Inbox is empty.")
+            return
+        for item in items:
+            source = item.get("source") or "manual"
+            # Reconcile-sourced items (source="reconcile:<check>") are
+            # standing system findings, not a human's own capture — tag them
+            # distinctly so they don't blend into ad hoc captures, and show
+            # how many cycles have re-fired the same finding.
+            tag = "[reconcile] " if source.startswith("reconcile") else ""
+            count = item.get("count") or 1
+            seen = f", seen {count}x" if count > 1 else ""
+            print(f"  {item['id']:4s}  {tag}{item['text']}  ({source}, {item['captured'][:10]}{seen})")
+        return
+
+    if args[0] == "drop":
+        if len(args) < 2:
+            print("Usage: inbox drop <inbox_id>")
+            sys.exit(1)
+        inbox_id = args[1]
+        if engine.delete_inbox(inbox_id):
+            print(f"Dropped {inbox_id}")
+        else:
+            print(f"Inbox item {inbox_id} not found")
+            sys.exit(1)
+        return
+
+    # Add to inbox
+    text = " ".join(args)
+    item = engine.add_inbox(text)
+    print(f"Captured {item['id']}: {item['text']}")
+
+
+def cmd_projects(args):
+    # Subcommand: project create
+    if args and args[0] == "create":
+        return _cmd_project_create(args[1:])
+
+    # Subcommand: project path — set the filesystem path used for cwd detection
+    if args and args[0] == "path":
+        return _cmd_project_path(args[1:])
+
+    # Subcommands: reconcile / adopt / worktrees. Each lives in its own module
+    # so this registration stays a lookup; see project_reconcile.py.
+    _SUBCOMMANDS = {
+        "reconcile": ("project_reconcile", "account for every dir under ~/project/"),
+        "adopt": ("project_manifest", "plan .aos/project.yaml manifests"),
+        "worktrees": ("project_worktrees", "audit + normalise branch checkouts"),
+    }
+    if args and args[0] in _SUBCOMMANDS:
+        module, _desc = _SUBCOMMANDS[args[0]]
+        try:
+            mod = __import__(module)
+        except ImportError as e:
+            print(f"'{args[0]}' is not installed yet ({e}).")
+            print(f"  Expected: core/engine/work/{module}.py")
+            return
+        return mod.cli_entry(args[1:])
+
+    projects = engine.get_all_projects()
+    if not projects:
+        print("No projects.")
+        return
+    all_tasks = engine.get_all_tasks()
+
+    # Separate initiative-linked and regular projects
+    regular = [p for p in projects if not p.get("initiative")]
+    initiative_linked = [p for p in projects if p.get("initiative")]
+
+    for p in regular:
+        status = p.get("status", "?")
+        goal = f" -> {p['goal']}" if p.get("goal") else ""
+        progress = query.project_progress(p["id"], all_tasks)
+        pct = f" ({progress['pct']}%)" if progress['total'] > 0 else ""
+        counts = f" [{progress['done']}/{progress['total']}]"
+        print(f"  {p['id']:12s}  {status:10s}  {p['title']}{goal}{counts}{pct}")
+
+    if initiative_linked:
+        if regular:
+            print()
+        print("  Initiatives:")
+        for p in initiative_linked:
+            progress = query.project_progress(p["id"], all_tasks)
+            pct = f" ({progress['pct']}%)" if progress['total'] > 0 else ""
+            counts = f" [{progress['done']}/{progress['total']}]"
+            appetite = f"  [{p['appetite']}]" if p.get("appetite") else ""
+            # Read initiative status from doc if available
+            init_status = _read_initiative_status(p["initiative"])
+            status_str = f"  ({init_status})" if init_status else ""
+            print(f"  {p['id']:12s}  {p['title']}{counts}{pct}{appetite}{status_str}")
+
+
+def _read_initiative_status(slug: str) -> str | None:
+    """Read initiative status from its vault document."""
+    init_path = os.path.join(os.path.expanduser("~"), "vault", "knowledge", "initiatives", f"{slug}.md")
+    if not os.path.exists(init_path):
+        return None
+    try:
+        import yaml as _yaml
+        with open(init_path) as f:
+            raw = f.read()
+        fm_end = raw.find("---", 3)
+        if fm_end == -1:
+            return None
+        fm = _yaml.safe_load(raw[3:fm_end])
+        if not fm:
+            return None
+        status = fm.get("status", "unknown")
+        phase = fm.get("phase")
+        total = fm.get("total_phases")
+        if phase and total:
+            return f"{status}, phase {phase}/{total}"
+        return status
+    except Exception:
+        return None
+
+
+def _cmd_project_path(args):
+    """Set a project's filesystem path.
+
+    Usage: projects path <project_id> <path>
+
+    The stored path is what detect_project_from_cwd matches against, so tasks
+    created inside that directory auto-assign to the project. The path is
+    expanded and made absolute; symlinks are resolved at match time.
+    """
+    if len(args) < 2:
+        print("Usage: projects path <project_id> <path>")
+        sys.exit(1)
+    project_id = args[0]
+    path = os.path.abspath(os.path.expanduser(args[1]))
+    updated = engine.update_project(project_id, path=path)
+    if updated is None:
+        print(f"No such project: {project_id}")
+        sys.exit(1)
+    print(f"Set path for {project_id}: {path}")
+
+
+def _cmd_project_create(args):
+    """Create a new project, optionally linked to an initiative."""
+    if not args:
+        print("Usage: projects create <title> [--id ID] [--short-id PREFIX] [--initiative SLUG] [--appetite TIME] [--goal GOAL_ID] [--done-when TEXT]")
+        sys.exit(1)
+
+    title_parts = []
+    project_id = None
+    short_id = None
+    initiative = None
+    appetite = None
+    goal = None
+    done_when = None
+
+    i = 0
+    while i < len(args):
+        if args[i] == "--id" and i + 1 < len(args):
+            project_id = args[i + 1]
+            i += 2
+        elif args[i] == "--short-id" and i + 1 < len(args):
+            short_id = args[i + 1]
+            i += 2
+        elif args[i] == "--initiative" and i + 1 < len(args):
+            initiative = args[i + 1]
+            i += 2
+        elif args[i] == "--appetite" and i + 1 < len(args):
+            appetite = args[i + 1]
+            i += 2
+        elif args[i] == "--goal" and i + 1 < len(args):
+            goal = args[i + 1]
+            i += 2
+        elif args[i] == "--done-when" and i + 1 < len(args):
+            done_when = args[i + 1]
+            i += 2
+        else:
+            title_parts.append(args[i])
+            i += 1
+
+    title = " ".join(title_parts)
+    if not title:
+        print("Error: project title required")
+        sys.exit(1)
+
+    # If initiative slug given, use it as project_id and short_id defaults
+    if initiative and not project_id:
+        project_id = initiative
+    if initiative and not short_id:
+        # Derive short prefix: unified-comms -> uc, contact-resolution -> cr
+        parts = initiative.split("-")
+        short_id = "".join(p[0] for p in parts if p)
+
+    # If initiative provided, read done_when and appetite from initiative doc if not overridden
+    if initiative:
+        init_path = os.path.join(os.path.expanduser("~"), "vault", "knowledge", "initiatives", f"{initiative}.md")
+        if os.path.exists(init_path):
+            try:
+                import yaml as _yaml
+                with open(init_path) as f:
+                    raw = f.read()
+                fm_end = raw.find("---", 3)
+                if fm_end != -1:
+                    fm = _yaml.safe_load(raw[3:fm_end])
+                    if fm:
+                        if not appetite:
+                            appetite = fm.get("appetite")
+                        if not done_when:
+                            # Extract definition of done from body
+                            dod_match = raw.find("## Definition of Done")
+                            if dod_match != -1:
+                                dod_end = raw.find("\n## ", dod_match + 1)
+                                dod_text = raw[dod_match + len("## Definition of Done"):dod_end].strip() if dod_end != -1 else raw[dod_match + len("## Definition of Done"):].strip()
+                                # Take first line as summary
+                                first_line = dod_text.split("\n")[0].strip("- ")
+                                if first_line:
+                                    done_when = first_line
+            except Exception:
+                pass
+
+    try:
+        project = engine.add_project(
+            title=title,
+            goal=goal,
+            done_when=done_when,
+            appetite=str(appetite) if appetite else None,
+            short_id=short_id,
+            initiative=initiative,
+            project_id=project_id,
+        )
+        init_info = f" (initiative: {initiative})" if initiative else ""
+        print(f"Created project '{project['id']}': {title}{init_info}")
+        if short_id:
+            print(f"  Task prefix: {short_id}# (e.g., {short_id}#1)")
+    except ValueError as e:
+        print(f"Error: {e}")
+        sys.exit(1)
+
+
+def cmd_goals(args):
+    goals = engine.get_all_goals()
+    if not goals:
+        print("No goals.")
+        return
+    for g in goals:
+        weight = f" (w={g['weight']})" if g.get("weight") else ""
+        print(f"  {g['id']:20s}  {g['status']:10s}  {g['title']}{weight}")
+
+
+def cmd_link(args):
+    """Link a session to a task or thread."""
+    if len(args) < 1:
+        print("Usage: link <task_id|thread_id> [--session ID] [--outcome TEXT]")
+        sys.exit(1)
+
+    target_query = args[0]
+    session_id = None
+    outcome = None
+
+    i = 1
+    while i < len(args):
+        if args[i] == "--session" and i + 1 < len(args):
+            session_id = args[i + 1]
+            i += 2
+        elif args[i] == "--outcome" and i + 1 < len(args):
+            outcome = args[i + 1]
+            i += 2
+        else:
+            i += 1
+
+    if not session_id:
+        context_file = os.path.join(os.path.expanduser("~"), ".aos", "work", ".session-context.json")
+        if os.path.exists(context_file):
+            try:
+                with open(context_file) as f:
+                    ctx = json.load(f)
+                session_id = ctx.get("session_id")
+            except Exception:
+                pass
+        if not session_id:
+            print("Error: --session ID required (no active session detected)")
+            sys.exit(1)
+
+    if target_query.startswith("th"):
+        result = engine.link_session_to_thread(target_query, session_id, notes=outcome)
+        if result:
+            count = len(result.get("sessions", []))
+            print(f"Linked session to thread {target_query}: {result['title']} ({count} sessions total)")
+        else:
+            print(f"Thread {target_query} not found")
+            sys.exit(1)
+    else:
+        task = _resolve(target_query)
+        result = engine.link_session_to_task(task["id"], session_id, outcome=outcome)
+        if result:
+            count = len(result.get("sessions", []))
+            print(f"Linked session to task {result['id']}: {result['title']} ({count} sessions)")
+        else:
+            print("Task not found")
+            sys.exit(1)
+
+
+def cmd_thread(args):
+    """Create or manage threads."""
+    if not args:
+        threads = engine.get_all_threads()
+        active = [t for t in threads if t.get("status") in ("exploring", "active")]
+        if not active:
+            print("No active threads.")
+            return
+        for t in active:
+            sessions = len(t.get("sessions", []))
+            last = t.get("last_session", t.get("started", ""))[:10]
+            cwd_short = os.path.basename(t["cwd"]) if t.get("cwd") else ""
+            print(f"  {t['id']:6s}  {t['status']:10s}  {t['title']}  ({sessions} sessions, last: {last}) {cwd_short}")
+        return
+
+    title = " ".join(args)
+    thread = engine.add_thread(title)
+    print(f"Created {thread['id']}: {thread['title']} [{thread['status']}]")
+
+
+
+
+def cmd_today(args):
+    """Show today's work plan."""
+    from datetime import date as _date
+    today = _date.today().isoformat()
+    tasks = engine.get_all_tasks()
+
+    due = query.due_today(tasks, today)
+    active = query.active_tasks(tasks)
+    high_todo = query.filter_tasks(
+        query.filter_tasks(tasks, status="todo"), priority=1
+    ) + query.filter_tasks(
+        query.filter_tasks(tasks, status="todo"), priority=2
+    )
+
+    # Tasks with stale handoffs
+    stale = query.stale_handoffs(tasks)
+
+    seen = set()
+    sections = []
+
+    if due:
+        section_tasks = [t for t in due if t["id"] not in seen]
+        for t in section_tasks:
+            seen.add(t["id"])
+        if section_tasks:
+            sections.append(("Due today / overdue", section_tasks))
+
+    if active:
+        section_tasks = [t for t in active if t["id"] not in seen]
+        for t in section_tasks:
+            seen.add(t["id"])
+        if section_tasks:
+            sections.append(("In progress", section_tasks))
+
+    if high_todo:
+        section_tasks = [t for t in high_todo if t["id"] not in seen]
+        for t in section_tasks:
+            seen.add(t["id"])
+        if section_tasks:
+            sections.append(("High priority (ready)", section_tasks))
+
+    if stale:
+        section_tasks = [t for t in stale if t["id"] not in seen]
+        for t in section_tasks:
+            seen.add(t["id"])
+        if section_tasks:
+            sections.append(("Stale handoffs (needs attention)", section_tasks))
+
+    if not sections:
+        print("Nothing pressing today. Check `work list` for all tasks.")
+        return
+
+    print(f"Today -- {today}")
+    print("=" * 40)
+    for label, items in sections:
+        print(f"\n  {label}:")
+        for t in items:
+            p = t.get("priority", 0)
+            marker = {1: "!!", 2: "!", 3: " ", 4: "~", 0: "?"}.get(p, " ")
+            proj = f" [{t['project']}]" if t.get("project") else ""
+            due_str = f" (due {t['due']})" if t.get("due") else ""
+            sessions = len(t.get("sessions", []))
+            sess_str = f" [{sessions}s]" if sessions > 0 else ""
+            handoff_str = " *" if t.get("handoff") else ""
+            print(f"    {marker} {t['id']:12s}  {t['title']}{proj}{due_str}{sess_str}{handoff_str}")
+
+
+def cmd_next(args):
+    """Suggest what to work on next based on priority, energy, and context."""
+    tasks = engine.get_all_tasks()
+
+    # Only top-level tasks
+    candidates = [t for t in tasks
+                  if t.get("status") in ("todo", "active") and not t.get("parent")]
+    if not candidates:
+        print("No tasks to suggest." if not engine.get_inbox() else
+              f"No tasks, but {len(engine.get_inbox())} inbox items to triage.")
+        return
+
+    def score(t):
+        s = 0
+        p = t.get("priority", 3)
+        s += (5 - p) * 10
+
+        if t.get("status") == "active":
+            s += 15
+
+        from datetime import date as _date
+        today = _date.today().isoformat()
+        if t.get("due") and t["due"] <= today:
+            s += 25
+
+        sessions = len(t.get("sessions", []))
+        if sessions > 0:
+            s += min(sessions * 3, 12)
+
+        # Boost tasks with handoff (continuity)
+        if t.get("handoff"):
+            s += 10
+
+        return s
+
+    ranked = sorted(candidates, key=score, reverse=True)
+    top = ranked[:3]
+
+    print("Suggested next:")
+    print("=" * 40)
+    for i, t in enumerate(top, 1):
+        p = t.get("priority", 0)
+        marker = {1: "!!", 2: "!", 3: " ", 4: "~", 0: "?"}.get(p, " ")
+        proj = f" [{t['project']}]" if t.get("project") else ""
+        status = t.get("status", "?")
+        sessions = len(t.get("sessions", []))
+        sess_str = f" ({sessions} sessions)" if sessions > 0 else ""
+        reasons = []
+        if status == "active":
+            reasons.append("in progress")
+        if t.get("handoff"):
+            reasons.append("has handoff")
+        if t.get("due"):
+            from datetime import date as _date
+            if t["due"] <= _date.today().isoformat():
+                reasons.append("overdue")
+            else:
+                reasons.append(f"due {t['due']}")
+        if sessions > 0:
+            reasons.append("has momentum")
+        reason_str = f"  -- {', '.join(reasons)}" if reasons else ""
+        print(f"  {i}. {marker} {t['id']:12s}  {t['title']}{proj}{sess_str}{reason_str}")
+
+
+def cmd_migrate(args):
+    """Migrate old t1,t2,... IDs to new project-scoped format."""
+    print("Migrating task IDs to project-scoped format...")
+    id_map = engine.migrate_task_ids()
+    if not id_map:
+        print("  No tasks need migration (already using new format).")
+        return
+    print(f"  Migrated {len(id_map)} tasks:")
+    for old, new in id_map.items():
+        print(f"    {old} -> {new}")
+    print("\n  Old IDs are preserved as _legacy_id for backward compatibility.")
+
+
+def cmd_json(args):
+    """Output full work data as JSON (for programmatic use)."""
+    data = engine.load_all()
+    print(json.dumps(data, indent=2, default=str))
+
+
+def cmd_initiatives(args):
+    """List active initiatives from vault/knowledge/initiatives/.
+
+    Scans each initiative doc for phase completion by counting checked/unchecked
+    boxes under ### Phase N headers. Shows real progress, not just frontmatter.
+    """
+    import glob as globmod
+    import re as _re
+    init_dir = os.path.join(os.path.expanduser("~"), "vault", "knowledge", "initiatives")
+    if not os.path.isdir(init_dir):
+        print("No initiatives directory found.")
+        return
+
+    try:
+        import yaml as _yaml
+    except ImportError:
+        print("yaml not available")
+        return
+
+    files = sorted(
+        globmod.glob(os.path.join(init_dir, "*.md")),
+        key=os.path.getmtime, reverse=True
+    )
+    if not files:
+        print("No initiatives found.")
+        return
+
+    status_emoji = {
+        "research": "🔬", "shaping": "🔲", "planning": "📐",
+        "executing": "⚡", "review": "📝", "done": "✅", "archived": "📦"
+    }
+
+    show_all = "--all" in args
+
+    count = 0
+    for fpath in files:
+        try:
+            with open(fpath) as f:
+                raw = f.read()
+            fm_end = raw.find("---", 3)
+            if fm_end == -1:
+                continue
+            fm = _yaml.safe_load(raw[3:fm_end])
+            if not fm:
+                continue
+            status = fm.get("status", "unknown")
+            if not show_all and status in ("done", "archived"):
+                continue
+
+            emoji = status_emoji.get(status, "📋")
+            title = fm.get("title", os.path.basename(fpath))
+            appetite = fm.get("appetite", "—")
+            updated = fm.get("updated", "?")
+
+            # Parse phase progress from actual checkbox counts
+            body = raw[fm_end + 3:]
+            phases = []
+            # Match ### Phase N: Name or ### Phase 1: Foundation [wave: 1] — ✅ DONE
+            phase_blocks = _re.split(r'(?=^### Phase \d)', body, flags=_re.MULTILINE)
+            for block in phase_blocks:
+                header_match = _re.match(r'^### Phase (\d+)[:\s]+(.+?)(?:\n|$)', block)
+                if not header_match:
+                    continue
+                phase_num = header_match.group(1)
+                phase_title = header_match.group(2).strip()
+                # Clean up title — remove [wave: N] and status markers
+                phase_title = _re.sub(r'\[wave:.*?\]', '', phase_title).strip()
+                phase_title = _re.sub(r'—\s*$', '', phase_title).strip()
+
+                done_count = len(_re.findall(r'^\s*- \[x\]', block, _re.MULTILINE))
+                todo_count = len(_re.findall(r'^\s*- \[ \]', block, _re.MULTILINE))
+                total = done_count + todo_count
+                is_done = "✅ DONE" in header_match.group(0) or (total > 0 and done_count == total)
+                phases.append({
+                    "num": phase_num,
+                    "title": phase_title,
+                    "done": done_count,
+                    "total": total,
+                    "complete": is_done,
+                })
+
+            # Build output
+            phases_done = sum(1 for p in phases if p["complete"])
+            total_phases = len(phases) if phases else 0
+            total_tasks = sum(p["total"] for p in phases)
+            total_done = sum(p["done"] for p in phases)
+
+            if count == 0:
+                print(f"\n  {'All' if show_all else 'Active'} Initiatives")
+                print(f"  {'=' * 60}")
+
+            # Header line
+            pct = int(total_done / total_tasks * 100) if total_tasks else 0
+            progress_bar = _progress_bar(pct)
+            stale_warn = ""
+            if status not in ("done", "archived") and updated and updated != "?":
+                try:
+                    from datetime import date
+                    last = date.fromisoformat(str(updated))
+                    days_ago = (date.today() - last).days
+                    if days_ago > 3:
+                        stale_warn = f" ⚠️ stale ({days_ago}d)"
+                except (ValueError, TypeError):
+                    pass
+
+            print(f"\n  {emoji} {title}")
+            print(f"    Status: {status} | Appetite: {appetite} | Updated: {updated}{stale_warn}")
+            if phases:
+                print(f"    Progress: {progress_bar} {pct}% ({total_done}/{total_tasks} tasks, {phases_done}/{total_phases} phases)")
+                for p in phases:
+                    if p["complete"]:
+                        mark = "✅"
+                    elif p["done"] > 0:
+                        mark = "🔶"
+                    else:
+                        mark = "⬜"
+                    int(p["done"] / p["total"] * 100) if p["total"] else 0
+                    print(f"      {mark} Phase {p['num']}: {p['title']} ({p['done']}/{p['total']})")
+
+            count += 1
+        except Exception:
+            continue
+
+    if count == 0:
+        print("\n  No active initiatives.")
+    print()
+
+
+def _progress_bar(pct):
+    """Render a 10-char progress bar."""
+    filled = int(pct / 10)
+    return "▓" * filled + "░" * (10 - filled)
+
+
+def cmd_briefing(args):
+    """One-shot briefing: tasks, initiatives, inbox, schedule. For mid-session 'what's next'."""
+    import re as _re
+    from datetime import date
+
+    try:
+        import yaml as _yaml
+    except ImportError:
+        _yaml = None
+
+    # --- Tasks ---
+    tasks = engine.get_all_tasks()
+    active = [t for t in tasks if t.get("status") == "active"]
+    todo_high = [t for t in tasks if t.get("status") == "todo" and t.get("priority", 5) <= 2]
+    today_str = date.today().isoformat()
+    due = [t for t in tasks if t.get("due") and t.get("due") <= today_str and t.get("status") not in ("done", "cancelled")]
+    s = engine.summary()
+
+    print("=== Work Briefing ===\n")
+
+    # Helper: subtask progress
+    def _sub_info(parent_id):
+        subs = [t for t in tasks if t.get("parent") == parent_id]
+        if not subs:
+            return ""
+        done = sum(1 for s in subs if s.get("status") == "done")
+        return f" ({done}/{len(subs)} parts)"
+
+    # Helper: initiative linkage
+    def _init_ref(t):
+        ref = t.get("source_ref", "")
+        if ref and "initiatives/" in ref:
+            return f" → {ref.split('initiatives/')[-1].replace('.md', '')}"
+        return ""
+
+    # Active tasks
+    if active:
+        print("Active:")
+        for t in active:
+            proj = f" [{t['project']}]" if t.get("project") else ""
+            sub = _sub_info(t["id"])
+            init = _init_ref(t)
+            print(f"  {t['id']}: {t['title']}{proj}{sub}{init}")
+
+    # High priority todos
+    if todo_high:
+        print("High priority:")
+        for t in todo_high[:5]:
+            proj = f" [{t['project']}]" if t.get("project") else ""
+            sub = _sub_info(t["id"])
+            init = _init_ref(t)
+            print(f"  {t['id']}: {t['title']}{proj}{sub}{init}")
+
+    # Due/overdue
+    if due:
+        print("Due/overdue:")
+        for t in due:
+            print(f"  {t['id']}: {t['title']} (due {t['due']})")
+
+    # Inbox
+    inbox = engine.get_inbox()
+    if inbox:
+        print(f"\nInbox ({len(inbox)}):")
+        for item in inbox[:3]:
+            text = item.get("text", str(item)) if isinstance(item, dict) else str(item)
+            print(f"  - {text[:80]}")
+
+    # --- Unanswered messages ---
+    try:
+        import json as _json
+        triage_file = os.path.join(os.path.expanduser("~"), ".aos", "work", "triage-state.json")
+        if os.path.exists(triage_file):
+            with open(triage_file) as f:
+                triage_state = _json.loads(f.read())
+            unanswered = triage_state.get("unanswered", {})
+            if unanswered:
+                from datetime import datetime as _dt
+                entries = sorted(unanswered.values(), key=lambda e: e.get("received_at", ""))
+                print(f"\nUnanswered messages ({len(entries)}):")
+                for entry in entries[:3]:
+                    name = entry.get("person_name", "Unknown")
+                    channel = entry.get("channel", "?")
+                    preview = entry.get("text_preview", "")
+                    ago = "recently"
+                    try:
+                        ts = entry.get("received_at", "")
+                        if ts:
+                            msg_dt = _dt.fromisoformat(ts.replace("Z", "+00:00"))
+                            now_dt = _dt.now(msg_dt.tzinfo) if msg_dt.tzinfo else _dt.now()
+                            delta_s = int((now_dt - msg_dt).total_seconds())
+                            if delta_s < 60:
+                                ago = "just now"
+                            elif delta_s < 3600:
+                                ago = f"{delta_s // 60}m ago"
+                            elif delta_s < 86400:
+                                ago = f"{delta_s // 3600}h ago"
+                            else:
+                                ago = f"{delta_s // 86400}d ago"
+                    except Exception:
+                        pass
+                    print(f"  💬 {name} ({channel}, {ago}): {preview[:60]}")
+    except Exception:
+        pass
+
+    # --- Initiatives ---
+    init_dir = os.path.join(os.path.expanduser("~"), "vault", "knowledge", "initiatives")
+    if os.path.isdir(init_dir) and _yaml:
+        import glob as _globmod
+        files = sorted(_globmod.glob(os.path.join(init_dir, "*.md")), key=os.path.getmtime, reverse=True)
+        inits = []
+        for fpath in files[:5]:
+            try:
+                with open(fpath) as f:
+                    raw = f.read(3000)
+                if not raw.startswith("---"):
+                    continue
+                fm_end = raw.find("---", 3)
+                if fm_end == -1:
+                    continue
+                fm = _yaml.safe_load(raw[3:fm_end])
+                if not fm or fm.get("status") in ("done", "archived"):
+                    continue
+                # Get next action from state digest
+                next_action = ""
+                ds = raw.find("## State Digest")
+                if ds != -1:
+                    block = raw[ds:ds + 500]
+                    na = _re.search(r'Next action:\s*(.+)', block)
+                    if na:
+                        next_action = na.group(1).strip()
+                inits.append({
+                    "title": fm.get("title", "?"),
+                    "status": fm.get("status", "?"),
+                    "next": next_action,
+                })
+            except Exception:
+                continue
+        if inits:
+            print(f"\nInitiatives ({len(inits)}):")
+            emoji = {"research": "🔬", "shaping": "🔲", "planning": "📐", "executing": "⚡", "review": "📝"}
+            for i in inits:
+                e = emoji.get(i["status"], "📋")
+                line = f"  {e} {i['title']} [{i['status']}]"
+                if i["next"]:
+                    line += f" — {i['next'][:80]}"
+                print(line)
+
+    # --- Schedule ---
+    if _yaml:
+        try:
+            op_file = os.path.join(os.path.expanduser("~"), ".aos", "config", "operator.yaml")
+            with open(op_file) as f:
+                op = _yaml.safe_load(f) or {}
+            blocks = op.get("schedule", {}).get("blocks", [])
+            day_name = date.today().strftime("%a").lower()
+            today_blocks = [b for b in blocks if day_name in b.get("days", [])]
+            if today_blocks:
+                print("\nSchedule today:")
+                for b in today_blocks:
+                    print(f"  {b['name']}: {b.get('start', '?')}–{b.get('end', '?')}")
+        except Exception:
+            pass
+
+    # --- Suggested focus ---
+    suggestions = []
+    # Handoff tasks first
+    handoff = [t for t in (active or todo_high) if t.get("handoff")]
+    if handoff:
+        t = handoff[0]
+        h = t["handoff"]
+        suggestions.append(f"Resume {t['id']}: {t['title']}" + (f" — {h.get('next_step', '')[:60]}" if h.get('next_step') else ""))
+    if due:
+        suggestions.append(f"Due: {due[0]['id']}: {due[0]['title']}")
+    if todo_high and not any(t in handoff for t in todo_high):
+        suggestions.append(f"{todo_high[0]['id']}: {todo_high[0]['title']}")
+
+    if suggestions:
+        print("\nSuggested focus:")
+        for idx, sug in enumerate(suggestions[:3], 1):
+            print(f"  {idx}. {sug}")
+
+    print(f"\nTotals: {s['total_tasks']} tasks | {s['projects']} projects | {s['goals']} goals | {s['threads']} threads | {s['inbox']} inbox")
+
+
+def cmd_brief(args):
+    """Render a project's compiled brief (see BRIEF-CONTRACT.md)."""
+    try:
+        from brief import brief_to_dict, compile_all, compile_brief, render_markdown
+    except ImportError as e:
+        print(f"The brief compiler is not installed yet ({e}).")
+        print("  Expected: core/engine/work/brief.py")
+        sys.exit(1)
+
+    as_json = "--json" in args
+    show_all = "--all" in args
+    rest = [a for a in args if not a.startswith("--")]
+
+    if show_all:
+        briefs = compile_all()
+        if as_json:
+            print(json.dumps([brief_to_dict(b) for b in briefs], indent=2))
+            return
+        for b in briefs:
+            print(f"  {b.id:<18} {b.state:<12} {b.pct:>3}%  {b.state_reason}")
+        return
+
+    if not rest:
+        print("Usage: brief <project> [--json]   |   brief --all [--json]")
+        sys.exit(1)
+
+    brief = compile_brief(rest[0])
+    if brief is None:
+        print(f"No project '{rest[0]}'")
+        sys.exit(1)
+    print(json.dumps(brief_to_dict(brief), indent=2) if as_json
+          else render_markdown(brief))
+
+
+COMMANDS = {
+    "add": cmd_add,
+    "done": cmd_done,
+    "start": cmd_start,
+    "stop": cmd_stop,
+    "active": cmd_active,
+    "cancel": cmd_cancel,
+    "activity": cmd_activity,
+    "show": cmd_show,
+    "list": cmd_list,
+    "search": cmd_search,
+    "summary": cmd_summary,
+    "inbox": cmd_inbox,
+    "projects": cmd_projects,
+    "goals": cmd_goals,
+    "today": cmd_today,
+    "next": cmd_next,
+    "link": cmd_link,
+    "thread": cmd_thread,
+    "subtask": cmd_subtask,
+    "handoff": cmd_handoff,
+    "dispatch": cmd_dispatch,
+    "migrate": cmd_migrate,
+    "json": cmd_json,
+    "initiatives": cmd_initiatives,
+    "briefing": cmd_briefing,
+    "brief": cmd_brief,
+}
+
+
+# Per-command usage text, reused verbatim from each cmd_*'s own "Usage: ..."
+# message. Needed so `-h`/`--help` can be answered in main() BEFORE dispatch —
+# every cmd_* only checked `if not args`, which is truthy for ["--help"], so
+# help fell straight into real command logic (`work inbox --help` captured a
+# real inbox item, `work done --help` / `work cancel --help` fuzzy-matched a
+# task literally titled "--help" and flipped its status). See
+# tests/engine/work/test_cli_help_never_mutates.py for the regression.
+USAGE = {
+    "add": "Usage: add <title> [--priority N] [--project ID] [--tags t1,t2] [--due DATE] [--energy low|medium|high] [--actor WHO]",
+    "done": "Usage: done <task_id or search> [--actor WHO]",
+    "start": "Usage: start <task_id or search> [--actor WHO]",
+    "cancel": "Usage: cancel <task_id or search> [--actor WHO]",
+    "activity": "Usage: activity <task> [--kind K --body \"...\" [--data '{...}'] [--actor A]]",
+    "show": "Usage: show <task_id or search>",
+    "inbox": "Usage: inbox [text to capture] | inbox drop <inbox_id>   (no args shows the inbox)",
+    "subtask": "Usage: subtask <parent_id or search> <title> [--done] [--active] [--actor WHO]",
+    "handoff": "Usage: handoff <task_id or search> --state '...' [--next '...'] [--files f1,f2] [--decisions d1,d2] [--blockers b1,b2] [--actor WHO]",
+    "dispatch": "Usage: dispatch <task_id or search>",
+    "search": "Usage: search <query>",
+    "link": "Usage: link <task_id|thread_id> [--session ID] [--outcome TEXT]",
+    "thread": "Usage: thread [title]   (no args lists active threads)",
+    "brief": "Usage: brief <project> [--json]   |   brief --all [--json]",
+}
+
+
+def _usage_for(cmd: str) -> str:
+    """Usage text for `-h`/`--help`, without dispatching into the command."""
+    return USAGE.get(cmd, f"Usage: {cmd} [args]   (see 'work --help' for the command list)")
+
+
+def main():
+    if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help"):
+        print("Usage: work <command> [args]")
+        print(f"Commands: {', '.join(sorted(COMMANDS.keys()))}")
+        sys.exit(0)
+
+    cmd = sys.argv[1]
+    if cmd not in COMMANDS:
+        print(f"Unknown command: {cmd}")
+        print(f"Available: {', '.join(sorted(COMMANDS.keys()))}")
+        sys.exit(1)
+
+    cmd_args = sys.argv[2:]
+    if "-h" in cmd_args or "--help" in cmd_args:
+        # Answered here, before dispatch — a cmd_* body must never run for
+        # a bare help request (it would otherwise treat "--help" as data).
+        print(_usage_for(cmd))
+        sys.exit(0)
+
+    COMMANDS[cmd](cmd_args)
+
+
+if __name__ == "__main__":
+    main()

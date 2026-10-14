@@ -1,0 +1,265 @@
+# Capability Map — Tool Selection for Autonomous Execution
+#
+# For each target (app, interaction type), lists approaches in priority order.
+# The agent tries the first approach; if it fails, moves to the next.
+#
+# cost tiers:
+#   zero    — deterministic script/API, no LLM tokens
+#   low     — simple command generation, ~100 tokens
+#   medium  — accessibility tree + reasoning, ~500-1k tokens
+#   high    — OCR/screenshots + vision, ~1-2k tokens per action
+#   very-high — full vision loop (computer use), ~10-30k tokens
+
+apps:
+  Obsidian:
+    type: electron
+    approaches:
+      - method: cli
+        command: 'obsidian <command>'
+        examples: ["read note", "daily:read", "search", "tasks todo", "append"]
+        cost: zero
+        notes: "Full vault ops: read, write, search, tasks, tags, backlinks, properties, bases. Use 'silent' flag to avoid opening files. Run 'obsidian help' for all commands."
+      - method: uri
+        command: 'open "obsidian://daily"'
+        examples: ["open daily note in GUI"]
+        cost: zero
+        notes: "Only for opening files in the UI. Use CLI for read/write ops."
+      - method: rest-api
+        endpoint: "https://127.0.0.1:27124"
+        api_key: "bin/agent-secret get OBSIDIAN_REST_API_KEY"
+        cost: zero
+        notes: "JSON responses, good for scripts/crons. Use -sk with curl (self-signed cert). Auth: Bearer token."
+
+  Calendar:
+    type: native
+    approaches:
+      # gws-cli(zero) merged from integration manifest at runtime
+      - method: applescript
+        cost: low
+        notes: "Apple Calendar CRUD via AppleScript — works offline, syncs to iCloud/Google"
+      - method: chrome
+        target: "calendar.google.com"
+        cost: high
+
+  Gmail:
+    type: service
+    approaches:
+      # gws-cli(zero) merged from integration manifest at runtime
+      - method: applescript
+        target: "Mail"
+        cost: low
+        notes: "Apple Mail app — works if Gmail account is configured in Mail.app"
+      - method: chrome
+        target: "gmail.com"
+        cost: medium
+        notes: "Chrome MCP on Gmail web — full functionality"
+
+  Mail:
+    type: native
+    approaches:
+      - method: applescript
+        cost: low
+        notes: "Read, compose, search via AppleScript — all accounts in Mail.app"
+
+  Notes:
+    type: native
+    approaches:
+      - method: applescript
+        cost: low
+
+  Reminders:
+    type: native
+    approaches:
+      - method: applescript
+        cost: low
+
+  Safari:
+    type: native
+    approaches:
+      - method: applescript
+        cost: low
+        notes: "Can execute JS in tabs, read URLs, manage tabs"
+
+  Finder:
+    type: native
+    approaches:
+      - method: bash
+        cost: zero
+        notes: "ls, cp, mv, open — prefer CLI over GUI"
+      - method: applescript
+        cost: low
+
+  Terminal:
+    type: native
+    approaches:
+      - method: bash
+        cost: zero
+        notes: "Already in a terminal — just run commands"
+      - method: applescript
+        cost: low
+        notes: "Open new windows, run commands in tabs"
+
+  "System Settings":
+    type: native
+    approaches:
+      - method: applescript
+        cost: low
+        notes: "Can open specific panes via 'reveal anchor'"
+      - method: bash
+        cost: zero
+        notes: "Some settings via 'defaults write' commands"
+
+  "Google Chrome":
+    type: electron
+    approaches:
+      - method: chrome-mcp
+        cost: medium
+        notes: "Claude-in-Chrome MCP — DOM-level control"
+      - method: applescript
+        cost: low
+        notes: "Tab management, URL navigation, JS execution"
+
+  "Visual Studio Code":
+    type: electron
+    approaches:
+      - method: cli
+        command: "code --goto {file}:{line}"
+        cost: zero
+        notes: "CLI for file ops, extensions, diff"
+
+  Slack:
+    type: electron
+    approaches:
+      - method: api
+        cost: zero
+        notes: "Slack Web API — messages, channels, files"
+      - method: chrome
+        target: "app.slack.com"
+        cost: medium
+        notes: "Full web version — use Chrome MCP"
+
+  Notion:
+    type: electron
+    approaches:
+      - method: api
+        cost: zero
+        notes: "Notion API — pages, databases, blocks"
+      - method: chrome
+        target: "notion.so"
+        cost: medium
+
+  Telegram:
+    type: native
+    approaches:
+      - method: api
+        cost: zero
+        notes: "Telegram Bot API via bridge"
+
+  "Google Drive":
+    type: service
+    approaches:
+      # gws-cli(zero) merged from integration manifest at runtime
+      - method: chrome
+        target: "drive.google.com"
+        cost: medium
+        notes: "Chrome MCP on Drive web UI"
+
+  "Google Docs":
+    type: service
+    approaches:
+      # gws-cli(zero) merged from integration manifest at runtime
+      - method: chrome
+        target: "docs.google.com"
+        cost: medium
+
+  "Google Sheets":
+    type: service
+    approaches:
+      # gws-cli(zero) merged from integration manifest at runtime
+      - method: chrome
+        target: "sheets.google.com"
+        cost: medium
+
+  Messages:
+    type: native
+    approaches:
+      - method: applescript
+        cost: low
+        notes: "Read and send iMessages via AppleScript. Full conversation access."
+
+  Contacts:
+    type: native
+    approaches:
+      # gws-cli(zero) merged from integration manifest at runtime
+      - method: applescript
+        cost: low
+        notes: "Apple Contacts app — all synced accounts"
+
+  Discord:
+    type: electron
+    approaches:
+      - method: api
+        cost: zero
+        notes: "Discord Bot API"
+      - method: chrome
+        target: "discord.com"
+        cost: medium
+
+  WhatsApp:
+    type: electron
+    approaches:
+      # whatsmeow-api(zero) merged from integration manifest at runtime
+      - method: chrome
+        target: "web.whatsapp.com"
+        cost: medium
+        notes: "Chrome MCP on WhatsApp Web — full chat interaction"
+
+# Interaction types (not app-specific)
+interactions:
+  web_page:
+    approaches:
+      - method: chrome-mcp
+        cost: medium
+        notes: "Claude-in-Chrome for any web page"
+
+  file_operation:
+    approaches:
+      - method: bash
+        cost: zero
+      - method: applescript
+        cost: low
+
+  system_command:
+    approaches:
+      - method: bash
+        cost: zero
+      - method: applescript
+        cost: low
+
+  notification_read:
+    approaches:
+      - method: applescript
+        cost: low
+        notes: "Read Notification Center via System Events"
+
+  clipboard:
+    approaches:
+      - method: bash
+        command: "pbcopy / pbpaste"
+        cost: zero
+
+# Generic fallback chain for unknown apps
+_default:
+  approaches:
+    - method: bash
+      cost: zero
+      notes: "Is there a CLI for this?"
+    - method: applescript
+      cost: low
+      notes: "Is it a native macOS app?"
+    - method: chrome
+      cost: medium
+      notes: "Does a web version exist?"
+    - method: screenshot-and-reason
+      cost: very-high
+      notes: "Last resort — screenshot + Claude vision"

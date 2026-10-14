@@ -1,0 +1,1860 @@
+"""
+AOS Work Backend — Ontology-backed work engine for CLI use.
+
+The single work engine: SQLite-backed task/project/thread access for the CLI,
+the hooks and the bridge. A predecessor flat module sat beside this one until
+v0.7.7, when it was deleted — nothing imported it and its copy of the
+thread-creation logic had diverged.
+
+All functions return plain dicts (not dataclasses) because query.py and
+cli.py expect dict access via .get(). The _to_dict() conversion is the
+bridge between the ontology's typed objects and the CLI's dict world.
+
+Side effects (activity log, dashboard SSE, GitHub sync, initiative
+checkbox sync) are handled here in sync form — no async, no event bus.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import dataclasses
+import fcntl
+import json
+import logging
+import os
+import re
+import subprocess
+
+# ── Path setup for ontology imports ─────────────────────
+import sys
+import tempfile
+from datetime import date, datetime
+from pathlib import Path
+
+import yaml
+
+# Walk up from __file__ (without resolving symlinks) to find the project root.
+# backend.py lives at <root>/core/work/backend.py — go up 3 levels.
+_this_dir = Path(__file__).parent                     # core/work/
+_project_root = _this_dir.parent.parent               # <root>/
+sys.path.insert(0, str(_project_root))
+
+# If symlinks resolved differently (e.g., core/engine/work/), also try
+# finding root by walking up until we find core/engine/work/.
+if not (_project_root / "core" / "engine" / "work").is_dir():
+    _candidate = Path(__file__).resolve().parent
+    for _ in range(6):
+        _candidate = _candidate.parent
+        if (_candidate / "core" / "engine" / "work").is_dir():
+            _project_root = _candidate
+            sys.path.insert(0, str(_project_root))
+            break
+
+from core.engine.work.ontology.types import (
+    Goal,
+    Project,
+    Task,
+    TaskPriority,
+    TaskStatus,
+)
+from core.engine.work.ontology.work import WorkAdapter
+from core.engine.work.ontology.work_utils import (
+    HandoffFormatter,
+    LiveContext,
+    ProjectContext,
+    TaskResolver,
+)
+
+# Attribution layer (BRIEF-CONTRACT.md § "every change is signed"). actor.py
+# lives beside this file and is imported flat, the same way cli.py imports us.
+# It imports backend lazily, so there is no cycle at module load.
+_work_dir = str(Path(__file__).resolve().parent)
+if _work_dir not in sys.path:
+    sys.path.insert(0, _work_dir)
+
+import actor as _actor  # noqa: E402
+
+_gh_log = logging.getLogger("work.github")
+
+
+# ── Constants ───────────────────────────────────────────
+
+def _resolve_db_path() -> Path:
+    """Locate the work database. There is one.
+
+      1. AOS_WORK_DB env var — explicit override; also makes tests injectable.
+      2. ~/.aos/data/work.db.
+
+    This used to fall back to a second store when work.db looked unseeded, a
+    guard from the migration-050 cutover. Migration 123 moved the last tables
+    that still lived there (sessions, session_tasks), so the fallback had
+    nothing left to protect — and kept the split alive by making "which
+    database" a runtime question with two possible answers. The adapter creates
+    whatever schema is missing, so an empty file is not a reason to go
+    elsewhere.
+    """
+    env = os.environ.get("AOS_WORK_DB")
+    if env:
+        return Path(env).expanduser()
+    return Path.home() / ".aos" / "data" / "work.db"
+
+
+DB_PATH = _resolve_db_path()
+WORK_DIR = Path.home() / ".aos" / "work"
+ACTIVITY_FILE = WORK_DIR / "activity.yaml"
+AOS_REPO = "AOS-Agent/aos"
+MAX_ACTIVITY = 100
+
+# The title the SessionEnd hook generates, and therefore the one shape that
+# tells an auto thread apart from one the operator typed. Migration 115 used
+# the same discriminator to close 3,574 of them; keeping one definition means
+# the sweep and the generator can never disagree about what they mean.
+AUTO_THREAD_PREFIX = "Work in "
+
+# The AOS framework's own project id. ~/aos is a release symlink whose target
+# is ~/aos-releases/<version> — a different directory name on every update —
+# so that tree cannot be matched by a recorded project path the way an ordinary
+# checkout can. Named here rather than inferred because the work engine already
+# keys GitHub issue sync off this same id (see _gh_sync_enabled / AOS_REPO).
+FRAMEWORK_PROJECT = "aos"
+RELEASE_DIR_NAME = "aos-releases"
+WORKTREE_SEGMENTS = (".claude", "worktrees")
+
+
+# ── Lazy singletons ────────────────────────────────────
+
+_adapter: WorkAdapter | None = None
+_resolver: TaskResolver | None = None
+_project_ctx: ProjectContext | None = None
+_live_ctx = LiveContext()
+_handoff_fmt = HandoffFormatter()
+
+
+def _get_adapter() -> WorkAdapter:
+    """Get or create the WorkAdapter singleton."""
+    global _adapter
+    if _adapter is None:
+        db = str(DB_PATH)
+        if not DB_PATH.exists():
+            # Create parent directories so SQLite can create the file
+            DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _adapter = WorkAdapter(db_path=db)
+    return _adapter
+
+
+def _get_resolver() -> TaskResolver:
+    global _resolver
+    if _resolver is None:
+        _resolver = TaskResolver(_get_adapter())
+    return _resolver
+
+
+def _get_project_ctx() -> ProjectContext:
+    global _project_ctx
+    if _project_ctx is None:
+        _project_ctx = ProjectContext(_get_adapter())
+    return _project_ctx
+
+
+# ── Dict conversion ─────────────────────────────────────
+
+def _to_dict(obj):
+    """Convert a dataclass or dict to a plain dict for query.py compatibility.
+
+    This is the critical bridge function. The CLI and query.py expect
+    dicts with .get() access and specific key names that match the
+    YAML-era format (e.g., 'project' not 'project_id', 'created' not
+    'created_at'). The ontology returns typed dataclasses.
+    """
+    if obj is None:
+        return None
+    if isinstance(obj, dict):
+        return obj
+    if isinstance(obj, list):
+        return [_to_dict(item) for item in obj]
+    if not dataclasses.is_dataclass(obj):
+        return obj
+
+    # ── Task-specific conversion (matches engine._row_to_task format) ──
+    if isinstance(obj, Task):
+        return _task_to_dict(obj)
+
+    # ── Project-specific conversion ──
+    if isinstance(obj, Project):
+        return _project_to_dict(obj)
+
+    # ── Goal-specific conversion ──
+    if isinstance(obj, Goal):
+        return _goal_to_dict(obj)
+
+    # ── Generic fallback for other dataclasses ──
+    d = dataclasses.asdict(obj)
+    return d
+
+
+def _task_to_dict(task: Task) -> dict:
+    """Convert a Task dataclass to the dict format cli.py/query.py expect.
+
+    This matches the exact key names from engine._row_to_task.
+    """
+    d = {
+        "id": task.id,
+        "title": task.title,
+        "status": task.status.value if isinstance(task.status, TaskStatus) else str(task.status),
+        "priority": task.priority.value if isinstance(task.priority, TaskPriority) else int(task.priority),
+        "created": task.created.isoformat() if task.created else "",
+        "source": task.created_by or "manual",
+    }
+
+    if task.project:
+        d["project"] = task.project
+    if task.started:
+        d["started"] = task.started.isoformat()
+    if task.completed:
+        d["completed"] = task.completed.isoformat()
+    if task.due:
+        d["due"] = task.due.isoformat()
+    if task.parent_id:
+        d["parent"] = task.parent_id
+    if task.tags:
+        d["tags"] = task.tags
+    if task.description:
+        d["notes"] = task.description
+    if task.assigned_to:
+        d["assigned_to"] = task.assigned_to
+    if task.pipeline:
+        d["pipeline"] = task.pipeline
+    if getattr(task, "stage", None):
+        d["stage"] = task.stage
+    if getattr(task, "delegate", None):
+        d["delegate"] = task.delegate
+    if getattr(task, "held_by", None):
+        d["held_by"] = task.held_by
+    if getattr(task, "fields", None):
+        d["fields"] = task.fields
+    if task.recurrence:
+        d["recurrence"] = task.recurrence
+
+    # Attribution. NOT stored on the task — derived from entity_history by
+    # actor.attribution_for(). Deliberately not resolved here: this function
+    # runs once per task in a 1,900-row list, and a per-task history query
+    # would make `work list` quadratic. Callers that need the signature
+    # (`work who`, the brief compiler) ask for it explicitly. What IS cheap is
+    # the denormalised head of the trail:
+    if getattr(task, "modified_by", None):
+        d["modified_by"] = task.modified_by
+
+    # Extract energy/context/source_ref from description metadata comment
+    if task.description:
+        meta_match = re.search(r'<!-- meta: (.+?) -->', task.description)
+        if meta_match:
+            for part in meta_match.group(1).split(", "):
+                if ":" in part:
+                    k, v = part.split(":", 1)
+                    if k in ("energy", "context", "source_ref"):
+                        d[k] = v
+
+    # Handoff
+    if task.handoff:
+        handoff = {
+            "updated": task.handoff.timestamp.isoformat() if task.handoff.timestamp else "",
+            "state": task.handoff.state or "",
+        }
+        if task.handoff.next_step:
+            handoff["next_step"] = task.handoff.next_step
+        if task.handoff.files:
+            handoff["files_touched"] = task.handoff.files
+        if task.handoff.decisions:
+            handoff["decisions"] = task.handoff.decisions
+        if task.handoff.blockers:
+            handoff["blockers"] = task.handoff.blockers
+        d["handoff"] = handoff
+
+    # Dynamically-attached attributes from the adapter
+    if hasattr(task, "sessions") and getattr(task, "sessions", None):
+        d["sessions"] = task.sessions
+    if hasattr(task, "subtasks") and getattr(task, "subtasks", None):
+        d["subtasks"] = [_task_to_dict(st) if isinstance(st, Task) else _to_dict(st) for st in task.subtasks]
+    if hasattr(task, "auto_completed") and getattr(task, "auto_completed", False):
+        d["auto_completed"] = True
+    # Kanban Phase 2 — narrative-layer summary for the board card / list column.
+    if getattr(task, "activity_count", None) is not None:
+        d["activity_count"] = task.activity_count
+    if getattr(task, "last_activity", None) is not None:
+        d["last_activity"] = task.last_activity
+
+    return d
+
+
+def _project_to_dict(project: Project) -> dict:
+    """Convert a Project dataclass to the dict format cli.py expects."""
+    d = {
+        "id": project.id,
+        "title": project.title,
+        "status": project.status or "active",
+    }
+    if project.description:
+        d["description"] = project.description
+    if project.path:
+        d["path"] = project.path
+    if project.goal:
+        d["goal"] = project.goal
+    if project.done_when:
+        d["done_when"] = project.done_when
+    if project.short_id:
+        d["short_id"] = project.short_id
+    if project.stages:
+        d["stages"] = project.stages
+    if project.current_stage:
+        d["current_stage"] = project.current_stage
+    if project.telegram_bot_key:
+        d["telegram_bot_key"] = project.telegram_bot_key
+    if project.telegram_chat_key:
+        d["telegram_chat_key"] = project.telegram_chat_key
+    if project.telegram_forum_topic:
+        d["telegram_forum_topic"] = project.telegram_forum_topic
+    # Computed counts
+    d["task_count"] = project.task_count
+    d["done_count"] = project.done_count
+    d["active_count"] = project.active_count
+    return d
+
+
+def _goal_to_dict(goal: Goal) -> dict:
+    """Convert a Goal dataclass to the dict format cli.py expects."""
+    d = {
+        "id": goal.id,
+        "title": goal.title,
+        "status": "active",
+    }
+    if goal.weight:
+        d["weight"] = goal.weight
+    if goal.description:
+        d["description"] = goal.description
+    if goal.project:
+        d["project"] = goal.project
+    if goal.key_results:
+        d["key_results"] = [
+            {
+                "title": kr.title,
+                "progress": kr.progress,
+                "target": kr.target,
+            }
+            for kr in goal.key_results
+        ]
+    return d
+
+
+# ── Side effects (sync) ────────────────────────────────
+
+def _log_activity(action: str, task_id: str = None, title: str = None,
+                  project: str = None, detail: str = None) -> None:
+    """Append an event to the activity log. Fire-and-forget."""
+    try:
+        WORK_DIR.mkdir(parents=True, exist_ok=True)
+
+        event = {"ts": _now(), "action": action}
+        if task_id:
+            event["task_id"] = task_id
+        if title:
+            event["title"] = title
+        if project:
+            event["project"] = project
+        if detail:
+            event["detail"] = detail
+
+        activity_lock = WORK_DIR / ".activity.lock"
+        with open(activity_lock, "a+") as lf:
+            fcntl.flock(lf, fcntl.LOCK_EX)
+            try:
+                events = []
+                if ACTIVITY_FILE.exists():
+                    with open(ACTIVITY_FILE, "r") as f:
+                        events = yaml.safe_load(f) or []
+                events.insert(0, event)
+                events = events[:MAX_ACTIVITY]
+                fd, tmp = tempfile.mkstemp(dir=str(WORK_DIR), suffix=".activity.tmp")
+                try:
+                    with os.fdopen(fd, "w") as f:
+                        yaml.dump(events, f, default_flow_style=False,
+                                  sort_keys=False, allow_unicode=True)
+                        f.flush()
+                        os.fsync(f.fileno())
+                    os.replace(tmp, str(ACTIVITY_FILE))
+                except Exception:
+                    os.unlink(tmp)
+                    raise
+            finally:
+                fcntl.flock(lf, fcntl.LOCK_UN)
+
+        _notify_dashboard(event)
+    except Exception:
+        pass  # Activity log is best-effort
+
+
+def _notify_dashboard(event: dict) -> None:
+    """Work event hook — no-op since the Qareen dashboard was decommissioned
+    (aos#208). Name and signature are kept: every mutation path calls it,
+    tests monkeypatch it to assert on notifications, and a future UI
+    (aos-app) plugs its event bus in here."""
+    del event
+
+
+def _in_pytest() -> bool:
+    """True when running inside a pytest process."""
+    return "pytest" in sys.modules or "PYTEST_CURRENT_TEST" in os.environ
+
+
+def _gh_sync_enabled() -> bool:
+    """GitHub Issues sync is opt-in: requires AOS_GITHUB_SYNC=1 in the env.
+
+    Hard-disabled under pytest regardless of the env var, so test fixtures
+    that create project="aos" tasks can never file real issues on AOS_REPO
+    (the unguarded suite filed ~1,900 of them).
+    """
+    if _in_pytest():
+        return False
+    return os.environ.get("AOS_GITHUB_SYNC", "").strip().lower() in ("1", "true", "yes")
+
+
+def _gh_create_issue(task_id: str, title: str, priority: int = 3,
+                     subtask_titles: list[str] | None = None) -> str | None:
+    """Create a GitHub Issue. Returns the issue URL or None on failure."""
+    if not _gh_sync_enabled():
+        _gh_log.debug("GitHub sync disabled (set AOS_GITHUB_SYNC=1 to enable)")
+        return None
+    try:
+        labels = f"task,P{priority}"
+        body = f"**Task ID:** `{task_id}`"
+        if subtask_titles:
+            labels += ",initiative"
+            body += "\n\n## Subtasks\n\n"
+            body += "\n".join(f"- [ ] {st}" for st in subtask_titles)
+
+        result = subprocess.run(
+            ["gh", "issue", "create",
+             "--repo", AOS_REPO,
+             "--title", f"[{task_id}] {title}",
+             "--body", body,
+             "--label", labels],
+            capture_output=True, text=True, timeout=15,
+        )
+        if result.returncode == 0:
+            url = result.stdout.strip()
+            _gh_log.info(f"Created issue: {url}")
+            return url
+        _gh_log.warning(f"gh issue create failed: {result.stderr[:200]}")
+    except Exception as e:
+        _gh_log.debug(f"GitHub sync skipped: {e}")
+    return None
+
+
+def _gh_close_issue(task_id: str) -> bool:
+    """Close a GitHub Issue by searching for its task ID in the title."""
+    if not _gh_sync_enabled():
+        _gh_log.debug("GitHub sync disabled (set AOS_GITHUB_SYNC=1 to enable)")
+        return False
+    try:
+        result = subprocess.run(
+            ["gh", "issue", "list",
+             "--repo", AOS_REPO,
+             "--search", f"[{task_id}] in:title",
+             "--state", "open",
+             "--json", "number",
+             "--limit", "1"],
+            capture_output=True, text=True, timeout=15,
+        )
+        if result.returncode != 0:
+            return False
+
+        issues = json.loads(result.stdout)
+        if not issues:
+            return False
+
+        issue_num = issues[0]["number"]
+        close_result = subprocess.run(
+            ["gh", "issue", "close",
+             "--repo", AOS_REPO,
+             str(issue_num)],
+            capture_output=True, text=True, timeout=15,
+        )
+        if close_result.returncode == 0:
+            _gh_log.info(f"Closed issue #{issue_num} for {task_id}")
+            return True
+    except Exception as e:
+        _gh_log.debug(f"GitHub close skipped: {e}")
+    return False
+
+
+def _sync_initiative_checkbox(task: dict) -> None:
+    """If task has source_ref to an initiative doc, check off matching checkbox."""
+    source_ref = task.get("source_ref")
+    if not source_ref:
+        return
+    try:
+        doc_path = Path.home() / source_ref.lstrip("~/")
+        if not doc_path.exists():
+            doc_path = Path.home() / source_ref
+        if not doc_path.exists():
+            return
+
+        content = doc_path.read_text()
+        title = task.get("title", "")
+        task_id = task.get("id", "")
+
+        updated = False
+        lines = content.split("\n")
+        for i, line in enumerate(lines):
+            if not re.match(r'\s*- \[ \]', line):
+                continue
+            if task_id and task_id in line:
+                lines[i] = line.replace("- [ ]", "- [x]", 1)
+                updated = True
+                break
+            if title and title[:40].lower() in line.lower():
+                lines[i] = line.replace("- [ ]", "- [x]", 1)
+                updated = True
+                break
+
+        if updated:
+            today = datetime.now().strftime("%Y-%m-%d")
+            new_content = "\n".join(lines)
+            new_content = re.sub(
+                r'^updated:.*$', f'updated: {today}',
+                new_content, count=1, flags=re.MULTILINE
+            )
+            tmp = str(doc_path) + ".tmp"
+            Path(tmp).write_text(new_content)
+            os.replace(tmp, str(doc_path))
+
+            notify_initiative_event(
+                "initiative_update",
+                title=title,
+                detail=f"Checkbox synced: {task_id}",
+                task_id=task_id,
+            )
+    except Exception:
+        pass  # Best-effort
+
+
+def _on_task_created(task_dict: dict) -> None:
+    """Side effects after task creation."""
+    _log_activity("task_created", task_dict.get("id"), task_dict.get("title"),
+                  task_dict.get("project"))
+    _notify_dashboard({
+        "action": "task_created",
+        "task_id": task_dict.get("id"),
+        "title": task_dict.get("title"),
+        "ts": datetime.now().isoformat(),
+    })
+    if task_dict.get("project") == "aos":
+        _gh_create_issue(task_dict.get("id"), task_dict.get("title"),
+                         task_dict.get("priority", 3))
+
+
+def _on_task_completed(task_dict: dict) -> None:
+    """Side effects after task completion."""
+    _log_activity("task_completed", task_dict.get("id"), task_dict.get("title"),
+                  task_dict.get("project"))
+    _notify_dashboard({
+        "action": "task_completed",
+        "task_id": task_dict.get("id"),
+        "title": task_dict.get("title"),
+        "ts": datetime.now().isoformat(),
+    })
+    if task_dict.get("project") == "aos":
+        _gh_close_issue(task_dict.get("id"))
+    _sync_initiative_checkbox(task_dict)
+
+
+# ── Utility ─────────────────────────────────────────────
+
+def _now() -> str:
+    return datetime.now().isoformat(timespec="seconds")
+
+
+@contextlib.contextmanager
+def _as_actor(who):
+    """Run an adapter mutation under a known actor.
+
+    The adapter writes entity_history and task_activity from inside its own
+    methods, crediting ``self._actor`` — which it reads ONCE at construction
+    from ``AOS_ACTOR``. Outside the runner dispatch path that env var is unset,
+    so every CLI and API mutation was landing on the constructor default. This
+    is how agent work came to be recorded as the operator's.
+
+    Setting the adapter's actor for the duration of the call fixes the actor on
+    every history and narration row the adapter writes, on every path, without
+    reaching into adapters/work.py. Restores the previous value on the way out
+    so a failure can't leave the adapter impersonating someone.
+    """
+    adapter = _get_adapter()
+    previous = getattr(adapter, "_actor", None)
+    high_water = _history_high_water(adapter)
+    try:
+        adapter._actor = _actor.to_adapter_string(who)
+    except Exception:
+        pass
+    try:
+        yield adapter
+    finally:
+        try:
+            adapter._actor = previous
+        except Exception:
+            pass
+        _finish_history(adapter, high_water, who)
+
+
+def _history_high_water(adapter) -> int:
+    """The newest entity_history id before a mutation, or -1 if unavailable."""
+    try:
+        row = adapter._conn.execute(
+            "SELECT COALESCE(MAX(id), 0) FROM entity_history"
+        ).fetchone()
+        return int(row[0])
+    except Exception:
+        return -1
+
+
+def _finish_history(adapter, high_water: int, who) -> None:
+    """Complete the history rows the adapter just wrote.
+
+    The adapter records the actor but has no way to carry two things we know
+    and it doesn't:
+
+    * ``session_id`` — its ``complete_task``/``start_task`` call
+      ``_record_history`` without one, so an agent's session was lost even
+      when the actor was right.
+    * ``actor_type`` for an unattributed change — its inline fallback is
+      ``"operator" if actor in ("operator","cli") else "agent"``, which files
+      an honest ``unknown`` actor under ``agent``. Neither is true.
+
+    Bounded exactly by the id high-water mark taken before the call, so this
+    only ever touches rows this mutation produced. Best-effort.
+    """
+    if high_water < 0:
+        return
+    try:
+        session_id = getattr(who, "session_id", None)
+        want_type = _actor.actor_type_for(who)
+        if session_id:
+            adapter._conn.execute(
+                "UPDATE entity_history SET session_id = ? "
+                "WHERE id > ? AND session_id IS NULL",
+                (session_id, high_water),
+            )
+        adapter._conn.execute(
+            "UPDATE entity_history SET actor_type = ? "
+            "WHERE id > ? AND actor = ? AND actor_type != ?",
+            (want_type, high_water, _actor.to_adapter_string(who), want_type),
+        )
+        adapter._conn.commit()
+    except Exception:
+        pass
+
+
+def _prior_status(task_id: str) -> str | None:
+    """The task's status before a mutation, for the audit line. None if unknown.
+
+    Deliberately a direct column read rather than get_task(): the adapter's
+    generic get() walks every entity table looking for the id, which is both
+    wasteful here and fatal on a DB that only has the task tables.
+    """
+    try:
+        row = _get_adapter()._conn.execute(
+            "SELECT status FROM tasks WHERE id = ?", (task_id,)
+        ).fetchone()
+        return row["status"] if row else None
+    except Exception:
+        return None
+
+
+def _today() -> str:
+    return date.today().isoformat()
+
+
+# ── Public API (the function surface cli.py and the hooks call) ──
+
+
+# ── Context Detection ───────────────────────────────────
+
+def detect_project_from_cwd(cwd: str = None) -> str | None:
+    """Detect project from current working directory."""
+    return _get_project_ctx().detect_from_cwd(cwd)
+
+
+# ── Resolution ──────────────────────────────────────────
+
+def resolve_task(query_str: str, tasks: list = None) -> dict | None:
+    """Resolve a task by exact ID, partial ID, or fuzzy title match."""
+    if tasks is not None:
+        # If tasks are provided, use the old-style resolution directly
+        # (query.py compatibility path)
+        return _get_resolver().resolve(query_str)
+    return _to_dict(_get_resolver().resolve(query_str))
+
+
+def resolve_task_for_mutation(query_str: str, project_id: str = None):
+    """Resolve a task that is about to be CHANGED.
+
+    Returns (task, []) for one answer, (None, candidates) when a title matches
+    several tasks indistinguishably, and (None, []) when nothing matches. See
+    TaskResolver.resolve_for_mutation — the short version is that `resolve`
+    returns the best fuzzy hit, and on tied scores "best" is whatever the
+    adapter listed first.
+    """
+    return _get_resolver().resolve_for_mutation(query_str, project_id)
+
+
+def resolve_task_in_project(query_str: str, project_id: str = None) -> dict | None:
+    """Resolve with project context."""
+    return _to_dict(_get_resolver().resolve(query_str, project_id))
+
+
+# ── Task CRUD ───────────────────────────────────────────
+
+def get_all_tasks() -> list:
+    """Get all tasks as dicts."""
+    tasks = _get_adapter().list(limit=10000)
+    return [_to_dict(t) for t in tasks]
+
+
+def get_task(task_id: str) -> dict | None:
+    """Get a single task by exact ID."""
+    result = _get_adapter().get(task_id)
+    if result is None:
+        return None
+    return _to_dict(result)
+
+
+def add_task(title: str, priority: int = 3, project: str = None,
+             status: str = "todo", tags: list = None, source: str = "manual",
+             due: str = None, energy: str = None, context: str = None,
+             parent: str = None, source_ref: str = None,
+             notes: str = None, pipeline: str = None, stage: str = None,
+             fields: dict = None, narrate: bool = True,
+             actor: str | None = None) -> dict:
+    """Add a new task with project-scoped ID.
+
+    Bug-class intake: pass pipeline='bug' with a stage (e.g. 'new') and a fields
+    dict carrying the richness (root_cause, code_refs, severity, app, …). When a
+    bug stage is given and no explicit status, the coarse board status is derived
+    from the stage via the pipeline definition so board queries stay cheap.
+
+    ``actor`` is an optional actor spec ("chief", "operator", "cron:nightly").
+    It is resolved through actor.resolve_actor and recorded as ``created_by``.
+    """
+    from core.engine.work.pipelines import bug_stage_to_status, is_bug_stage
+
+    # Derive the coarse status for a bug-pipeline task from its stage.
+    if pipeline == "bug" and stage and status == "todo":
+        status = bug_stage_to_status(stage) or "todo"
+
+    task = Task(
+        id="",  # auto-generated by adapter.create()
+        title=title,
+        status=TaskStatus(status) if status in [s.value for s in TaskStatus] else TaskStatus.TODO,
+        priority=TaskPriority(priority) if priority in [p.value for p in TaskPriority] else TaskPriority.NORMAL,
+        project=project,
+        tags=tags or [],
+        description=notes,
+        created_by=source,
+        due=None,  # Set below if provided
+        parent_id=parent,
+        energy=energy,
+        context=context,
+        pipeline=pipeline,
+        stage=stage if (stage and (pipeline != "bug" or is_bug_stage(stage))) else None,
+        fields=fields or {},
+    )
+
+    # Handle due date string
+    if due:
+        try:
+            if len(due) == 10:
+                task.due = datetime.fromisoformat(due + "T00:00:00")
+            else:
+                task.due = datetime.fromisoformat(due)
+        except ValueError:
+            pass
+
+    # source_ref is encoded in description metadata by the adapter
+    if source_ref:
+        if not task.description:
+            task.description = ""
+        # The adapter handles meta encoding, but we need source_ref accessible
+        # Store it as a metadata comment that _task_to_dict can extract
+        meta_parts = []
+        if energy:
+            meta_parts.append(f"energy:{energy}")
+        if context:
+            meta_parts.append(f"context:{context}")
+        meta_parts.append(f"source_ref:{source_ref}")
+        meta_comment = "<!-- meta: " + ", ".join(meta_parts) + " -->"
+        if notes:
+            task.description = notes + "\n\n" + meta_comment
+        else:
+            task.description = meta_comment
+
+    _who = _actor.resolve_actor(actor)
+    with _as_actor(_who) as adapter:
+        result = adapter.create(task, narrate=narrate)
+    result_dict = _to_dict(result)
+
+    # Sign it. `source` (manual/subtask/islah-import) stays in tasks.created_by
+    # where every existing consumer reads it; the real actor goes to the audit
+    # trail, which is the only place that ever meant "who".
+    _tid = result_dict.get("id")
+    _actor.record_created(_tid, status, _who, source=source,
+                          conn=_get_adapter()._conn)
+    _actor.set_modified_by(_tid, _who, conn=_get_adapter()._conn)
+    result_dict["created_by"] = _actor.actor_to_dict(_who)
+
+    # Fire side effects
+    if parent:
+        _log_activity("subtask_added", result_dict.get("id"), title, project,
+                      detail=f"under {parent}")
+    else:
+        _on_task_created(result_dict)
+
+    return result_dict
+
+
+def add_subtask(parent_id: str, title: str, priority: int = None,
+                status: str = "todo", actor: str | None = None) -> dict | None:
+    """Add a subtask to an existing task."""
+    _who = _actor.resolve_actor(actor)
+    with _as_actor(_who) as adapter:
+        result = adapter.add_subtask(parent_id, title, priority=priority,
+                                     status=status)
+    if result is None:
+        return None
+    result_dict = _to_dict(result)
+
+    _tid = result_dict.get("id")
+    _actor.record_created(_tid, status, _who, source="subtask",
+                          conn=_get_adapter()._conn)
+    _actor.set_modified_by(_tid, _who, conn=_get_adapter()._conn)
+    result_dict["created_by"] = _actor.actor_to_dict(_who)
+
+    _log_activity("subtask_added", result_dict.get("id"), title,
+                  result_dict.get("project"), detail=f"under {parent_id}")
+    return result_dict
+
+
+def complete_task(task_id: str, actor: str | None = None) -> dict | None:
+    """Mark a task as done. Auto-cascades parent if all siblings done."""
+    # Whoever closes this owns the claim that it is done, so resolve BEFORE
+    # the mutation — the adapter writes the entity_history row itself, and it
+    # credits whatever actor it is holding at that moment.
+    _who = _actor.resolve_actor(actor)
+    with _as_actor(_who) as adapter:
+        result = adapter.complete_task(task_id)
+    if result is None:
+        return None
+
+    result_dict = _to_dict(result)
+    _actor.set_modified_by(task_id, _who, conn=_get_adapter()._conn)
+    result_dict["completed_by"] = _actor.actor_to_dict(_who)
+
+    # Side effects
+    _on_task_completed(result_dict)
+
+    # Clear live context if this was the active task
+    clear_live_context(task_id)
+
+    # If parent auto-completed via cascade, fire side effects for that too
+    if result_dict.get("auto_completed"):
+        parent_id = result_dict.get("parent")
+        if parent_id:
+            parent = get_task(parent_id)
+            if parent and parent.get("status") == "done":
+                # The adapter records the cascade as system:work, which is
+                # correct — no human decided to close the parent. Record who
+                # triggered it so the trail leads back to a person or agent.
+                _actor.record_change(
+                    parent_id,
+                    f"auto-completed by cascade from {task_id}", _who,
+                    conn=_get_adapter()._conn,
+                )
+                _actor.set_modified_by(parent_id, _who, conn=_get_adapter()._conn)
+                notify_initiative_event(
+                    "phase_completed",
+                    parent.get("title", parent_id),
+                    task_id=parent_id,
+                    project=parent.get("project"),
+                )
+                _sync_initiative_checkbox(parent)
+
+    return result_dict
+
+
+def start_task(task_id: str, session_id: str = None,
+               actor: str | None = None) -> dict | None:
+    """Move a task to active status and set live context."""
+    _who = _actor.resolve_actor(actor)
+    with _as_actor(_who) as adapter:
+        result = adapter.start_task(task_id)
+    if result is None:
+        return None
+
+    result_dict = _to_dict(result)
+    _actor.set_modified_by(task_id, _who, conn=_get_adapter()._conn)
+    result_dict["started_by"] = _actor.actor_to_dict(_who)
+
+    _log_activity("task_started", result_dict.get("id"),
+                  result_dict.get("title"), result_dict.get("project"))
+    set_live_context(result_dict, session_id=session_id)
+    return result_dict
+
+
+def cancel_task(task_id: str, actor: str | None = None) -> dict | None:
+    """Cancel a task."""
+    _who = _actor.resolve_actor(actor)
+    with _as_actor(_who) as adapter:
+        result = adapter.cancel_task(task_id)
+    if result is None:
+        return None
+    result_dict = _to_dict(result)
+    _actor.set_modified_by(task_id, _who, conn=_get_adapter()._conn)
+
+    _log_activity("task_cancelled", result_dict.get("id"),
+                  result_dict.get("title"), result_dict.get("project"))
+    clear_live_context(task_id)
+    return result_dict
+
+
+def update_task(task_id: str, actor: str | None = None, **fields) -> dict | None:
+    """Update arbitrary fields on a task.
+
+    Emits ``task.status_changed`` when the status actually changes, carrying
+    ``updated_from`` (the prior status) — the signal the board needs to live-
+    update and the audit seed the runner will consume later. Previously this
+    path was silent (spec §2.4), so ``work update`` never reached the browser.
+
+    Every changed field is signed: the adapter writes one entity_history row
+    per changed column, and the resolved actor is threaded into it both by the
+    explicit ``_actor``/``_actor_type``/``_session_id`` keys the adapter reads
+    and by the ``_as_actor`` seam that covers everything else it writes.
+    """
+    before = get_task(task_id)
+
+    _who = _actor.resolve_actor(actor)
+    fields.setdefault("_actor", _actor.to_adapter_string(_who))
+    fields.setdefault("_actor_type", _actor.actor_type_for(_who))
+    if _who.session_id:
+        fields.setdefault("_session_id", _who.session_id)
+
+    with _as_actor(_who) as adapter:
+        result = adapter.update(task_id, fields)
+    if result is None:
+        return None
+    result_dict = _to_dict(result)
+    _actor.set_modified_by(task_id, _who, conn=_get_adapter()._conn)
+
+    old_status = before.get("status") if before else None
+    new_status = result_dict.get("status")
+
+    if old_status is not None and new_status != old_status:
+        _log_activity("task_status_changed", task_id,
+                      result_dict.get("title"), result_dict.get("project"),
+                      detail=f"{old_status} → {new_status}")
+        _notify_dashboard({
+            "action": "task.status_changed",
+            "task_id": task_id,
+            "title": result_dict.get("title"),
+            "project": result_dict.get("project"),
+            "status": new_status,
+            "updated_from": {"status": old_status},
+            "ts": datetime.now().isoformat(),
+        })
+    return result_dict
+
+
+def delegate_task(task_id: str, agent: str, by: str = "operator",
+                  actor: str | None = None) -> dict | None:
+    """Delegate a task to an agent (the state transition, spec §3.1/§4 P1).
+
+    Emits ``task.delegated`` {task_id, holder, by, ts} — the exact hook the
+    future runner subscribes to (spec §4 Phase 1) — plus ``task.status_changed``
+    for board liveness, and records entity_history in the adapter.
+    """
+    before = get_task(task_id)
+    _who = _actor.resolve_actor(actor or by)
+    with _as_actor(_who) as adapter:
+        result = adapter.delegate(task_id, agent, by=by)
+    if result is None:
+        return None
+    result_dict = _to_dict(result)
+    holder = result_dict.get("held_by") or f"agent:{agent}"
+    _actor.set_modified_by(task_id, _who, conn=_get_adapter()._conn)
+    _log_activity("task_delegated", task_id, result_dict.get("title"),
+                  result_dict.get("project"), detail=f"→ {holder}")
+    _notify_dashboard({
+        "action": "task.delegated",
+        "task_id": task_id,
+        "holder": holder,
+        "by": by,
+        "title": result_dict.get("title"),
+        "project": result_dict.get("project"),
+        "ts": datetime.now().isoformat(),
+    })
+    old_status = before.get("status") if before else None
+    new_status = result_dict.get("status")
+    if old_status is not None and new_status != old_status:
+        _notify_dashboard({
+            "action": "task.status_changed",
+            "task_id": task_id,
+            "title": result_dict.get("title"),
+            "project": result_dict.get("project"),
+            "status": new_status,
+            "updated_from": {"status": old_status},
+            "ts": datetime.now().isoformat(),
+        })
+    return result_dict
+
+
+def hold_task(task_id: str, by: str = "operator",
+              actor: str | None = None) -> dict | None:
+    """Take a delegated task back (operator becomes the holder again).
+
+    Emits ``task.delegated`` with holder='operator' so the runner drops it from
+    its queue — one event type carries every holder change.
+    """
+    _who = _actor.resolve_actor(actor or by)
+    with _as_actor(_who) as adapter:
+        result = adapter.hold(task_id, by=by)
+    if result is None:
+        return None
+    result_dict = _to_dict(result)
+    _actor.set_modified_by(task_id, _who, conn=_get_adapter()._conn)
+    _log_activity("task_held", task_id, result_dict.get("title"),
+                  result_dict.get("project"), detail="→ operator")
+    _notify_dashboard({
+        "action": "task.delegated",
+        "task_id": task_id,
+        "holder": "operator",
+        "by": by,
+        "title": result_dict.get("title"),
+        "project": result_dict.get("project"),
+        "ts": datetime.now().isoformat(),
+    })
+    return result_dict
+
+
+def delete_task(task_id: str) -> bool:
+    """Permanently remove a task."""
+    return _get_adapter().delete(task_id)
+
+
+# ── Activity log (narrative layer) ──────────────────────
+
+def append_activity(task_id: str, kind: str, body: str,
+                    data: dict | None = None, actor: str | None = None) -> dict | None:
+    """Append an activity entry to a task's narrative log.
+
+    The agent/operator hand-append path (attempt / proof / comment / blocked /
+    unblocked / linked). Emits ``task.activity`` so the board timeline updates
+    live. Auto-narration kinds (created/status_changed/…) are refused here —
+    those are written only by the mutation choke point in the adapter.
+    """
+    if get_task(task_id) is None:
+        return None
+    entry = _get_adapter().append_activity(
+        task_id, kind, body, data=data, actor=actor, manual=True,
+    )
+    if entry is None:
+        return None
+    _notify_dashboard({
+        "action": "task.activity",
+        "task_id": task_id,
+        "kind": kind,
+        "actor": entry.get("actor"),
+        "body": body,
+        "ts": entry.get("ts") or datetime.now().isoformat(),
+    })
+    return entry
+
+
+def get_task_activity(task_id: str, limit: int = 200) -> list:
+    """Return a task's narrative activity, oldest-first."""
+    return _get_adapter().list_activity(task_id, limit=limit)
+
+
+def get_subtasks(parent_id: str) -> list:
+    """Get all subtasks of a parent task."""
+    tasks = _get_adapter().list(filters={"parent_id": parent_id}, limit=10000)
+    return [_to_dict(t) for t in tasks]
+
+
+def get_task_tree(task_id: str) -> dict | None:
+    """Get a task with its subtasks attached."""
+    result = _get_adapter().get_task_tree(task_id)
+    if result is None:
+        return None
+    return _to_dict(result)
+
+
+# ── Handoff ─────────────────────────────────────────────
+
+def write_handoff(task_id: str, state: str, next_step: str = None,
+                  files_touched: list = None, decisions: list = None,
+                  blockers: list = None, actor: str | None = None) -> dict | None:
+    """Write handoff context for a task."""
+    _who = _actor.resolve_actor(actor)
+    with _as_actor(_who) as adapter:
+        result = adapter.write_handoff(
+            task_id, state,
+            next_step=next_step,
+            files_touched=files_touched,
+            decisions=decisions,
+            blockers=blockers,
+        )
+    if result is None:
+        return None
+    result_dict = _to_dict(result)
+    # Not a column edit, so it lands under the `handoff` pseudo-field rather
+    # than pretending to be a field diff.
+    _actor.record_change(task_id, "wrote a handoff", _who,
+                         field="handoff", new=next_step or state,
+                         conn=_get_adapter()._conn)
+    _actor.set_modified_by(task_id, _who, conn=_get_adapter()._conn)
+    _log_activity("handoff_written", result_dict.get("id"),
+                  result_dict.get("title"), result_dict.get("project"),
+                  detail=next_step[:80] if next_step else None)
+    return result_dict
+
+
+def get_handoff(task_id: str) -> dict | None:
+    """Get handoff context for a task."""
+    task = get_task(task_id)
+    if task:
+        return task.get("handoff")
+    return None
+
+
+def build_handoff_prompt(task_id: str) -> str | None:
+    """Build a dispatch prompt section from a task's handoff context."""
+    task = get_task(task_id)
+    if not task:
+        return None
+    return _handoff_fmt.build_prompt(task)
+
+
+# ── Live Context ────────────────────────────────────────
+
+def get_live_context() -> dict | None:
+    """Read current live context."""
+    return _live_ctx.get()
+
+
+def set_live_context(task: dict, session_id: str = None) -> None:
+    """Set the live work context."""
+    _live_ctx.set(task, session_id=session_id)
+
+
+def clear_live_context(task_id: str = None) -> dict | None:
+    """Clear live context. Returns old context if it existed."""
+    return _live_ctx.clear(task_id)
+
+
+# ── Project CRUD ────────────────────────────────────────
+
+def get_all_projects() -> list:
+    """Get all projects as dicts."""
+    projects = _get_adapter().list(filters={"_type": "project"}, limit=10000)
+    return [_to_dict(p) for p in projects]
+
+
+def add_project(title: str, goal: str = None, done_when: str = None,
+                appetite: str = None, short_id: str = None,
+                initiative: str = None, project_id: str = None) -> dict:
+    """Create a new project."""
+    # Build description from extra fields that have no dedicated column.
+    # short_id is now a first-class column on projects (passed below), so it
+    # is no longer encoded into the description.
+    desc_parts = []
+    if appetite:
+        desc_parts.append(f"appetite:{appetite}")
+    if initiative:
+        desc_parts.append(f"initiative:{initiative}")
+    description = ", ".join(desc_parts) if desc_parts else None
+
+    project = Project(
+        id=project_id or "",  # auto-generated by adapter if empty
+        title=title,
+        description=description,
+        goal=goal,
+        done_when=done_when,
+        short_id=short_id,
+    )
+    result = _get_adapter().create(project)
+    result_dict = _to_dict(result)
+
+    # Enrich return dict with extra fields for CLI display
+    if appetite:
+        result_dict["appetite"] = appetite
+    if short_id:
+        result_dict["short_id"] = short_id
+    if initiative:
+        result_dict["initiative"] = initiative
+    if not result_dict.get("started"):
+        result_dict["started"] = _today()
+
+    return result_dict
+
+
+def update_project(project_id: str, **fields) -> dict | None:
+    """Update arbitrary fields on a project."""
+    result = _get_adapter().update(project_id, fields)
+    if result is None:
+        return None
+    return _to_dict(result)
+
+
+def delete_project(project_id: str) -> bool:
+    """Remove a project."""
+    return _get_adapter().delete(project_id)
+
+
+# ── Goal CRUD ───────────────────────────────────────────
+
+def get_all_goals() -> list:
+    """Get all goals as dicts."""
+    goals = _get_adapter().list(filters={"_type": "goal"}, limit=10000)
+    return [_to_dict(g) for g in goals]
+
+
+def add_goal(title: str, goal_type: str = "committed", weight: float = None) -> dict:
+    """Create a new goal."""
+    goal = Goal(
+        id="",  # auto-generated
+        title=title,
+        weight=int(weight) if weight is not None else 0,
+        description=goal_type,
+    )
+    result = _get_adapter().create(goal)
+    result_dict = _to_dict(result)
+    result_dict["type"] = goal_type
+    return result_dict
+
+
+def update_goal(goal_id: str, **fields) -> dict | None:
+    """Update arbitrary fields on a goal."""
+    result = _get_adapter().update(goal_id, fields)
+    if result is None:
+        return None
+    return _to_dict(result)
+
+
+def delete_goal(goal_id: str) -> bool:
+    """Remove a goal."""
+    return _get_adapter().delete(goal_id)
+
+
+# ── Thread CRUD ─────────────────────────────────────────
+
+def get_all_threads() -> list:
+    """Get all threads."""
+    threads = _get_adapter().list(filters={"_type": "thread"}, limit=10000)
+    return [_to_dict(t) for t in threads]
+
+
+def get_thread(thread_id: str) -> dict | None:
+    """Get a single thread by ID."""
+    result = _get_adapter().get(thread_id)
+    if result is None:
+        return None
+    return _to_dict(result)
+
+
+def add_thread(title: str, session_id: str = None, cwd: str = None,
+               project: str = None) -> dict:
+    """Create a new thread."""
+    result = _get_adapter().create({
+        "_type": "thread",
+        "title": title,
+        "session_id": session_id,
+        "cwd": cwd,
+        "project": project,
+    })
+    return _to_dict(result) if not isinstance(result, dict) else result
+
+
+def update_thread(thread_id: str, **fields) -> dict | None:
+    """Update fields on a thread."""
+    # Threads use adapter.update but need the thread in the threads table
+    adapter = _get_adapter()
+    # Thread updates go through direct SQL since adapter.update checks tasks first
+    conn = adapter._conn
+    field_map = {
+        "title": "title",
+        "status": "status",
+        "project": "project_id",
+        "project_id": "project_id",
+    }
+    sets = []
+    params = []
+    for key, val in fields.items():
+        col = field_map.get(key)
+        if col:
+            sets.append(f"{col} = ?")
+            params.append(val)
+    if not sets:
+        return get_thread(thread_id)
+    params.append(thread_id)
+    conn.execute(f"UPDATE threads SET {', '.join(sets)} WHERE id = ?", params)
+    conn.commit()
+    return get_thread(thread_id)
+
+
+def promote_thread(thread_id: str, project_title: str = None,
+                   goal: str = None) -> dict | None:
+    """Promote a thread to a project."""
+    result = _get_adapter().promote_thread(thread_id, project_title=project_title, goal=goal)
+    if result is None:
+        return None
+    return _to_dict(result)
+
+
+def _strip_worktree(path: Path) -> Path:
+    """A worktree path collapsed to the project it is a checkout of.
+
+    `<project>/.claude/worktrees/<branch-slug>` is the sanctioned layout
+    (rules/project-structure.md), so the project root is everything above the
+    `.claude` segment. Matching against the project's recorded `path` already
+    covers this — but only when the project HAS a path recorded; this makes the
+    name fallback work for worktrees too.
+    """
+    parts = path.parts
+    for i in range(len(parts) - 1):
+        if (parts[i], parts[i + 1]) == WORKTREE_SEGMENTS:
+            return Path(*parts[:i]) if i else path
+    return path
+
+
+def _framework_project() -> str | None:
+    """FRAMEWORK_PROJECT, but only if this machine actually tracks it."""
+    try:
+        row = _get_adapter()._conn.execute(
+            "SELECT id FROM projects WHERE id = ?", (FRAMEWORK_PROJECT,)
+        ).fetchone()
+    except Exception:  # noqa: BLE001
+        return None
+    return row["id"] if row else None
+
+
+def project_for_cwd(cwd: str | None) -> str | None:
+    """The project a directory belongs to, seeing through the spellings.
+
+    `detect_project_from_cwd` matches a directory against recorded project
+    paths, which is right but literal. One logical checkout answers to several
+    directory names, and each one used to mint its own thread:
+
+      ~/project/aos                                 the project root
+      ~/project/aos/.claude/worktrees/feat-x        a worktree of it
+      /Volumes/AOS-X/project/aos/...                the same thing, unsymlinked
+      ~/aos  ->  ~/aos-releases/v0.7.6-dff5c0d      the release symlink target,
+                                                    renamed on every update
+
+    The release case is the one that did the damage: the live DB held 2,015
+    threads under the single title "Work in v0.7.1-bdd0739", because the version
+    directory changes name every release (aos#223, migrations 115 and 121).
+
+    Returns None when nothing resolves — callers then fall back to the raw
+    directory, which is the pre-v0.7.7 behaviour for untracked dirs.
+    """
+    if not cwd:
+        return None
+    raw = Path(cwd).expanduser()
+    try:
+        resolved = raw.resolve()
+    except OSError:
+        resolved = raw
+
+    candidates = [resolved] if resolved == raw else [resolved, raw]
+    for candidate in candidates:
+        if RELEASE_DIR_NAME in candidate.parts:
+            framework = _framework_project()
+            if framework:
+                return framework
+        found = detect_project_from_cwd(str(_strip_worktree(candidate)))
+        if found:
+            return found
+    return None
+
+
+def is_auto_thread(thread: dict) -> bool:
+    """True if this thread was generated by a SessionEnd, not opened by anyone.
+
+    The discriminator is the generated title shape, which is also what migration
+    115 used to close 3,574 of them and what migration 129 uses to close the
+    rest — one definition, three readers, so they cannot disagree about what
+    they are talking about.
+
+    A promoted thread is never "auto", whatever its title: promotion is the
+    operator saying this one matters, and it is the only signal in the table
+    that anybody ever looked at a thread (2 of 4,641 rows, live).
+    """
+    if not thread:
+        return False
+    if thread.get("status") == "promoted":
+        return False
+    return str(thread.get("title") or "").startswith(AUTO_THREAD_PREFIX)
+
+
+def curated_threads(limit: int = 3, project_id: str | None = None) -> list[dict]:
+    """Open threads a human actually opened or promoted, best first.
+
+    The briefing renders these and nothing else. 4,639 of the live DB's 4,641
+    threads are auto-generated "Work in <dir>" rows; a line per directory the
+    operator happened to hold a session in is a changelog of the filesystem, not
+    context worth paying tokens for on every session.
+
+    ``project_id`` floats this directory's project to the front — continuity
+    here is worth more than continuity elsewhere — without hiding the handful of
+    curated threads from other projects.
+    """
+    threads = [
+        t for t in get_all_threads()
+        if t.get("status") != "closed" and not is_auto_thread(t)
+    ]
+    # Two stable passes rather than one key: date descending cannot be expressed
+    # in the same tuple as the ascending group keys without negating a string.
+    threads.sort(key=lambda t: t.get("started") or "", reverse=True)
+    threads.sort(
+        key=lambda t: (
+            0 if project_id and t.get("project") == project_id else 1,
+            0 if t.get("status") == "promoted" else 1,
+        )
+    )
+    return threads[:limit]
+
+
+def find_thread_by_project(project_id: str) -> dict | None:
+    """The project's one open thread, if it has one.
+
+    Most recent first, and `rowid` breaks the tie because `threads.created_at`
+    holds a bare date — several threads a day share a value, and an ordering
+    that is not total is an ordering that can move between calls.
+    """
+    if not project_id:
+        return None
+    adapter = _get_adapter()
+    row = adapter._conn.execute(
+        "SELECT id FROM threads WHERE project_id = ? AND status != 'closed' "
+        "ORDER BY created_at DESC, rowid DESC LIMIT 1",
+        (project_id,),
+    ).fetchone()
+    if not row:
+        return None
+    return get_thread(row["id"])
+
+
+def find_thread_by_cwd(cwd: str) -> dict | None:
+    """Find the most recent open (non-closed) thread created for this cwd.
+
+    aos#223: this used to be a permanent ``return None`` because work.db
+    predated a ``cwd`` column on ``threads`` — every call site treated that as
+    "no thread yet" and created a new one, without limit. The adapter now
+    self-heals the column (``WorkAdapter._ensure_aux_schema``), so this does
+    a real lookup: a directory that already has an open thread gets it back
+    instead of a duplicate. A thread closed by migration 115's stale-thread
+    sweep is deliberately excluded — the next session in that directory
+    starts a fresh one rather than resurrecting a closed thread.
+    """
+    adapter = _get_adapter()
+    row = adapter._conn.execute(
+        "SELECT id FROM threads WHERE cwd = ? AND status != 'closed' "
+        "ORDER BY created_at DESC LIMIT 1",
+        (cwd,),
+    ).fetchone()
+    if not row:
+        return None
+    return get_thread(row["id"])
+
+
+# ── Inbox ───────────────────────────────────────────────
+
+def get_inbox(include_snoozed: bool = False) -> list:
+    """Get inbox items. Snoozed items are hidden by default — pass
+    ``include_snoozed=True`` for callers (e.g. reconcile's dedup lookup) that
+    need to find a deferred item rather than only what a human would see."""
+    filters = {"_type": "inbox"}
+    if include_snoozed:
+        filters["include_snoozed"] = True
+    items = _get_adapter().list(filters=filters, limit=10000)
+    return [_to_dict(i) for i in items]
+
+
+def add_inbox(text: str, source: str = "manual", confidence: float = None,
+              fingerprint: str = None) -> dict:
+    """Add an inbox item.
+
+    ``fingerprint`` is the reconcile dedup key (source + fingerprint together
+    identify "the same standing finding" — see reconcile/inbox_sink.py).
+    """
+    obj = {"text": text, "source": source}
+    if confidence is not None:
+        obj["confidence"] = confidence
+    if fingerprint is not None:
+        obj["fingerprint"] = fingerprint
+    result = _get_adapter().create(obj)
+    return _to_dict(result) if not isinstance(result, dict) else result
+
+
+def find_inbox_by_fingerprint(source: str, fingerprint: str) -> dict | None:
+    """Find a standing inbox item by (source, fingerprint) — used to update a
+    re-notified finding instead of creating a duplicate row. Snoozed items are
+    included: a deferred finding should still be recognized, not doubled."""
+    for item in get_inbox(include_snoozed=True):
+        if item.get("source") == source and item.get("fingerprint") == fingerprint:
+            return item
+    return None
+
+
+def touch_inbox(inbox_id: str, text: str = None) -> dict | None:
+    """Re-notify an existing inbox item: bump its count, refresh last_seen,
+    and (optionally) replace its text with the latest rendering."""
+    return _get_adapter().touch_inbox(inbox_id, text=text)
+
+
+def promote_inbox(inbox_id: str, as_title: str = None,
+                  project: str = None, priority: int = 3) -> dict | None:
+    """Promote an inbox item to a task, then remove the inbox row.
+
+    Deleting the inbox row IS the triage decision — for ambient proposals the
+    comms.db stamp is retained (proposer.py), so a promoted/dismissed item is
+    never re-proposed.
+    """
+    adapter = _get_adapter()
+    row = adapter._conn.execute(
+        "SELECT * FROM inbox WHERE id = ?", (inbox_id,)
+    ).fetchone()
+    if not row:
+        return None
+    title = as_title or row["text"]
+    adapter._conn.execute("DELETE FROM inbox WHERE id = ?", (inbox_id,))
+    adapter._conn.commit()
+    return add_task(title, project=project, priority=priority, source="inbox")
+
+
+def snooze_inbox(inbox_id: str, until: str) -> bool:
+    """Defer an inbox item until ``until`` (ISO8601 timestamp)."""
+    return _get_adapter().snooze_inbox(inbox_id, until)
+
+
+def delete_inbox(inbox_id: str) -> bool:
+    """Delete (dismiss) an inbox item.
+
+    For an ambient proposal this is the dismissal — the comms.db entity keeps
+    its ``ontology_id`` stamp (proposer.py), so it stays out of future runs.
+    """
+    adapter = _get_adapter()
+    cur = adapter._conn.execute("DELETE FROM inbox WHERE id = ?", (inbox_id,))
+    adapter._conn.commit()
+    return cur.rowcount > 0
+
+
+# ── Session Linking ─────────────────────────────────────
+
+def link_session_to_task(task_id: str, session_id: str, outcome: str = None,
+                         date_str: str = None) -> dict | None:
+    """Link a session to a task."""
+    result = _get_adapter().link_session_to_task(task_id, session_id, outcome=outcome)
+    if result is None:
+        return None
+    return _to_dict(result)
+
+
+def link_session_to_thread(thread_id: str, session_id: str,
+                           notes: str = None, cwd: str = None,
+                           project: str = None) -> dict | None:
+    """Link a session to a thread."""
+    result = _get_adapter().link_session_to_thread(
+        thread_id, session_id, cwd=cwd, project=project
+    )
+    if result is None:
+        return None
+    d = _to_dict(result) if not isinstance(result, dict) else result
+    # CLI expects d["sessions"] as a list for len() — adapter returns session_count
+    if "session_count" in d and "sessions" not in d:
+        d["sessions"] = ["s"] * d["session_count"]
+    return d
+
+
+def get_or_create_thread_for_cwd(cwd: str, session_id: str,
+                                  title: str = None) -> dict:
+    """Find this project's open thread, or create the one and only one for it.
+
+    **Keyed on project, not cwd (v0.7.7).** aos#223 made this find-or-create
+    instead of always-create, which fixed repeated SessionEnds in the *same*
+    directory — and left the actual flood in place, because one project answers
+    to many directory names: three worktrees, the ~/project symlink, and ~/aos,
+    whose release target is renamed on every update. Keying on the cwd string
+    gave each spelling its own thread (4,635 rows across 23 titles in the live
+    DB, 2,015 of them under one title).
+
+    A project's thread is whatever open thread it already has, including one the
+    operator wrote or promoted: reusing it is the point. Minting an auto thread
+    beside a hand-written one for the same project is how "at most one" becomes
+    two. A *closed* thread is never resurrected — migration 115 closed 3,574 of
+    these deliberately, and the next session in that project starts fresh.
+
+    Falls back to the raw cwd when no project resolves, which is the behaviour
+    every untracked directory had before.
+    """
+    project = project_for_cwd(cwd)
+
+    if project:
+        thread = find_thread_by_project(project)
+        if thread:
+            link_session_to_thread(thread["id"], session_id, cwd=cwd,
+                                   project=project)
+            return thread
+        if not title:
+            title = f"{AUTO_THREAD_PREFIX}{project}"
+        return add_thread(title, session_id=session_id, cwd=cwd, project=project)
+
+    thread = find_thread_by_cwd(cwd)
+    if thread:
+        link_session_to_thread(thread["id"], session_id, cwd=cwd)
+        return thread
+
+    if not title:
+        title = f"{AUTO_THREAD_PREFIX}{Path(cwd).name}"
+    return add_thread(title, session_id=session_id, cwd=cwd)
+
+
+def find_tasks_by_project_or_cwd(cwd: str) -> list:
+    """Find active tasks that match a working directory."""
+    project_id = detect_project_from_cwd(cwd)
+    if not project_id:
+        return []
+    tasks = _get_adapter().list(
+        filters={"project_id": project_id, "status": "active"},
+        limit=10000
+    )
+    # Also get todo tasks
+    todo_tasks = _get_adapter().list(
+        filters={"project_id": project_id, "status": "todo"},
+        limit=10000
+    )
+    # Combine and sort by priority
+    all_tasks = list(tasks) + list(todo_tasks)
+    result = [_to_dict(t) for t in all_tasks]
+    result.sort(key=lambda t: (t.get("priority", 3), t.get("created", "")))
+    return result
+
+
+# ── Activity ────────────────────────────────────────────
+
+def get_activity(limit: int = 30) -> list:
+    """Get recent work activity events."""
+    if not ACTIVITY_FILE.exists():
+        return []
+    try:
+        with open(ACTIVITY_FILE, "r") as f:
+            events = yaml.safe_load(f) or []
+        return events[:limit]
+    except Exception:
+        return []
+
+
+def notify_initiative_event(action: str, title: str, **kwargs) -> None:
+    """Send an initiative event to the dashboard SSE stream."""
+    event = {
+        "action": action,
+        "title": title,
+        "ts": datetime.now().isoformat(),
+    }
+    event.update(kwargs)
+    _notify_dashboard(event)
+
+
+# ── Bulk / summary ──────────────────────────────────────
+
+def load_all() -> dict:
+    """Load all work data."""
+    return {
+        "version": "3.0",
+        "tasks": get_all_tasks(),
+        "projects": get_all_projects(),
+        "goals": get_all_goals(),
+        "threads": get_all_threads(),
+        "inbox": get_inbox(),
+    }
+
+
+def summary() -> dict:
+    """Quick summary stats."""
+    return _get_adapter().summary()
+
+
+# ── Move / Migration ────────────────────────────────────
+
+def move_tasks_to_project(task_ids: list[str], target_project: str,
+                          actor: str | None = None) -> list[dict]:
+    """Move tasks (and their subtasks) to a new project, re-IDing them.
+
+    Returns list of dicts with old_id and new_id for each moved task.
+    """
+    adapter = _get_adapter()
+    conn = adapter._conn
+
+    # Derive the scoped-id prefix from the handle (short_id-aware), then
+    # resolve the handle to the canonical projects.id for the FK so a
+    # short_id target (e.g. --to dod) doesn't violate the foreign key.
+    prefix = adapter._project_prefix(target_project)
+    target_project = adapter._resolve_project_id(target_project)
+    moved = []
+
+    # Build full set of IDs to move (including subtasks)
+    ids_to_move = set()
+    for tid in task_ids:
+        ids_to_move.add(tid)
+        sub_rows = conn.execute(
+            "SELECT id FROM tasks WHERE parent_id = ?", (tid,)
+        ).fetchall()
+        for r in sub_rows:
+            ids_to_move.add(r["id"])
+
+    # Sort: parents first, then subtasks
+    sorted_ids = sorted(ids_to_move, key=lambda x: (x.count("."), x))
+
+    id_map = {}
+    now = _now()
+
+    for old_id in sorted_ids:
+        row = conn.execute("SELECT * FROM tasks WHERE id = ?", (old_id,)).fetchone()
+        if not row:
+            continue
+
+        is_subtask = "." in old_id
+
+        if is_subtask:
+            old_parent = old_id.rsplit(".", 1)[0]
+            new_parent = id_map.get(old_parent, old_parent)
+            new_id = adapter._next_subtask_id(new_parent)
+        else:
+            new_id = adapter._next_scoped_id(prefix)
+
+        id_map[old_id] = new_id
+
+        # Prepare tags (strip old initiative tags)
+        old_tags_str = row["tags"]
+        old_tags = json.loads(old_tags_str) if old_tags_str else []
+        new_tags = [t for t in old_tags if not t.startswith("initiative:")] if old_tags else None
+
+        # Create new task row with new ID
+        conn.execute(
+            "INSERT INTO tasks "
+            "(id, title, status, priority, project_id, description, "
+            " assigned_to, created_by, created_at, started_at, completed_at, "
+            " due_at, parent_id, pipeline, pipeline_stage, recurrence, tags, "
+            " fields, version, modified_at) "
+            "SELECT ?, title, status, priority, ?, description, "
+            " assigned_to, created_by, created_at, started_at, completed_at, "
+            " due_at, ?, pipeline, pipeline_stage, recurrence, ?, "
+            " fields, version, ? "
+            "FROM tasks WHERE id = ?",
+            (
+                new_id, target_project,
+                id_map.get(row["parent_id"], row["parent_id"]) if is_subtask else row["parent_id"],
+                json.dumps(new_tags) if new_tags else None,
+                now, old_id,
+            ),
+        )
+
+        # Move handoff
+        ho_row = conn.execute(
+            "SELECT * FROM task_handoffs WHERE task_id = ?", (old_id,)
+        ).fetchone()
+        if ho_row:
+            conn.execute(
+                "INSERT OR REPLACE INTO task_handoffs "
+                "(task_id, state, next_step, files, decisions, blockers, session_id, timestamp) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (new_id, ho_row["state"], ho_row["next_step"], ho_row["files"],
+                 ho_row["decisions"], ho_row["blockers"], ho_row["session_id"],
+                 ho_row["timestamp"]),
+            )
+            conn.execute("DELETE FROM task_handoffs WHERE task_id = ?", (old_id,))
+
+        # Delete old task
+        conn.execute("DELETE FROM tasks WHERE id = ?", (old_id,))
+
+        moved.append({"old_id": old_id, "new_id": new_id})
+
+    conn.commit()
+
+    # Sign the move as what it is: a project_id change, plus the re-ID so the
+    # trail can be followed across the rename. entity_history keys on entity_id,
+    # so the old id's rows stay under the old id — the `moved_from` row is the
+    # bridge between them.
+    if moved:
+        _who = _actor.resolve_actor(actor)
+        for m in moved:
+            _actor.record_change(m["new_id"], "moved project", _who,
+                                 field="project_id", new=target_project,
+                                 conn=conn)
+            _actor.record_change(m["new_id"], "re-identified", _who,
+                                 field="moved_from", old=m["old_id"],
+                                 new=m["new_id"], conn=conn)
+            _actor.set_modified_by(m["new_id"], _who, conn=conn)
+
+    return moved
+
+
+def migrate_task_ids() -> dict:
+    """Migrate old t1, t2, ... IDs to new project-scoped IDs.
+
+    One-time tool behind `work migrate`. It used to try the predecessor work
+    module first (`import engine as _old_engine`) and fall back to the
+    implementation below; that module was deleted in v0.7.7, so the fallback is
+    now the only path — which is the code that already ran on every machine
+    where the optional import failed.
+    """
+    adapter = _get_adapter()
+    conn = adapter._conn
+    rows = conn.execute("SELECT * FROM tasks").fetchall()
+    id_map = {}
+
+    for row in rows:
+        old_id = row["id"]
+        if "#" in old_id:
+            continue
+
+        project = row["project_id"]
+        prefix = adapter._project_prefix(project)
+        new_id = adapter._next_scoped_id(prefix)
+
+        conn.execute(
+            "INSERT INTO tasks "
+            "(id, title, status, priority, project_id, description, "
+            " assigned_to, created_by, created_at, started_at, completed_at, "
+            " due_at, parent_id, pipeline, pipeline_stage, recurrence, tags, "
+            " version, modified_at) "
+            "SELECT ?, title, status, priority, project_id, description, "
+            " assigned_to, created_by, created_at, started_at, completed_at, "
+            " due_at, parent_id, pipeline, pipeline_stage, recurrence, tags, "
+            " version, ? "
+            "FROM tasks WHERE id = ?",
+            (new_id, _now(), old_id),
+        )
+        conn.execute(
+            "UPDATE task_handoffs SET task_id = ? WHERE task_id = ?",
+            (new_id, old_id),
+        )
+        conn.execute("DELETE FROM tasks WHERE id = ?", (old_id,))
+        id_map[old_id] = new_id
+
+    # Update parent references
+    for old, new in id_map.items():
+        conn.execute(
+            "UPDATE tasks SET parent_id = ? WHERE parent_id = ?",
+            (new, old),
+        )
+
+    conn.commit()
+    return id_map

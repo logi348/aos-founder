@@ -1,0 +1,53 @@
+#!/bin/bash
+# enrich-comms — nightly comms entity enrichment (Ambient Knowledge Phase 4).
+# Runs at 03:30 via cron, after email ingest (people-intel-refresh at 02:00) and
+# after backup-comms (03:15) so the freshest messages are enriched over a DB that
+# was just snapshotted.
+#
+# Runs the enrichment engine in nightly mode: incremental past the extraction
+# watermark, newest-first, bounded to nightly.max_runtime_min (default 45m) —
+# stops cleanly at the budget and resumes the next night. Storage gates inside
+# the engine refuse the run if the DB would breach the growth ceiling or disk is
+# low. Then GCs superseded entities past their TTL.
+#
+# Idempotent: the watermark makes every run pick up exactly where the last left
+# off; a mid-run kill loses only in-flight batches, which re-select next run.
+set -u
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+AOS_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+# Resolve through aos-python so this uses the interpreter AOS pinned in
+# .python-version, not whatever python3 the cron environment happens to
+# expose. Bare python3 here is why this job died on ModuleNotFoundError.
+PYTHON="${PYTHON:-$AOS_ROOT/core/bin/internal/aos-python}"
+ENGINE="$AOS_ROOT/core/engine/comms/enrich/engine.py"
+
+cd "$AOS_ROOT" || { echo "[enrich-comms] cannot cd to $AOS_ROOT" >&2; exit 1; }
+
+ts() { date '+%Y-%m-%d %H:%M:%S'; }
+
+AMBIENT="$AOS_ROOT/core/bin/cli/comms-ambient"
+
+echo "[enrich-comms] $(ts) nightly enrichment run"
+"$PYTHON" "$ENGINE"
+rc=$?
+
+# rc=42 is the engine's distinct "login expired — paused cleanly" signal (it has
+# already checkpointed and alerted the operator via Telegram). Everything below
+# is pure-DB work that does not need a login, so it still runs to keep the
+# ambient surface fresh; the paused rc is preserved and returned at the end.
+if [ "$rc" -eq 42 ]; then
+    echo "[enrich-comms] $(ts) enrichment PAUSED (login expired) — continuing DB-only maintenance"
+fi
+
+echo "[enrich-comms] $(ts) gc superseded entities"
+"$PYTHON" "$ENGINE" --gc || true
+
+# Ambient maintenance (Phase 5): rebuild per-person snapshots (post-enrichment),
+# expire stale nudges, and propose operator commitments to the work inbox IF
+# config ambient.propose_commitments is enabled (off by default — dry-run).
+echo "[enrich-comms] $(ts) ambient nightly maintenance"
+"$PYTHON" "$AMBIENT" nightly || true
+
+echo "[enrich-comms] $(ts) done (rc=$rc)"
+exit $rc

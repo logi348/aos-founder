@@ -1,0 +1,368 @@
+#!/usr/bin/env python3
+"""
+AOS Session Close Hook
+
+Runs on SessionEnd. Four jobs:
+1. Log session to ~/.aos/logs/sessions.jsonl
+2. Link session to work system tasks and threads
+3. Attribute the session to a PROJECT (see _resolve_session_project) and
+   nudge a brief recompile for that project.
+4. Detect untracked work — scan transcript for tool calls (Write, Edit, Bash)
+   and if substantial work happened but no tasks were started/completed/created,
+   log a "session_untracked" activity event so it shows up in the dashboard.
+
+Claude Code hooks protocol:
+- Read hook input from stdin (JSON with session info)
+- Async hook — no stdout expected
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import sys
+from datetime import datetime
+from pathlib import Path
+
+try:
+    import yaml as _yaml
+except ImportError:
+    _yaml = None
+
+try:
+    import glob as _glob
+except ImportError:
+    _glob = None
+
+LOG_DIR = Path.home() / ".aos" / "logs"
+LOG_FILE = LOG_DIR / "sessions.jsonl"
+
+# Add ontology backend to path
+_this_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, _this_dir)
+_work_dir = os.path.abspath(os.path.join(_this_dir, '..', '..', 'work'))
+sys.path.insert(0, _work_dir)
+
+
+# The directories this hook covered before project resolution existed. Kept as
+# a fallback, not as the rule: a machine whose projects have no `path` recorded
+# would otherwise silently stop getting threads.
+LEGACY_PROJECT_DIR_NAMES = ("aos", "nuchay", "chief-ios-app")
+
+
+def _belongs_to_tracked_work(engine, cwd: str) -> bool:
+    """Should a SessionEnd in this directory get a thread?
+
+    Yes if the directory resolves to a tracked project (including through a
+    worktree or the ~/aos release symlink — see backend.project_for_cwd), or if
+    it is one of the legacy three, matched on a path boundary so that a sibling
+    whose name merely starts the same way does not qualify.
+    """
+    try:
+        if engine.project_for_cwd(cwd):
+            return True
+    except Exception:  # noqa: BLE001 — a hook must never crash
+        pass
+    home = str(Path.home())
+    for name in LEGACY_PROJECT_DIR_NAMES:
+        d = os.path.join(home, name)
+        if cwd == d or cwd.startswith(d + os.sep):
+            return True
+    return False
+
+
+def _estimate_session_scope(transcript: str) -> dict:
+    """Analyze transcript to estimate what happened.
+
+    Returns: {
+        tool_calls: int,
+        files_modified: int,
+        has_writes: bool,
+        has_commits: bool,
+        work_tracked: bool (did agent use work CLI during session),
+        summary_hint: str,
+    }
+    """
+    if not transcript:
+        return {"tool_calls": 0, "files_modified": 0, "has_writes": False,
+                "has_commits": False, "work_tracked": False, "summary_hint": ""}
+
+    # Count tool usage signals
+    write_count = len(re.findall(r'(?:Write|Edit)\s*\(', transcript))
+    bash_count = len(re.findall(r'Bash\s*\(', transcript))
+    tool_calls = write_count + bash_count
+
+    # File modifications
+    file_paths = set(re.findall(r'file_path["\s:=]+([^\s"\']+)', transcript))
+    files_modified = len(file_paths)
+
+    # Git commits
+    has_commits = bool(re.search(r'git commit', transcript))
+
+    # Did the agent use the work CLI?
+    work_cli_calls = re.findall(r'work/cli\.py\s+(add|done|start|subtask|handoff)', transcript)
+    work_tracked = len(work_cli_calls) > 0
+
+    # Generate a hint about what happened
+    hint_parts = []
+    if files_modified > 0:
+        hint_parts.append(f"{files_modified} files modified")
+    if has_commits:
+        hint_parts.append("commits made")
+    if bash_count > 5:
+        hint_parts.append(f"{bash_count} commands run")
+    summary_hint = ", ".join(hint_parts) if hint_parts else ""
+
+    return {
+        "tool_calls": tool_calls,
+        "files_modified": files_modified,
+        "has_writes": write_count > 0,
+        "has_commits": has_commits,
+        "work_tracked": work_tracked,
+        "summary_hint": summary_hint,
+    }
+
+
+def _resolve_session_project(engine, cwd: str, explicit_task_ids: list,
+                              transcript: str) -> tuple[str | None, str | None]:
+    """Determine which project this session's work belongs to.
+
+    Priority (first confident match wins):
+      (a) tasks touched during the session — explicit_task_ids, resolved to
+          their `project` field. Unambiguous only: if the touched tasks span
+          more than one project, that's a real signal of ambiguity, not
+          something to guess through.
+      (b) the session's cwd matched against project `path` fields
+          (engine.detect_project_from_cwd — path match, then id/dir-name
+          fallback).
+      (c) explicit project mention in the transcript — lowest confidence,
+          only acted on when exactly one known project is named.
+
+    Returns (project_id, source) or (None, None). Never guesses: if nothing
+    is unambiguous, the caller records nothing rather than attributing to
+    the wrong project.
+    """
+    # (a) tasks touched
+    if explicit_task_ids:
+        touched_projects = set()
+        for tid in explicit_task_ids:
+            try:
+                task = engine.get_task(tid)
+            except Exception:
+                task = None
+            if task and task.get("project"):
+                touched_projects.add(task["project"])
+        if len(touched_projects) == 1:
+            return next(iter(touched_projects)), "task"
+        # len == 0 → no signal here, fall through
+        # len > 1 → genuinely ambiguous, fall through to cwd rather than guess
+
+    # (b) cwd matched against project path
+    try:
+        project_id = engine.detect_project_from_cwd(cwd)
+    except Exception:
+        project_id = None
+    if project_id:
+        return project_id, "cwd"
+
+    # (c) explicit project mention in transcript
+    if transcript:
+        try:
+            projects = engine.get_all_projects()
+        except Exception:
+            projects = []
+        mentioned = set()
+        for p in projects:
+            pid = p.get("id") or ""
+            title = (p.get("title") or "").strip()
+            if pid and re.search(rf'\b{re.escape(pid)}#\d', transcript):
+                mentioned.add(pid)
+            elif title and len(title) > 4 and title in transcript:
+                mentioned.add(pid)
+        if len(mentioned) == 1:
+            return next(iter(mentioned)), "mention"
+
+    return None, None
+
+
+def main():
+    # Read hook input from stdin
+    try:
+        hook_input = json.loads(sys.stdin.read())
+    except (json.JSONDecodeError, Exception):
+        hook_input = {}
+
+    session_id = hook_input.get("session_id", "unknown")
+    cwd = hook_input.get("cwd", os.getcwd())
+    transcript = hook_input.get("transcript", "")
+
+    # --- Step 1: Log to sessions.jsonl (always, even if work system fails) ---
+    entry = {
+        "ts": datetime.now().isoformat(timespec="seconds"),
+        "session_id": session_id,
+        "cwd": cwd,
+        "event": "session_end",
+    }
+
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    with open(LOG_FILE, "a") as f:
+        f.write(json.dumps(entry) + "\n")
+
+    # --- Step 2: Link to work system ---
+    try:
+        import backend as engine
+    except ImportError:
+        return  # Work engine not available, skip silently
+
+    if session_id == "unknown":
+        return  # No session ID, can't link
+
+    # Check for a session-context file that the inject_context hook may have written
+    context_file = Path.home() / ".aos" / "work" / ".session-context.json"
+    explicit_task_ids = []
+    session_ctx = {}
+    if context_file.exists():
+        try:
+            session_ctx = json.loads(context_file.read_text())
+            if session_ctx.get("session_id") == session_id:
+                explicit_task_ids = session_ctx.get("task_ids", [])
+            context_file.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+    # Link to explicitly referenced tasks
+    for task_id in explicit_task_ids:
+        engine.link_session_to_task(task_id, session_id)
+
+    # Find active tasks for this project directory and link
+    project_tasks = engine.find_tasks_by_project_or_cwd(cwd)
+    active_tasks = [t for t in project_tasks if t.get("status") == "active"]
+    for task in active_tasks:
+        engine.link_session_to_task(task["id"], session_id)
+
+    # Thread continuity — find or create the one thread for this project.
+    #
+    # The gate is "does this directory resolve to a tracked project", read from
+    # the project rows rather than from a hardcoded list that drifts. The legacy
+    # three directories stay as a fallback for a machine whose projects have no
+    # `path` recorded yet — but matched on a path BOUNDARY now. The bare
+    # startswith was a real bug, not a style point: "/Users/x/aos-releases/
+    # v0.7.1-bdd0739" startswith "/Users/x/aos", so every release directory
+    # passed this gate under a name that changes on every update, which is what
+    # fed the 2,015 threads titled "Work in v0.7.1-bdd0739" (aos#223). Release
+    # targets still get a thread — now via project resolution, which knows they
+    # are all the same checkout.
+    if _belongs_to_tracked_work(engine, cwd):
+        engine.get_or_create_thread_for_cwd(cwd, session_id)
+
+    # --- Step 2b: Update initiative documents ---
+    # initiative_ids were stored in session context by inject_context.py
+    initiative_ids = session_ctx.get("initiative_ids", []) if session_ctx else []
+
+    if _glob and initiative_ids:
+        try:
+            init_dir = os.path.join(str(Path.home()), "vault", "knowledge", "initiatives")
+            today = datetime.now().strftime("%Y-%m-%d")
+            for fpath in _glob.glob(os.path.join(init_dir, "*.md")):
+                try:
+                    with open(fpath) as f:
+                        content = f.read()
+                    fm_end = content.find("---", 3)
+                    if fm_end == -1:
+                        continue
+                    fm_text = content[3:fm_end]
+                    # Check if this initiative's title matches
+                    title_match = False
+                    for line in fm_text.split("\n"):
+                        if line.startswith("title:"):
+                            title_val = line.split(":", 1)[1].strip().strip('"').strip("'")
+                            if title_val in initiative_ids:
+                                title_match = True
+                            break
+                    if not title_match:
+                        continue
+                    # Surgical replacement: update only the 'updated:' line
+                    if re.search(r'^updated:', fm_text, re.MULTILINE):
+                        new_fm = re.sub(r'^updated:.*$', f'updated: {today}', fm_text, flags=re.MULTILINE)
+                    else:
+                        # No updated field — append it before the closing ---
+                        new_fm = fm_text.rstrip("\n") + f"\nupdated: {today}\n"
+                    body = content[fm_end + 3:]
+
+                    # Append to Progress section — just the date + session marker
+                    # The real detail comes from task completions logged by the work engine
+                    progress_entry = f"\n- {today}: Session — work performed"
+                    progress_marker = "## Progress"
+                    if progress_marker in body:
+                        # Find the end of the Progress section (next ## or end of file)
+                        prog_idx = body.index(progress_marker)
+                        after_header = body[prog_idx + len(progress_marker):]
+                        # Find next section or end
+                        next_section = after_header.find("\n## ")
+                        if next_section != -1:
+                            insert_at = prog_idx + len(progress_marker) + next_section
+                            body = body[:insert_at] + progress_entry + body[insert_at:]
+                        else:
+                            body = body.rstrip("\n") + progress_entry + "\n"
+
+                    new_content = "---" + new_fm + "---" + body
+                    # Atomic write
+                    tmp_path = fpath + ".tmp"
+                    with open(tmp_path, "w") as f:
+                        f.write(new_content)
+                    os.replace(tmp_path, fpath)
+                except Exception:
+                    pass  # never crash session_close for initiative updates
+        except Exception:
+            pass  # never crash
+
+    # --- Step 2c: Attribute session to a project, nudge a brief recompile ---
+    # Best-effort and silent — a missing brief module or a compile error must
+    # never break session close. See BRIEF-CONTRACT.md.
+    attributed_project, attribution_source = (None, None)
+    try:
+        attributed_project, attribution_source = _resolve_session_project(
+            engine, cwd, explicit_task_ids, transcript
+        )
+        if attributed_project:
+            engine._log_activity(
+                "session_project",
+                detail=f"session {session_id} attributed via {attribution_source}",
+                project=attributed_project,
+            )
+            try:
+                from brief import compile_brief  # lazy — module built in parallel
+                compile_brief(attributed_project)
+            except Exception:
+                pass
+    except Exception:
+        pass  # never crash session_close for project attribution
+
+    # --- Step 3: Detect untracked work ---
+    scope = _estimate_session_scope(transcript)
+
+    # Log session activity regardless
+    project_id = attributed_project or engine.detect_project_from_cwd(cwd)
+    dir_name = Path(cwd).name
+
+    if scope["files_modified"] > 0 or scope["tool_calls"] > 3:
+        # Substantial work happened
+        if not scope["work_tracked"] and not active_tasks:
+            # No work CLI usage AND no active tasks — work went untracked
+            engine._log_activity(
+                "session_untracked",
+                detail=scope["summary_hint"] or f"Session in {dir_name} with {scope['tool_calls']} tool calls",
+                project=project_id,
+            )
+        else:
+            # Work was tracked — log a normal session event
+            engine._log_activity(
+                "session_end",
+                detail=scope["summary_hint"] or f"Session in {dir_name}",
+                project=project_id,
+            )
+
+
+if __name__ == "__main__":
+    main()

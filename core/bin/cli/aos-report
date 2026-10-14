@@ -1,0 +1,606 @@
+#!/usr/bin/env python3
+"""
+AOS Report — file issues to GitHub with full context and notify developer.
+
+Called by Chief's report skill during conversations. NOT interactive.
+Takes structured JSON on stdin, files to GitHub, sends Telegram.
+
+Usage:
+    echo '{"title":"...","body":"...","labels":["bug"]}' | python3 aos-report
+    python3 aos-report --context   # just dump system context as JSON (for skill to use)
+    python3 aos-report --queued    # list reports still queued locally
+    python3 aos-report --drain     # retry filing every still-queued report
+
+Exit codes: 0 on success (created/commented, or nothing left queued after a
+--drain). Non-zero whenever a `gh` call fails — a report that only got queued
+locally is never reported as a silent success (aos#2323).
+
+Input JSON fields:
+    title:          Issue title (required)
+    body:           Issue body in markdown (required)
+    labels:         List of labels (default: ["bug"])
+    proposed_fix:   Code diff or description of fix (optional)
+    severity:       low/medium/high/critical (optional)
+    source_file:    File where the bug lives (optional)
+    duplicate_of:   Issue number if this is a dupe — will comment instead (optional)
+"""
+
+import importlib.util
+import json
+import re
+import socket
+import subprocess
+import sys
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+
+AOS_DIR = Path.home() / "aos"
+USER_DIR = Path.home() / ".aos"
+REPORT_LOG = USER_DIR / "logs" / "reports.jsonl"
+
+# The repo issues are filed against — explicit and never inferred from `cwd`.
+# On a release install ~/aos is a symlink into an unpacked release tarball
+# with no `.git`, so `gh` cannot infer a repo from `cwd=str(AOS_DIR)` the way
+# a dev checkout would let it (aos#2323). This is the one place that names
+# the repo for every `gh` call this script makes.
+GH_REPO = "AOS-Agent/aos"
+
+# The bridge's PII redactor, loaded by file path — same trick
+# core/engine/notify/router.py uses for this exact module, since a bare CLI
+# script isn't on anyone's sys.path. One phone/email scrubber shared with the
+# bridge's conversation store instead of a second regex drifting out of sync
+# (aos#2349).
+_STORE_PATH = (Path(__file__).resolve().parents[3]
+               / "core" / "services" / "bridge" / "conversation_store.py")
+_redact = None
+
+
+def _load_redact():
+    """Return the bridge's `redact()`, or None if it cannot be loaded."""
+    global _redact
+    if _redact is None:
+        try:
+            spec = importlib.util.spec_from_file_location(
+                "aos_conversation_store", _STORE_PATH
+            )
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            _redact = mod.redact
+        except Exception:
+            _redact = False
+    return _redact or None
+
+
+# ── System context ────────────────────────────────────────────────────────
+
+def collect_context() -> dict:
+    """Collect machine and system context for the report."""
+    ctx = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "hostname": socket.gethostname(),
+    }
+
+    # AOS version
+    version_file = AOS_DIR / "VERSION"
+    if version_file.exists():
+        ctx["aos_version"] = version_file.read_text().strip()
+
+    # Machine ID
+    mid_file = USER_DIR / ".machine-id"
+    if mid_file.exists():
+        ctx["machine_id"] = mid_file.read_text().strip()
+
+    # Operator name (first name only — not PII, it's their chosen display name)
+    try:
+        import yaml
+        op = yaml.safe_load((USER_DIR / "config/operator.yaml").read_text()) or {}
+        ctx["operator"] = op.get("name", "unknown")
+    except Exception:
+        ctx["operator"] = "unknown"
+
+    # macOS + arch
+    import platform
+    ctx["macos"] = platform.mac_ver()[0]
+    ctx["arch"] = platform.machine()
+    ctx["python"] = platform.python_version()
+
+    # Service status
+    try:
+        result = subprocess.run(
+            ["launchctl", "list"], capture_output=True, text=True, timeout=5
+        )
+        services = {}
+        for line in result.stdout.splitlines():
+            if "com.aos." in line:
+                parts = line.split("\t")
+                if len(parts) >= 3:
+                    name = parts[2].replace("com.aos.", "")
+                    pid = parts[0].strip()
+                    status = parts[1].strip()
+                    services[name] = {
+                        "running": pid != "-",
+                        "exit_code": int(status) if status != "-" else None,
+                    }
+        ctx["services"] = services
+    except Exception:
+        pass
+
+    # Recent errors from key logs (last 20 lines with error/fail/traceback)
+    errors = {}
+    log_dir = USER_DIR / "logs"
+    for log_name in ["bridge.log", "bridge.err.log", "dashboard.log", "crons/scheduler.log"]:
+        log_path = log_dir / log_name
+        if log_path.exists():
+            try:
+                lines = log_path.read_text().splitlines()[-100:]
+                err_lines = [
+                    l for l in lines
+                    if any(w in l.lower() for w in ["error", "fail", "traceback", "exception"])
+                ]
+                if err_lines:
+                    errors[log_name] = err_lines[-5:]
+            except Exception:
+                pass
+    if errors:
+        ctx["recent_errors"] = errors
+
+    # Git state
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(AOS_DIR), "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, timeout=5
+        )
+        ctx["git_commit"] = result.stdout.strip()
+    except Exception:
+        pass
+
+    return ctx
+
+
+# ── PII scrubbing ─────────────────────────────────────────────────────────
+
+def scrub(text: str) -> str:
+    """Remove PII from text before sending to GitHub."""
+    home = str(Path.home())
+    username = Path.home().name
+
+    # Paths and username
+    text = text.replace(home, "~")
+    text = re.sub(r'\b' + re.escape(username) + r'\b', '<user>', text)
+
+    # Phone numbers + email addresses: reuse the bridge's own redactor
+    # (core/services/bridge/conversation_store.py:redact, shipped 0.7.7)
+    # instead of a second regex here. The old pattern here —
+    # `r'[\+]?[\d\s\-\(\)]{10,}'` — matched any 10+ run of digits, whitespace,
+    # hyphens or parens, so it ate indented code, markdown tables, and ISO
+    # dates (aos#2349). The bridge's version already excludes ISO dates and
+    # requires a phone-shaped token boundary on both ends.
+    redact = _load_redact()
+    if redact is not None:
+        text = redact(text)
+    else:
+        # Bridge module unavailable (should not happen) — email-only
+        # fallback; never reintroduce a second phone pattern here.
+        text = re.sub(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', '<email>', text)
+
+    # IP addresses (except localhost)
+    text = re.sub(
+        r'\b(?!127\.0\.0\.1)(?!0\.0\.0\.0)\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b',
+        '<ip>', text
+    )
+
+    # Telegram bot tokens
+    text = re.sub(r'\d{8,}:[A-Za-z0-9_-]{30,}', '<token>', text)
+
+    # Long mixed-case strings that look like API keys (skip git SHAs)
+    def _redact_if_secret(m):
+        val = m.group(0)
+        if re.fullmatch(r'[0-9a-f]+', val) or re.fullmatch(r'[0-9A-F]+', val):
+            return val  # hex only = likely git SHA
+        return '<redacted>'
+    text = re.sub(r'\b[A-Za-z0-9]{40,}\b', _redact_if_secret, text)
+
+    return text
+
+
+# ── GitHub ─────────────────────────────────────────────────────────────────
+
+def search_existing_issues(title: str) -> list[dict]:
+    """Search for existing issues that might be duplicates."""
+    try:
+        # Extract key terms from title
+        words = re.sub(r'[^\w\s]', '', title.lower()).split()
+        # Filter out common words
+        stop = {'the', 'a', 'an', 'is', 'in', 'on', 'at', 'to', 'for', 'of', 'and', 'or', 'bug', 'fix', 'issue'}
+        terms = [w for w in words if w not in stop and len(w) > 2][:4]
+        query = ' '.join(terms)
+
+        result = subprocess.run(
+            ["gh", "issue", "list", "--repo", GH_REPO, "--search", query,
+             "--json", "number,title,url,state", "--limit", "5"],
+            capture_output=True, text=True, timeout=15,
+        )
+        if result.returncode == 0:
+            return json.loads(result.stdout)
+    except Exception:
+        pass
+    return []
+
+
+def file_issue(title: str, body: str, labels: list[str]) -> tuple[dict | None, str | None]:
+    """Create a GitHub Issue.
+
+    Returns ({"number", "url"}, None) on success, or (None, a human-readable
+    error) on failure. A failed `gh` call must never look like a silent
+    success (aos#2323) — the caller decides what to do with the error, but
+    it must always get one.
+    """
+    cmd = [
+        "gh", "issue", "create",
+        "--repo", GH_REPO,
+        "--title", title,
+        "--body", body,
+    ]
+    for label in labels:
+        cmd.extend(["--label", label])
+
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    except Exception as e:
+        return None, f"could not run gh: {e}"
+
+    if result.returncode == 0:
+        url = result.stdout.strip()
+        # Extract issue number from URL
+        match = re.search(r'/issues/(\d+)', url)
+        number = int(match.group(1)) if match else None
+        return {"number": number, "url": url}, None
+
+    stderr = (result.stderr or "").strip()
+    return None, stderr or f"gh exited {result.returncode}"
+
+
+def comment_on_issue(number: int, body: str) -> tuple[bool, str | None]:
+    """Add a comment to an existing issue.
+
+    Returns (True, None) on success, or (False, a human-readable error) on
+    failure — same contract as `file_issue` (aos#2323).
+    """
+    try:
+        result = subprocess.run(
+            ["gh", "issue", "comment", str(number), "--repo", GH_REPO, "--body", body],
+            capture_output=True, text=True, timeout=15,
+        )
+    except Exception as e:
+        return False, f"could not run gh: {e}"
+
+    if result.returncode == 0:
+        return True, None
+    stderr = (result.stderr or "").strip()
+    return False, stderr or f"gh exited {result.returncode}"
+
+
+# ── Telegram ───────────────────────────────────────────────────────────────
+
+def notify_developer(title: str, severity: str, operator: str,
+                     proposed_fix: bool, issue_url: str):
+    """Send Telegram notification to the developer."""
+    icons = {"critical": "🔴", "high": "🟠", "medium": "🐛", "low": "💡"}
+    icon = icons.get(severity, "🐛")
+
+    fix_note = "\nProposed fix included ✓" if proposed_fix else ""
+
+    msg = f"""{icon} <b>Report from {operator}'s machine</b>
+
+{title}{fix_note}
+
+{issue_url}"""
+
+    # Use the notify helper
+    sys.path.insert(0, str(AOS_DIR / "core" / "lib"))
+    try:
+        from notify import send_telegram
+        send_telegram(msg, parse_mode="HTML")
+    except Exception:
+        # Fallback: direct curl
+        try:
+            token = subprocess.run(
+                [str(AOS_DIR / "core/bin/agent-secret"), "get", "TELEGRAM_BOT_TOKEN"],
+                capture_output=True, text=True, timeout=5
+            ).stdout.strip()
+            chat_id = subprocess.run(
+                [str(AOS_DIR / "core/bin/agent-secret"), "get", "TELEGRAM_CHAT_ID"],
+                capture_output=True, text=True, timeout=5
+            ).stdout.strip()
+            if token and chat_id:
+                import urllib.request
+                data = json.dumps({
+                    "chat_id": chat_id, "text": msg, "parse_mode": "HTML"
+                }).encode()
+                req = urllib.request.Request(
+                    f"https://api.telegram.org/bot{token}/sendMessage",
+                    data=data,
+                    headers={"Content-Type": "application/json"},
+                )
+                urllib.request.urlopen(req, timeout=10)
+        except Exception:
+            pass
+
+
+# ── Log ────────────────────────────────────────────────────────────────────
+
+def log_report(title: str, labels: list, issue_url: str | None, action: str,
+                *, body: str = "", duplicate_of: int | None = None,
+                error: str | None = None, drained_from: str | None = None) -> str:
+    """Append to local report log. Returns the new entry's id.
+
+    `body` carries the full markdown body that was (or would be) filed.
+    Before aos#2338 this was never persisted, so a report that got queued
+    because filing failed had no content anywhere — nothing could ever file
+    it later. The queue entry now carries everything a drain needs to file
+    exactly what was queued: title, labels, body, and — for a duplicate-of
+    comment — the issue it was headed for.
+    """
+    REPORT_LOG.parent.mkdir(parents=True, exist_ok=True)
+    entry_id = uuid.uuid4().hex[:12]
+    entry = {
+        "id": entry_id,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "title": title,
+        "labels": labels,
+        "body": body,
+        "duplicate_of": duplicate_of,
+        "issue_url": issue_url,
+        "action": action,
+        "error": error,
+        "drained_from": drained_from,
+    }
+    with open(REPORT_LOG, "a") as f:
+        f.write(json.dumps(entry) + "\n")
+    return entry_id
+
+
+# ── Main ───────────────────────────────────────────────────────────────────
+
+def _read_log_entries() -> list[dict]:
+    """Every entry ever appended to the report log, oldest first."""
+    if not REPORT_LOG.exists():
+        return []
+    entries = []
+    for line in REPORT_LOG.read_text().splitlines():
+        if not line.strip():
+            continue
+        try:
+            entries.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return entries
+
+
+def _pending_queue_entries() -> list[dict]:
+    """Queued entries that no later log entry has drained.
+
+    The log is append-only, so a drained entry is never edited or removed —
+    a later entry's `drained_from` pointing back at it is what marks it
+    resolved.
+    """
+    entries = _read_log_entries()
+    drained_ids = {e["drained_from"] for e in entries if e.get("drained_from")}
+    return [
+        e for e in entries
+        if e.get("action") == "queued" and e.get("id") and e["id"] not in drained_ids
+    ]
+
+
+def list_queued():
+    """Show locally queued reports that haven't been filed to GitHub."""
+    pending = _pending_queue_entries()
+    print(json.dumps({"queued": pending, "count": len(pending)}, indent=2))
+
+
+def drain_queue() -> dict:
+    """Attempt to file every still-pending queued report (aos#2338).
+
+    Files exactly what was queued: the same title/body/labels (and, for a
+    duplicate-of comment, the same target issue) that `log_report` captured
+    when filing first failed. Returns a summary; never raises.
+    """
+    pending = _pending_queue_entries()
+    filed, still_queued, errors = [], [], []
+
+    for entry in pending:
+        entry_id = entry.get("id")
+        title = entry.get("title", "")
+        body = entry.get("body", "")
+        labels = entry.get("labels") or ["bug"]
+        duplicate_of = entry.get("duplicate_of")
+
+        if duplicate_of:
+            ok, err = comment_on_issue(duplicate_of, body)
+            if ok:
+                issue_url = f"https://github.com/{GH_REPO}/issues/{duplicate_of}"
+                log_report(title, labels, issue_url, f"commented on #{duplicate_of}",
+                           body=body, duplicate_of=duplicate_of, drained_from=entry_id)
+                filed.append({"title": title, "issue_url": issue_url})
+            else:
+                errors.append({"title": title, "error": err})
+                still_queued.append(title)
+            continue
+
+        result, err = file_issue(title, body, labels)
+        if result:
+            log_report(title, labels, result["url"], "created",
+                       body=body, drained_from=entry_id)
+            filed.append({"title": title, "issue_url": result["url"]})
+        else:
+            errors.append({"title": title, "error": err})
+            still_queued.append(title)
+
+    return {
+        "attempted": len(pending),
+        "filed": filed,
+        "still_queued": still_queued,
+        "errors": errors,
+    }
+
+
+def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "--context":
+        print(json.dumps(collect_context(), indent=2))
+        return
+
+    if len(sys.argv) > 1 and sys.argv[1] == "--queued":
+        list_queued()
+        return
+
+    if len(sys.argv) > 1 and sys.argv[1] == "--drain":
+        summary = drain_queue()
+        print(json.dumps(summary, indent=2))
+        if summary["still_queued"]:
+            print(
+                f"aos-report: {len(summary['still_queued'])} of "
+                f"{summary['attempted']} queued report(s) still could not be "
+                "filed — see 'errors' above.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        return
+
+    # Read structured input from stdin
+    try:
+        data = json.loads(sys.stdin.read())
+    except (json.JSONDecodeError, Exception) as e:
+        print(json.dumps({"error": f"Invalid JSON input: {e}"}))
+        sys.exit(1)
+
+    title = data.get("title", "").strip()
+    body = data.get("body", "").strip()
+    labels = data.get("labels", ["bug"])
+    severity = data.get("severity", "medium")
+    proposed_fix = data.get("proposed_fix", "")
+    source_file = data.get("source_file", "")
+    duplicate_of = data.get("duplicate_of")
+
+    if not title:
+        print(json.dumps({"error": "title is required"}))
+        sys.exit(1)
+
+    # Collect context (never let this crash the report)
+    try:
+        ctx = collect_context()
+    except Exception:
+        ctx = {"timestamp": datetime.now(timezone.utc).isoformat(), "operator": "unknown"}
+    operator = ctx.get("operator", "unknown")
+
+    # Build the issue body
+    sections = [scrub(body)]
+
+    if proposed_fix:
+        sections.append(f"\n## Proposed Fix\n\n{scrub(proposed_fix)}")
+    if source_file:
+        sections.append(f"\n**Source file:** `{source_file}`")
+
+    sections.append(f"""
+## System Context
+
+| Field | Value |
+|-------|-------|
+| AOS Version | {ctx.get('aos_version', '?')} |
+| Commit | {ctx.get('git_commit', '?')} |
+| macOS | {ctx.get('macos', '?')} ({ctx.get('arch', '?')}) |
+| Python | {ctx.get('python', '?')} |
+| Machine | {ctx.get('machine_id', ctx.get('hostname', '?'))} |
+| Reported by | {operator} |
+| Severity | {severity} |""")
+
+    # Service status
+    services = ctx.get("services", {})
+    if services:
+        svc_lines = []
+        for name, info in services.items():
+            status = "✓" if info.get("running") else f"✗ (exit {info.get('exit_code', '?')})"
+            svc_lines.append(f"| {name} | {status} |")
+        sections.append(f"""
+### Services
+
+| Service | Status |
+|---------|--------|
+{chr(10).join(svc_lines)}""")
+
+    # Recent errors
+    errors = ctx.get("recent_errors", {})
+    if errors:
+        sections.append("\n### Recent Errors\n")
+        for log_name, lines in errors.items():
+            sections.append(f"**{log_name}:**")
+            sections.append("```")
+            sections.append("\n".join(scrub(l) for l in lines))
+            sections.append("```")
+
+    sections.append("\n---\n*Filed by AOS report system*")
+
+    full_body = "\n".join(sections)
+
+    # Handle duplicates
+    if duplicate_of:
+        comment_body = f"**Additional report from {operator}:**\n\n{full_body}"
+        ok, err = comment_on_issue(duplicate_of, comment_body)
+        issue_url = f"https://github.com/{GH_REPO}/issues/{duplicate_of}"
+        if ok:
+            action = f"commented on #{duplicate_of}"
+            log_report(title, labels, issue_url, action, body=comment_body,
+                       duplicate_of=duplicate_of)
+            print(json.dumps({"action": action, "issue_url": issue_url}))
+            notify_developer(title, severity, operator, bool(proposed_fix), issue_url)
+            return
+        # A failed gh call must surface, never look like success (aos#2323).
+        # The full body is persisted so `--drain` can file exactly this later
+        # (aos#2338) — before this fix only the title/labels ever survived.
+        log_report(title, labels, None, "queued", body=comment_body,
+                   duplicate_of=duplicate_of, error=err)
+        print(
+            f"aos-report: GitHub filing failed ({err}) — saved locally. "
+            "Retry with `aos-report --drain`.",
+            file=sys.stderr,
+        )
+        print(json.dumps({
+            "action": "queued",
+            "error": f"GitHub filing failed — saved locally ({err})",
+        }))
+        sys.exit(1)
+
+    # File new issue
+    result, err = file_issue(title, full_body, labels)
+    if result:
+        issue_url = result["url"]
+        log_report(title, labels, issue_url, "created", body=full_body)
+        notify_developer(title, severity, operator, bool(proposed_fix), issue_url)
+        print(json.dumps({"action": "created", "issue_url": issue_url, "number": result["number"]}))
+    else:
+        # Queue locally if GitHub fails — but a failed gh call must surface,
+        # never look like a silent success (aos#2323): non-zero exit plus a
+        # humanized notice, in addition to the JSON contract callers parse.
+        # The full body is persisted so `--drain` can file exactly this
+        # later (aos#2338) — before this fix a queued report lost its body
+        # forever, so it could never actually be filed.
+        log_report(title, labels, None, "queued", body=full_body, error=err)
+        print(
+            f"aos-report: GitHub filing failed ({err}) — saved locally. "
+            "Retry with `aos-report --drain`.",
+            file=sys.stderr,
+        )
+        print(json.dumps({
+            "action": "queued",
+            "error": f"GitHub filing failed — saved locally ({err})",
+        }))
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as e:
+        # Never crash silently — always return parseable JSON
+        print(json.dumps({"action": "error", "error": str(e)}))
+        sys.exit(1)

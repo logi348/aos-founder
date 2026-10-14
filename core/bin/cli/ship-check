@@ -1,0 +1,942 @@
+#!/usr/bin/env bash
+# AOS Ship Quality Gate
+#
+# Pre-ship validation beyond safety checks. Catches the things that
+# slip through: orphaned skills, unregistered reconcile checks,
+# syntax errors, stale docs.
+#
+# Usage:
+#   ship-check              # Run all checks against dev workspace diff
+#   ship-check --all        # Run all checks on entire codebase (not just diff)
+#
+# Exit codes:
+#   0 = all passed
+#   1 = failures found (block ship)
+#   2 = warnings found (ship with caution)
+
+
+# Always resolve Python through the AOS resolver — a python3 on PATH can be
+# present, correctly versioned, and unusable (Homebrew 3.14's pyexpat).
+AOS_PY="${AOS_PY:-$HOME/aos/core/bin/internal/aos-python}"
+set -uo pipefail
+
+# Repo under check: default to the dev workspace, but allow override so the
+# gate can grade hotfix worktrees/release branches (never hardcode the target).
+DEV="${AOS_SHIP_CHECK_DIR:-$HOME/project/aos}"
+# shellcheck disable=SC2034
+RUNTIME="$HOME/aos"
+
+PASS=0
+WARN=0
+FAIL=0
+
+pass() { echo "  ✓ $1"; PASS=$((PASS + 1)); }
+warn() { echo "  ⚠ $1"; WARN=$((WARN + 1)); }
+fail() { echo "  ✗ $1"; FAIL=$((FAIL + 1)); }
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 1. CODE HEALTH — syntax errors in changed Python and Bash files
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+echo ""
+echo "Code Health"
+echo "───────────"
+
+cd "$DEV" || exit 1
+
+if [[ "${1:-}" == "--all" ]]; then
+    PY_FILES=$(find . -name '*.py' -not -path './.git/*' -not -path '*/__pycache__/*' 2>/dev/null)
+    SH_FILES=$(find . -name '*.sh' -not -path './.git/*' 2>/dev/null; find ./core/bin -type f -not -path './.git/*' 2>/dev/null)
+else
+    # Only check files in the diff against main
+    PY_FILES=$(git diff origin/main --name-only --diff-filter=ACMR 2>/dev/null | grep '\.py$' || true)
+    SH_FILES=$(git diff origin/main --name-only --diff-filter=ACMR 2>/dev/null | grep -E '(\.sh$|^core/bin/)' || true)
+    # Also check uncommitted
+    PY_FILES="$PY_FILES"$'\n'"$(git diff --name-only --diff-filter=ACMR 2>/dev/null | grep '\.py$' || true)"
+    SH_FILES="$SH_FILES"$'\n'"$(git diff --name-only --diff-filter=ACMR 2>/dev/null | grep -E '(\.sh$|^core/bin/)' || true)"
+    # Deduplicate
+    PY_FILES=$(echo "$PY_FILES" | sort -u | grep -v '^$' || true)
+    SH_FILES=$(echo "$SH_FILES" | sort -u | grep -v '^$' || true)
+fi
+
+py_errors=0
+if [[ -n "$PY_FILES" ]]; then
+    while IFS= read -r f; do
+        [[ -z "$f" ]] && continue
+        [[ -f "$f" ]] || continue
+        if ! "$AOS_PY" -c "import py_compile; py_compile.compile('$f', doraise=True)" 2>/dev/null; then
+            fail "Syntax error: $f"
+            py_errors=$((py_errors + 1))
+        fi
+    done <<< "$PY_FILES"
+    if [[ $py_errors -eq 0 ]]; then
+        count=$(echo "$PY_FILES" | grep -c -v '^$' || echo 0)
+        pass "Python syntax OK ($count files)"
+    fi
+else
+    pass "No Python files changed"
+fi
+
+sh_errors=0
+if [[ -n "$SH_FILES" ]]; then
+    while IFS= read -r f; do
+        [[ -z "$f" ]] && continue
+        [[ -f "$f" ]] || continue
+        # Only check files that look like shell scripts
+        if head -1 "$f" 2>/dev/null | grep -qE '^#!.*\b(ba)?sh\b'; then
+            if ! bash -n "$f" 2>/dev/null; then
+                fail "Bash syntax error: $f"
+                sh_errors=$((sh_errors + 1))
+            fi
+        fi
+    done <<< "$SH_FILES"
+    if [[ $sh_errors -eq 0 ]]; then
+        count=$(echo "$SH_FILES" | grep -c -v '^$' || echo 0)
+        pass "Shell syntax OK ($count files)"
+    fi
+else
+    pass "No shell files changed"
+fi
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 1b. LINT — the same ruff + shellcheck gates CI runs, over the whole
+#     tree, so local-green always implies CI-green (ends notification spam).
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+echo ""
+echo "Lint (CI parity)"
+echo "────────────────"
+
+# Ruff — mirrors .github/workflows/ci.yaml lint-python: `ruff check .` at the
+# repo root (reads $DEV/ruff.toml). Prefer an installed ruff, fall back to uvx.
+RUFF=()
+if command -v ruff >/dev/null 2>&1; then
+    RUFF=(ruff)
+elif command -v uvx >/dev/null 2>&1; then
+    RUFF=(uvx ruff)
+fi
+if [[ ${#RUFF[@]} -gt 0 ]]; then
+    ruff_out=$(mktemp)
+    if ( cd "$DEV" && "${RUFF[@]}" check . ) >"$ruff_out" 2>&1; then
+        pass "ruff check clean"
+    else
+        fail "ruff check found issues (fix: ruff check --fix .)"
+        sed 's/^/      /' "$ruff_out" | tail -20
+    fi
+    rm -f "$ruff_out"
+else
+    warn "ruff not installed — CI lint-python not verified locally (brew install ruff)"
+fi
+
+# ShellCheck — mirrors ci.yaml lint-shell exactly (find | shellcheck
+# --severity=warning over *.sh and shebang'd bin/ scripts).
+if command -v shellcheck >/dev/null 2>&1; then
+    sc_targets=$(cd "$DEV" && find . -type f \( -name "*.sh" -o -path "*/bin/*" \) \
+        -not -path "*/node_modules/*" \
+        -not -path "*/.venv/*" \
+        -not -path "*/target/*" \
+        -not -path "*/vendor/*" \
+        -not -path "*/.git/*" \
+        -exec sh -c 'head -1 "$1" | grep -q "#!/.*\(bash\|sh\)" && echo "$1"' _ {} \;)
+    if [[ -z "$sc_targets" ]]; then
+        pass "shellcheck: no shell scripts to check"
+    else
+        sc_out=$(mktemp)
+        if ( cd "$DEV" && echo "$sc_targets" | xargs shellcheck --severity=warning ) >"$sc_out" 2>&1; then
+            pass "shellcheck clean (--severity=warning)"
+        else
+            fail "shellcheck found warnings (mirror ci.yaml lint-shell to reproduce)"
+            sed 's/^/      /' "$sc_out" | tail -20
+        fi
+        rm -f "$sc_out"
+    fi
+else
+    warn "shellcheck not installed — CI lint-shell not verified locally (brew install shellcheck)"
+fi
+
+# Key entry points still import
+import_errors=0
+for module in \
+    "core.reconcile.runner" \
+    "core.work.cli" \
+    "core.work.inject_context"; do
+    mod_path=$(echo "$module" | tr '.' '/')
+    if [[ -f "$DEV/${mod_path}.py" ]]; then
+        if ! "$AOS_PY" -c "import sys; sys.path.insert(0,'$DEV'); __import__('${module}')" 2>/dev/null; then
+            fail "Import failed: $module"
+            import_errors=$((import_errors + 1))
+        fi
+    fi
+done
+if [[ $import_errors -eq 0 ]]; then
+    pass "Key imports OK"
+fi
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 2. DOCS SYNC — new components have their documentation
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+echo ""
+echo "Docs Sync"
+echo "─────────"
+
+# Every skill directory must have a SKILL.md
+skill_orphans=0
+for dir in "$DEV"/core/skills/*/; do
+    [[ -d "$dir" ]] || continue
+    name=$(basename "$dir")
+    if [[ ! -f "$dir/SKILL.md" ]]; then
+        fail "Skill '$name' has no SKILL.md"
+        skill_orphans=$((skill_orphans + 1))
+    fi
+done
+if [[ $skill_orphans -eq 0 ]]; then
+    skill_count=$(find "$DEV/core/skills" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')
+    pass "All $skill_count skills have SKILL.md"
+fi
+
+# Every agent definition must have content
+agent_orphans=0
+for f in "$DEV"/core/agents/*.md; do
+    [[ -f "$f" ]] || continue
+    name=$(basename "$f")
+    if [[ ! -s "$f" ]]; then
+        fail "Agent definition '$name' is empty"
+        agent_orphans=$((agent_orphans + 1))
+    fi
+done
+if [[ $agent_orphans -eq 0 ]]; then
+    agent_count=$(find "$DEV/core/agents" -name '*.md' 2>/dev/null | wc -l | tr -d ' ')
+    pass "All $agent_count agent definitions have content"
+fi
+
+# CHANGELOG matches VERSION if VERSION was bumped
+if [[ "${1:-}" != "--all" ]]; then
+    version_changed=$(git diff origin/main --name-only 2>/dev/null | grep -c '^VERSION$' || true)
+    version_changed=${version_changed:-0}
+    if [[ "$version_changed" -gt 0 ]]; then
+        new_version=$(cat "$DEV/VERSION" 2>/dev/null | tr -d '[:space:]')
+        if [[ -f "$DEV/CHANGELOG.md" ]]; then
+            if grep -q "## $new_version" "$DEV/CHANGELOG.md" 2>/dev/null || \
+               grep -q "## v${new_version#v}" "$DEV/CHANGELOG.md" 2>/dev/null; then
+                pass "CHANGELOG has entry for $new_version"
+            else
+                fail "VERSION bumped to $new_version but no CHANGELOG entry"
+            fi
+        else
+            fail "VERSION bumped but CHANGELOG.md doesn't exist"
+        fi
+    fi
+fi
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 2b. CONTEXT BUDGET — always-loaded context must stay lean
+#
+# chief.md rides in the system prompt of EVERY session; rules load into
+# every session's memory; skill descriptions load at startup. Protocols
+# belong in skills (loaded on demand), reference docs in docs/reference/
+# (QMD-indexed). This gate makes the context diet structural: the next
+# feature that fattens Chief fails here and puts its protocol in a skill.
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+echo ""
+echo "Context Budget"
+echo "──────────────"
+
+# chief.md is the always-loaded system prompt — hard cap 6KB
+CHIEF_CAP=6000
+chief_size=$(wc -c < "$DEV/core/agents/chief.md" 2>/dev/null | tr -d ' ')
+chief_size=${chief_size:-0}
+if [[ "$chief_size" -gt "$CHIEF_CAP" ]]; then
+    fail "chief.md is ${chief_size}B (cap ${CHIEF_CAP}B) — move protocol text into the skill that owns it; chief.md routes, it doesn't recite"
+else
+    pass "chief.md within budget (${chief_size}B / ${CHIEF_CAP}B)"
+fi
+
+# Rules load into every session. Per-file cap 4KB (a rule states behavior or
+# points at a reference — it never IS the reference); total soft cap 12KB.
+RULE_CAP=4000
+RULES_TOTAL_CAP=12000
+rule_over=0
+rules_total=0
+for rule in "$DEV"/.claude/rules/*.md; do
+    [[ -f "$rule" ]] || continue
+    sz=$(wc -c < "$rule" | tr -d ' ')
+    rules_total=$((rules_total + sz))
+    if [[ "$sz" -gt "$RULE_CAP" ]]; then
+        fail "Rule $(basename "$rule") is ${sz}B (cap ${RULE_CAP}B) — move the reference body to docs/reference/ and leave a pointer"
+        rule_over=$((rule_over + 1))
+    fi
+done
+if [[ $rule_over -eq 0 ]]; then
+    pass "All rules within per-file budget (${RULE_CAP}B)"
+fi
+if [[ "$rules_total" -gt "$RULES_TOTAL_CAP" ]]; then
+    warn "Rules total ${rules_total}B exceeds ${RULES_TOTAL_CAP}B — every session pays this; trim or convert to pointers"
+else
+    pass "Rules total within budget (${rules_total}B / ${RULES_TOTAL_CAP}B)"
+fi
+
+# Skill descriptions (frontmatter) load into every session at startup.
+# The body loads on demand — the description is the only always-paid part.
+DESC_CAP=1500
+desc_over=0
+for skill_md in "$DEV"/core/skills/*/SKILL.md; do
+    [[ -f "$skill_md" ]] || continue
+    skill_name=$(basename "$(dirname "$skill_md")")
+    desc_len=$("$AOS_PY" - "$skill_md" <<'PYEOF'
+import sys, re
+text = open(sys.argv[1]).read()
+m = re.match(r'^---\n(.*?)\n---', text, re.S)
+if not m:
+    print(0); sys.exit()
+fm = m.group(1)
+dm = re.search(r'^description:\s*(.*?)(?=^\S|\Z)', fm, re.S | re.M)
+print(len(dm.group(1)) if dm else 0)
+PYEOF
+)
+    if [[ "${desc_len:-0}" -gt "$DESC_CAP" ]]; then
+        warn "Skill '$skill_name' description is ${desc_len} chars (cap ${DESC_CAP}) — every session pays for it; state triggers, not the manual"
+        desc_over=$((desc_over + 1))
+    fi
+done
+if [[ $desc_over -eq 0 ]]; then
+    pass "All skill descriptions within budget (${DESC_CAP} chars)"
+fi
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 3. CONSISTENCY — internal references are wired up
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+echo ""
+echo "Consistency"
+echo "───────────"
+
+# Every .py in checks/ should be imported in checks/__init__.py
+checks_dir="$DEV/core/infra/reconcile/checks"
+init_file="$checks_dir/__init__.py"
+if [[ -f "$init_file" ]]; then
+    unregistered=0
+    for pyfile in "$checks_dir"/*.py; do
+        [[ -f "$pyfile" ]] || continue
+        modname=$(basename "$pyfile" .py)
+        [[ "$modname" == "__init__" ]] && continue
+        [[ "$modname" == "__pycache__" ]] && continue
+        if ! grep -q "from \.$modname import\|from \.${modname} import\|import ${modname}" "$init_file" 2>/dev/null; then
+            fail "Reconcile check '$modname.py' not imported in __init__.py"
+            unregistered=$((unregistered + 1))
+        fi
+    done
+    if [[ $unregistered -eq 0 ]]; then
+        check_count=$(find "$checks_dir" -name '*.py' -not -name '__init__.py' -not -path '*/__pycache__/*' 2>/dev/null | wc -l | tr -d ' ')
+        pass "All $check_count reconcile checks registered"
+    fi
+else
+    warn "Reconcile checks/__init__.py missing"
+fi
+
+# Deprecated skills shouldn't have directories
+aos_cli="$DEV/core/bin/cli/aos"
+if [[ -f "$aos_cli" ]]; then
+    deprecated=$(grep -oP 'DEPRECATED="\K[^"]+' "$aos_cli" 2>/dev/null || true)
+    if [[ -n "$deprecated" ]]; then
+        for name in $deprecated; do
+            if [[ -d "$DEV/.claude/skills/$name" ]]; then
+                warn "Deprecated skill '$name' still has a directory — consider removing"
+            fi
+        done
+    fi
+fi
+
+# Skills that define allowed-tools should only list valid tool names
+valid_tools="Bash|Read|Write|Edit|Glob|Grep|Agent|WebSearch|WebFetch"
+skill_tool_issues=0
+for skill_md in "$DEV"/core/skills/*/SKILL.md; do
+    [[ -f "$skill_md" ]] || continue
+    skill_name=$(basename "$(dirname "$skill_md")")
+    # Extract allowed-tools line from frontmatter
+    tools_line=$(sed -n '/^---$/,/^---$/{ /^allowed-tools:/p }' "$skill_md" 2>/dev/null || true)
+    if [[ -n "$tools_line" ]]; then
+        tools=$(echo "$tools_line" | sed 's/^allowed-tools:\s*//' | tr ',' '\n' | tr -d ' ')
+        while IFS= read -r tool; do
+            [[ -z "$tool" ]] && continue
+            # MCP tools and special tools are OK
+            if [[ "$tool" == mcp__* ]] || echo "$tool" | grep -qE "^($valid_tools)$"; then
+                :
+            else
+                warn "Skill '$skill_name' lists unknown tool: $tool"
+                skill_tool_issues=$((skill_tool_issues + 1))
+            fi
+        done <<< "$tools"
+    fi
+done
+if [[ $skill_tool_issues -eq 0 ]]; then
+    pass "Skill tool references valid"
+fi
+
+# Check for common leftover debug patterns in changed files
+if [[ "${1:-}" != "--all" ]]; then
+    changed_files=$(git diff origin/main --name-only --diff-filter=ACMR 2>/dev/null || true)
+    debug_hits=0
+    if [[ -n "$changed_files" ]]; then
+        while IFS= read -r f; do
+            [[ -z "$f" ]] && continue
+            [[ -f "$f" ]] || continue
+            # Skip binary and non-text files
+            if file "$f" 2>/dev/null | grep -q "text"; then
+                [[ "$f" == *"ship-check"* ]] && continue
+                if grep -nE '(breakpoint\(\)|import pdb|print\(.*(DEBUG|TODO|FIXME|HACK))' "$f" 2>/dev/null | head -3; then
+                    warn "Debug artifact in $f"
+                    debug_hits=$((debug_hits + 1))
+                fi
+            fi
+        done <<< "$changed_files"
+    fi
+    if [[ $debug_hits -eq 0 ]]; then
+        pass "No debug artifacts in diff"
+    fi
+fi
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 4. INSTALL ↔ RUNTIME DRIFT — catch hardcoded lists that fall behind
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+echo ""
+echo "Install Drift"
+echo "─────────────"
+
+# VERSION in install.sh should not be hardcoded
+if grep -q '^AOS_VERSION="[0-9]' "$DEV/install.sh" 2>/dev/null; then
+    fail "install.sh has hardcoded AOS_VERSION — should read from VERSION file"
+fi
+
+# Every service with pyproject.toml should be checked by the health scorecard
+svc_count=0
+for svc_dir in "$DEV"/core/services/*/; do
+    [[ -f "$svc_dir/pyproject.toml" ]] || continue
+    svc_count=$((svc_count + 1))
+done
+# Scorecard should use auto-discovery, not a hardcoded list
+if grep -q 'for svc in bridge dashboard' "$DEV/install.sh" 2>/dev/null; then
+    fail "install.sh health scorecard has hardcoded service list ($svc_count services exist)"
+else
+    pass "Service checks use auto-discovery ($svc_count services)"
+fi
+
+# Skills in scorecard should use auto-discovery
+if grep -q 'default_skills=' "$DEV/install.sh" 2>/dev/null; then
+    fail "install.sh has hardcoded skills list — should auto-discover from core/skills/"
+else
+    skill_count=$(find "$DEV/core/skills" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')
+    pass "Skill checks use auto-discovery ($skill_count skills)"
+fi
+
+# Python service templates must NOT hardcode a machine-specific interpreter.
+# The interpreter differs per machine (~/.aos/config/python, uv-managed since
+# migration 096); a baked-in /opt/homebrew path took down sentinel on an
+# operator machine on 2026-08-15 (launcher rename regenerated the launcher
+# around a python3 that didn't exist there). Templates exec the aos-python
+# resolver instead — it picks the machine's interpreter at every start.
+hardcoded_interp=$(grep -l '<string>/opt/homebrew/bin/python3\{0,1\}</string>\|<string>/usr/bin/python3\{0,1\}</string>\|<string>/usr/local/bin/python3\{0,1\}</string>' \
+    "$DEV"/config/launchagents/*.template "$DEV"/core/services/*/*.template 2>/dev/null | xargs -n1 basename 2>/dev/null | tr '\n' ' ')
+if [[ -n "$hardcoded_interp" ]]; then
+    fail "Templates hardcode a Python interpreter (use __HOME__/aos/core/bin/internal/aos-python): $hardcoded_interp"
+else
+    pass "No template hardcodes a Python interpreter (aos-python resolver in use)"
+fi
+
+# LaunchAgents in scorecard should use auto-discovery
+if grep -q 'for la in com.aos.scheduler com.aos.bridge' "$DEV/install.sh" 2>/dev/null; then
+    fail "install.sh has hardcoded LaunchAgent list — should auto-discover"
+else
+    la_count=$(find "$DEV/config/launchagents" -name 'com.aos.*' 2>/dev/null | wc -l | tr -d ' ')
+    pass "LaunchAgent checks use auto-discovery ($la_count templates)"
+fi
+
+# LaunchAgent deployment must consult the service registry, not glob the
+# templates directory. "Auto-discover" is not enough here: a glob sees
+# filenames but not `status`, which is how the installer came to force-load a
+# retired service (listen), three optional ones, and an unopted-in Cloudflare
+# tunnel. The registry is the source of truth for what may be deployed.
+if grep -q '_deployable_plists' "$DEV/install.sh" 2>/dev/null; then
+    pass "LaunchAgent deployment is registry-driven"
+else
+    fail "install.sh deploys LaunchAgents without consulting the service registry"
+    echo "    → gate on service_registry status (active only); see _deployable_plists"
+fi
+
+# A plist must never be loaded with an unsubstituted __PLACEHOLDER__. Templates
+# owned by another renderer otherwise land with a literal placeholder as the program
+# path — and KeepAlive turns that into a permanent crash loop.
+if grep -q '__\[A-Z_\]\\{2,\\}__' "$DEV/install.sh" 2>/dev/null; then
+    pass "Installer guards against unsubstituted plist placeholders"
+else
+    fail "install.sh can load plists with unresolved __PLACEHOLDER__ values"
+fi
+
+# Every framework plist should be accounted for by a manifest, otherwise it can
+# never be deployed (or audited) — it just sits in the tree looking official.
+unmanifested=""
+while IFS= read -r plist_path; do
+    [[ -n "$plist_path" ]] || continue
+    base=$(basename "$plist_path")
+    if ! grep -rqF "$base" "$DEV"/core/services/*/service.yaml "$DEV"/config/services.d/*.yaml 2>/dev/null; then
+        unmanifested="$unmanifested $base"
+    fi
+done < <(find "$DEV/config/launchagents" -name 'com.aos.*' 2>/dev/null)
+# The harness itself (scheduler, sentinel, claude-remote) has a launchd presence
+# but is not a service; it is allowlisted in install.sh as INFRA_PLISTS.
+for infra in com.aos.scheduler com.aos.sentinel com.aos.claude-remote; do
+    unmanifested=$(echo "$unmanifested" | tr ' ' '\n' | grep -v "^${infra}\." | tr '\n' ' ')
+done
+unmanifested=$(echo "$unmanifested" | xargs 2>/dev/null || true)
+if [[ -z "$unmanifested" ]]; then
+    pass "Every framework plist maps to a service manifest"
+else
+    warn "Plists with no service manifest:$unmanifested"
+    echo "    → add a manifest under config/services.d/ or remove the plist"
+fi
+
+# VS Code must not come back. cmux is the only supported terminal surface.
+if grep -q 'visual-studio-code\|Visual Studio Code' "$DEV/install.sh" "$DEV/core/bin/cli/aos" 2>/dev/null; then
+    fail "VS Code referenced in install.sh or the aos CLI — cmux is the only terminal surface"
+else
+    pass "cmux is the only terminal surface (no VS Code)"
+fi
+
+# config/defaults/trust.yaml should exist (install.sh tries to copy it)
+if [[ -f "$DEV/config/defaults/trust.yaml" ]]; then
+    pass "Default trust template exists"
+else
+    fail "config/defaults/trust.yaml missing — install.sh expects it"
+fi
+
+# The onboard skill lives in core/skills/ (moved there in add9e82). These checks
+# used to point at $DEV/.claude/skills/onboard/SKILL.md — a path that has not
+# existed since. `grep -q` on a missing file returns non-zero, so every check
+# fell through to its else branch and reported PASS while reading nothing. That
+# vacuous green is why the integration drift below went unnoticed for months.
+ONBOARD_SKILL="$DEV/core/skills/onboard/SKILL.md"
+
+if [[ ! -f "$ONBOARD_SKILL" ]]; then
+    fail "Onboard skill not found at core/skills/onboard/SKILL.md"
+else
+    # Onboarding skill should not reference non-existent config files
+    if grep -q 'projects\.yaml' "$ONBOARD_SKILL" 2>/dev/null; then
+        fail "Onboarding references projects.yaml which doesn't exist — projects use CLI"
+    else
+        pass "Onboarding config references valid"
+    fi
+
+    # Onboarding must not hardcode facts the filesystem declares. It described
+    # the system in prose and went stale: "12+ automated jobs" (a large
+    # undercount), seven integrations out of 22, a vault tour naming folders
+    # that no longer existed. `aos snapshot` reads all of it live.
+    if grep -q 'aos snapshot' "$ONBOARD_SKILL" 2>/dev/null; then
+        pass "Onboarding reads the live system snapshot"
+    else
+        fail "Onboarding must read 'aos snapshot' rather than describe the system inline"
+    fi
+
+    # Hardcoded counts are the specific failure mode — they are correct on the
+    # day they are written and wrong by the next release.
+    if grep -nE '\b[0-9]+\+? (automated jobs|scheduled jobs|cron|commands built|integrations|skills|agents)\b' \
+        "$ONBOARD_SKILL" 2>/dev/null | grep -qv 'used to say\|used to\|historically'; then
+        fail "Onboarding hardcodes a count — read it from 'aos snapshot' instead"
+        grep -nE '\b[0-9]+\+? (automated jobs|scheduled jobs|cron|commands built|integrations|skills|agents)\b' \
+            "$ONBOARD_SKILL" | grep -v 'used to say\|used to\|historically' | sed 's/^/      /'
+    else
+        pass "Onboarding hardcodes no system counts"
+    fi
+
+    # Every path the skill tells the operator to run must actually exist.
+    # Phase 4 called core/bin/setup/generate-connect-script for months while no
+    # such file was in the tree.
+    onboard_missing_bin=0
+    while IFS= read -r ref; do
+        [[ -n "$ref" ]] || continue
+        rel="${ref#\~/aos/}"
+        if [[ ! -e "$DEV/$rel" ]]; then
+            warn "Onboarding calls ~/aos/$rel which does not exist"
+            onboard_missing_bin=$((onboard_missing_bin + 1))
+        fi
+    # [~] rather than a bare tilde: this is a regex matching literal text in the
+    # skill, not a path for this shell to expand.
+    done < <(grep -oE '[~]/aos/core/[A-Za-z0-9_/.-]+' "$ONBOARD_SKILL" 2>/dev/null | sort -u)
+    if [[ $onboard_missing_bin -eq 0 ]]; then
+        pass "Onboarding references only paths that exist"
+    fi
+fi
+
+# Every integration directory with a manifest should have a setup.sh, UNLESS
+# the registry marks it manual-setup (setup_hint present, no setup: key) — in
+# that case a missing setup.sh is intentional, not a gap. A registry `setup:`
+# key that points to a path which doesn't exist is always a real bug.
+# (Decision logic lives in Python, not bash — this file targets macOS's
+# default bash 3.2, which has no associative arrays.)
+if [[ -f "$DEV/core/infra/integrations/registry.yaml" ]]; then
+    setup_missing=0
+    while IFS=$'\t' read -r verdict message; do
+        [[ -z "$verdict" ]] && continue
+        if [[ "$verdict" == "WARN" ]]; then
+            warn "$message"
+            setup_missing=$((setup_missing + 1))
+        fi
+    done < <("$AOS_PY" -c "
+import os
+import yaml
+
+dev = '$DEV'
+with open(os.path.join(dev, 'core/infra/integrations/registry.yaml')) as f:
+    doc = yaml.safe_load(f) or {}
+
+registry = {}
+for tier in doc.values():
+    if not isinstance(tier, dict):
+        continue
+    for key, entry in tier.items():
+        if isinstance(entry, dict):
+            registry[key] = entry
+
+int_root = os.path.join(dev, 'core/infra/integrations')
+for name in sorted(os.listdir(int_root)):
+    d = os.path.join(int_root, name)
+    if not os.path.isdir(d):
+        continue
+    if not os.path.isfile(os.path.join(d, 'manifest.yaml')):
+        continue
+    if os.path.isfile(os.path.join(d, 'setup.sh')):
+        continue
+    entry = registry.get(name) or registry.get(name.replace('-', '_'))
+    setup = entry.get('setup') if entry else None
+    hint = entry.get('setup_hint') if entry else None
+    if isinstance(setup, str) and setup:
+        if not os.path.isfile(os.path.join(dev, setup)):
+            print(f'WARN\tIntegration {name!r} registry setup path does not exist: {setup}')
+    elif hint:
+        pass  # marked manual-setup via setup_hint (no setup: key) — not a gap
+    else:
+        print(f'WARN\tIntegration {name!r} has manifest but no setup.sh')
+" 2>/dev/null)
+    if [[ $setup_missing -eq 0 ]]; then
+        pass "All integrations with manifests have setup.sh"
+    fi
+fi
+
+# Framework code should not import from services not in core/services/ or preserved-services.yaml
+if [[ -f "$DEV/config/preserved-services.yaml" ]]; then
+    # Extract preserved service names
+    preserved=$("$AOS_PY" -c "
+import yaml
+with open('$DEV/config/preserved-services.yaml') as f:
+    d = yaml.safe_load(f) or {}
+for s in (d.get('services') or {}):
+    print(s)
+" 2>/dev/null)
+    # Check that every preserved service is actually imported by framework code
+    while IFS= read -r svc_name; do
+        [[ -z "$svc_name" ]] && continue
+        if ! grep -rq "services/$svc_name" "$DEV/core/" 2>/dev/null; then
+            warn "Preserved service '$svc_name' not referenced by any framework code — consider removing from preserved-services.yaml"
+        fi
+    done <<< "$preserved"
+fi
+
+# install.sh should not create standalone venvs for deps that belong to a service
+if grep -q 'services/mlx-whisper' "$DEV/install.sh" 2>/dev/null; then
+    # Allow references in cleanup code (rm -rf) but not in install code
+    if grep 'services/mlx-whisper' "$DEV/install.sh" | grep -qv 'rm\|Clean\|legacy\|Legacy'; then
+        warn "install.sh references legacy mlx-whisper venv — mlx-whisper is now in the transcriber service"
+    fi
+fi
+
+# Hooks in install.sh should use tilde paths, not absolute paths
+hook_abs=$(grep -n 'command.*python3.*/Users/' "$DEV/install.sh" 2>/dev/null | grep -vE '^\s*#' || true)
+if [[ -n "$hook_abs" ]]; then
+    warn "install.sh has absolute user paths in hook definitions — use ~ for portability"
+fi
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 5. PORTABILITY — no machine-specific paths in shipped code
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+echo ""
+echo "Portability"
+echo "───────────"
+
+# Scan ALL files in the diff for absolute user home paths
+# This catches lock files, hardcoded paths in scripts, YAML, pyproject.toml, etc.
+abs_path_hits=0
+shipped_files=$(git diff origin/main --name-only --diff-filter=ACMR 2>/dev/null || true)
+if [[ -n "$shipped_files" ]]; then
+    while IFS= read -r f; do
+        [[ -z "$f" || ! -f "$f" ]] && continue
+        # Skip binary files
+        file "$f" 2>/dev/null | grep -q "text" || continue
+        # Look for /Users/<username>/ paths, excluding comments
+        hits=$(grep -nE '/Users/[a-zA-Z_][a-zA-Z0-9_-]+/' "$f" 2>/dev/null \
+            | grep -vE '^[0-9]+:\s*(#|//)' || true)
+        if [[ -n "$hits" ]]; then
+            fail "Absolute user path in $f"
+            echo "$hits" | head -3 | sed 's/^/    /'
+            abs_path_hits=$((abs_path_hits + 1))
+        fi
+    done <<< "$shipped_files"
+fi
+if [[ $abs_path_hits -eq 0 ]]; then
+    pass "No absolute user paths in diff"
+fi
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 6. DEPLOY SAFETY — catch issues that break remote machine updates
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+echo ""
+echo "Deploy Safety"
+echo "─────────────"
+
+# VERSION bump gate: if service deps changed, VERSION must bump
+# Without a version bump, check-update skips venv rebuild on remote machines
+if [[ "${1:-}" != "--all" ]]; then
+    svc_dep_changed=$(git diff origin/main --name-only 2>/dev/null \
+        | grep -cE 'core/services/.*/pyproject\.toml' || true)
+    svc_dep_changed=${svc_dep_changed:-0}
+    version_bumped=$(git diff origin/main --name-only 2>/dev/null \
+        | grep -c '^VERSION$' || true)
+    version_bumped=${version_bumped:-0}
+    if [[ "$svc_dep_changed" -gt 0 && "$version_bumped" -eq 0 ]]; then
+        warn "Service pyproject.toml changed but VERSION not bumped — remote machines won't rebuild venvs"
+    else
+        pass "Version/deps sync OK"
+    fi
+fi
+
+# Every migration must have a check() function (idempotency guard)
+migration_issues=0
+for mig in "$DEV"/core/infra/migrations/[0-9][0-9][0-9]_*.py; do
+    [[ -f "$mig" ]] || continue
+    mig_name=$(basename "$mig")
+    if ! grep -qE '^def check\(' "$mig" 2>/dev/null; then
+        fail "Migration $mig_name has no check() function — not idempotent"
+        migration_issues=$((migration_issues + 1))
+    fi
+done
+if [[ $migration_issues -eq 0 ]]; then
+    mig_count=$(find "$DEV/core/infra/migrations" -name '[0-9][0-9][0-9]_*.py' 2>/dev/null | wc -l | tr -d ' ')
+    pass "All $mig_count migrations have idempotency guards"
+fi
+
+# Import completeness: flag third-party imports not in pyproject.toml for changed services
+if [[ "${1:-}" != "--all" ]]; then
+    changed_svc_dirs=$(git diff origin/main --name-only 2>/dev/null \
+        | grep -oE 'core/services/[^/]+' | sort -u || true)
+    import_gaps=0
+    if [[ -n "$changed_svc_dirs" ]]; then
+        while IFS= read -r svc_rel; do
+            [[ -z "$svc_rel" ]] && continue
+            svc_dir="$DEV/$svc_rel"
+            svc_name=$(basename "$svc_rel")
+            [[ -f "$svc_dir/pyproject.toml" ]] || continue
+
+            # Delegate to the AST-based checker, which filters stdlib, the
+            # service's own local modules, all AOS-internal modules, and
+            # relative imports — so only genuine third-party gaps remain. Run it
+            # with the service's own venv interpreter when present, so declared
+            # distributions (python-telegram-bot, pyyaml) map back to their
+            # import names (telegram, yaml) and aren't false-flagged.
+            svc_venv_py="$HOME/.aos/services/$svc_name/.venv/bin/python"
+            if [[ -x "$svc_venv_py" ]]; then
+                import_check_py="$svc_venv_py"
+            else
+                import_check_py="python3"
+            fi
+
+            gaps=$("$import_check_py" "$DEV/core/infra/service_import_check.py" "$svc_dir" 2>/dev/null || true)
+            while IFS= read -r mod; do
+                [[ -z "$mod" ]] && continue
+                warn "Service '$svc_name' imports '$mod' but it's not in pyproject.toml"
+                import_gaps=$((import_gaps + 1))
+            done <<< "$gaps"
+        done <<< "$changed_svc_dirs"
+    fi
+    if [[ $import_gaps -eq 0 ]]; then
+        pass "Service imports match declared dependencies"
+    fi
+fi
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 7. INSTANCE IMPACT — changes that affect running machines need migrations
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+echo ""
+echo "Instance Impact"
+echo "───────────────"
+
+if [[ "${1:-}" != "--all" ]]; then
+    diff_files=$(git diff origin/main --name-only --diff-filter=ACMRD 2>/dev/null || true)
+
+    # Paths that signal instance-layer impact when changed
+    instance_impact=0
+    instance_signals=""
+
+    # Integration wrappers — swapping or adding MCPs affects ~/.claude.json
+    if echo "$diff_files" | grep -qE 'core/bin/internal/|core/infra/integrations/.*/(setup\.sh|manifest\.yaml)'; then
+        instance_impact=1
+        instance_signals="${instance_signals}\n    Integration wrapper or manifest changed"
+    fi
+
+    # Service restructuring — moving services affects LaunchAgents and venvs
+    if echo "$diff_files" | grep -qE 'config/preserved-services\.yaml|config/launchagents/'; then
+        instance_impact=1
+        instance_signals="${instance_signals}\n    Service config or LaunchAgent templates changed"
+    fi
+
+    # Account/config schema — affects ~/.aos/config/
+    if echo "$diff_files" | grep -qE 'config/defaults/.*\.yaml'; then
+        instance_impact=1
+        instance_signals="${instance_signals}\n    Config defaults changed (instance copies may need update)"
+    fi
+
+    # Symlink targets — agents, skills, rules restructuring
+    if echo "$diff_files" | grep -qE '^core/agents/.*\.md$|^core/skills/.*/SKILL\.md$|^\.claude/rules/'; then
+        # Only flag if files were DELETED or RENAMED (additions are fine)
+        deleted_or_renamed=$(git diff origin/main --name-only --diff-filter=DR 2>/dev/null \
+            | grep -cE '^core/agents/|^core/skills/|^\.claude/rules/' || true)
+        deleted_or_renamed=${deleted_or_renamed:-0}
+        if [[ "$deleted_or_renamed" -gt 0 ]]; then
+            instance_impact=1
+            instance_signals="${instance_signals}\n    Agent/skill/rule deleted or renamed (symlinks need update)"
+        fi
+    fi
+
+    # sys.path or import path changes — moving Python modules that instance code imports
+    # Only flag if a NEW path appears (not if an existing wrong path is being corrected)
+    if [[ -n "$diff_files" ]]; then
+        path_const_changes=$(echo "$diff_files" | grep '\.py$' | while IFS= read -r f; do
+            [[ -z "$f" || ! -f "$f" ]] && continue
+            # Look for lines where the NEW version introduces a different .aos path
+            # Compare removed (-) and added (+) lines — only flag if the destination changed
+            diff_output=$(git diff origin/main -- "$f" 2>/dev/null)
+            old_paths=$(echo "$diff_output" | grep -E '^\-.*_SERVICE\s*=.*\.aos' | grep -oE '\.aos/[^"'"'"']+' || true)
+            new_paths=$(echo "$diff_output" | grep -E '^\+.*_SERVICE\s*=.*\.aos' | grep -oE '\.aos/[^"'"'"']+' || true)
+            # If a path moved to a new location (not just added or fixed), flag it
+            if [[ -n "$old_paths" && -n "$new_paths" && "$old_paths" != "$new_paths" ]]; then
+                echo "MOVED: $f ($old_paths → $new_paths)"
+            fi
+        done)
+        if [[ -n "$path_const_changes" ]]; then
+            instance_impact=1
+            instance_signals="${instance_signals}\n    Instance path relocated in code — verify instance data was also moved:"
+            instance_signals="${instance_signals}\n    $path_const_changes"
+        fi
+    fi
+
+    # Check if a migration exists in the same diff
+    has_new_migration=$(echo "$diff_files" | grep -c 'core/infra/migrations/[0-9]' || true)
+    has_new_migration=${has_new_migration:-0}
+
+    if [[ "$instance_impact" -gt 0 && "$has_new_migration" -eq 0 ]]; then
+        fail "Instance-impacting changes detected without a migration:"
+        printf "$instance_signals\n"
+        echo "    → Add a migration in core/infra/migrations/ in the same commit"
+    elif [[ "$instance_impact" -gt 0 && "$has_new_migration" -gt 0 ]]; then
+        pass "Instance-impacting changes have accompanying migration"
+    else
+        pass "No instance-impacting changes detected"
+    fi
+fi
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 8. IMPORT HEALTH — critical modules must import cleanly
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+echo ""
+echo "Import Health"
+echo "─────────────"
+
+# Smoke-test that key engine modules can be imported without crashing
+# This catches broken sys.path references, missing db modules, etc.
+import_smoke_errors=0
+for entry in \
+    "core.engine.comms.resolver:Comms resolver" \
+    "core.engine.comms.orchestrator:Comms orchestrator" \
+    "core.engine.comms.consumers.people_intel:People intelligence consumer" \
+    "core.engine.work.cli:Work CLI" \
+    "core.engine.work.inject_context:Context injection"; do
+    mod="${entry%%:*}"
+    label="${entry##*:}"
+    mod_path=$(echo "$mod" | tr '.' '/')
+    # Only test if the file exists in dev workspace
+    if [[ -f "$DEV/${mod_path}.py" ]]; then
+        err=$("$AOS_PY" -c "
+import sys, os
+sys.path.insert(0, '$DEV')
+os.chdir('$DEV')
+try:
+    __import__('${mod}')
+except ImportError as e:
+    print(f'ImportError: {e}')
+    sys.exit(1)
+except Exception:
+    pass  # Non-import errors are OK (missing runtime deps, etc.)
+" 2>&1)
+        if [[ $? -ne 0 ]]; then
+            fail "$label: $err"
+            import_smoke_errors=$((import_smoke_errors + 1))
+        fi
+    fi
+done
+if [[ $import_smoke_errors -eq 0 ]]; then
+    pass "Critical module imports OK"
+fi
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 9. PRIVACY — operator personal data must never ship
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# AOS auto-updates on friends' machines. Names, emails, phones, contacts, and
+# private-log content must never leak into framework code. privacy-scan reads
+# the instance-only denylist (~/.aos/config/privacy-denylist.txt) and the
+# generic patterns; matched personal strings are redacted to category+hash.
+echo ""
+echo "Privacy"
+echo "───────"
+
+privacy_scan="$DEV/core/bin/cli/privacy-scan"
+if [[ -x "$privacy_scan" ]]; then
+    # Choose what to scan. Default: the diff-to-ship (origin/main..HEAD).
+    # --all: the whole tree, as an all-additions diff against the empty tree.
+    EMPTY_TREE="4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+    if [[ "${1:-}" == "--all" ]]; then
+        scan_ref="$EMPTY_TREE"
+    else
+        scan_ref="origin/main..HEAD"
+    fi
+    scan_output=$( cd "$DEV" && "$privacy_scan" "$scan_ref" 2>&1 )
+    scan_rc=$?
+    if [[ $scan_rc -eq 0 ]]; then
+        pass "No operator personal data in diff-to-ship"
+    elif [[ $scan_rc -eq 1 ]]; then
+        # Show findings (already redacted by the scanner) indented under the check.
+        echo "$scan_output" | sed 's/^/    /'
+        fail "Operator personal data found in diff-to-ship (see above)"
+    else
+        warn "privacy-scan could not run (rc=$scan_rc): ${scan_output:-unknown error}"
+    fi
+else
+    warn "privacy-scan not found at $privacy_scan — personal-data gate skipped"
+fi
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Summary
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+echo ""
+echo "───────────"
+total=$((PASS + WARN + FAIL))
+echo "  $PASS passed, $WARN warnings, $FAIL failed ($total checks)"
+
+if [[ $FAIL -gt 0 ]]; then
+    exit 1
+elif [[ $WARN -gt 0 ]]; then
+    exit 2
+else
+    exit 0
+fi

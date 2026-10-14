@@ -1,0 +1,37 @@
+# Preserved Instance Artifacts
+#
+# Items listed here are deployed to instance space but don't have matching
+# templates in the framework. The instance_hygiene reconcile check skips them.
+#
+# Add items when:
+#   - They live in instance space (~/.aos/services/, ~/Library/LaunchAgents/)
+#   - Framework code or the operator depends on them
+#   - They don't ship via core/services/ or config/launchagents/
+
+services: {}
+  # people.db moved to ~/.aos/data/people.db (no longer a service venv)
+
+launchagents:
+  com.aos.eventd:
+    # core/services/eventd/ itself was removed (retired since April, no plist,
+    # 0 in launchctl — "Prune: remove n8n/automations, eventd, and
+    # never-deployed remnants"); this entry only guards against a stray
+    # LaunchAgent surviving on an older machine from before that prune.
+    reason: "Event daemon — runs the comms bus, watchers, and consumers on port 4097 (source removed; live importer is engine/comms/consumers)"
+    referenced_by:
+      - core/engine/comms/bus.py
+  com.aos.whatsmeow:
+    reason: "WhatsApp bridge — Go-based relay on port 7601, used by comms WhatsApp adapter"
+    referenced_by:
+      - core/engine/comms/channels/whatsapp.py
+  com.aos.envoy:
+    # No config/launchagents/ template — envoy's CLI renders and installs
+    # its own plist inline (cmd_install_daemon in cli.py), not from a
+    # framework template. Not currently deployed on this machine, but the
+    # code path is real; without this entry, installing it later would be
+    # reported as an orphan the first time hygiene ran (aos#236.8 removed
+    # the config/modules.yaml declaration that used to cover this label —
+    # it was describing a periodic daemon that was never actually deployed).
+    reason: "Envoy delegated-conversation daemon — self-installed by core/engine/comms/envoy/cli.py, off by default (default_off.py)"
+    referenced_by:
+      - core/engine/comms/envoy/cli.py

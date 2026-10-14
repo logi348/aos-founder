@@ -1,0 +1,1310 @@
+#!/usr/bin/env bash
+# AOS CLI — entry point for system management
+#
+# Usage:
+#   aos start           Open editor with Claude Code (first run = onboarding)
+#   aos migrate         Run pending migrations
+#   aos status          Show migration version + pending
+#   aos discover        Scan machine for existing setup
+#   aos update          Create + activate release from origin/main
+#   aos rollback        Switch to previous release
+#   aos releases        List all releases
+#   aos version         Show current version
+#   aos self-test       Validate system health
+#   aos deploy [svc]    Deploy service venv (all or specific)
+#   aos arm             Arms: status / list / plan / remove
+#   aos bridge-topics init   Bootstrap projects.yaml / bridge-topics.yaml
+
+set -euo pipefail
+
+AOS_DIR="$HOME/aos"
+# Always dispatch Python through the resolver, never bare `python3`.
+# Homebrew python can be present, correctly versioned, and unusable — a
+# subcommand that picks it dies on `import plistlib` before it can report.
+AOS_PY="$AOS_DIR/core/bin/internal/aos-python"
+RUNNER="$AOS_DIR/core/infra/migrations/runner.py"
+
+case "${1:-help}" in
+    migrate)
+        "$AOS_PY" "$RUNNER" migrate
+        ;;
+
+    status)
+        "$AOS_PY" "$RUNNER" status
+        ;;
+
+    discover)
+        "$AOS_PY" "$RUNNER" discover
+        ;;
+
+    update)
+        # Full update: pull + migrate + sync
+        bash "$AOS_DIR/core/bin/crons/check-update" --apply
+        # Check if any reported issues were fixed in this update
+        bash "$AOS_DIR/core/bin/internal/check-fixed-issues" 2>/dev/null || true
+        # Run test suite if available (non-blocking — failures don't stop update)
+        if [ -d "$AOS_DIR/tests" ] && ls "$AOS_DIR/tests"/test_*.py >/dev/null 2>&1; then
+            echo ""
+            echo "  Running post-update verification..."
+            bash "$0" test 2>&1 | tail -5
+        fi
+        ;;
+
+    check-update)
+        bash "$AOS_DIR/core/bin/crons/check-update" "${2:---status}"
+        ;;
+
+    channel)
+        # Show or set this machine's release channel (edge|stable).
+        CHANNEL_FILE="$HOME/.aos/config/channel"
+        if [[ -z "${2:-}" ]]; then
+            resolved=$("$AOS_PY" "$AOS_DIR/core/lib/channels.py" channel 2>/dev/null || echo "stable")
+            if [[ -f "$CHANNEL_FILE" ]]; then
+                echo "Channel: $resolved  (from $CHANNEL_FILE)"
+            else
+                echo "Channel: $resolved  (default — no channel file; friends stay on stable)"
+            fi
+        else
+            new=$(echo "$2" | tr '[:upper:]' '[:lower:]')
+            if [[ "$new" != "edge" && "$new" != "stable" ]]; then
+                echo "Usage: aos channel [edge|stable]"
+                exit 1
+            fi
+            mkdir -p "$(dirname "$CHANNEL_FILE")"
+            echo "$new" > "$CHANNEL_FILE"
+            echo "Channel set to '$new' ($CHANNEL_FILE)"
+            [[ "$new" == "edge" ]] && echo "  This machine now tracks origin/main (same-day updates)."
+            [[ "$new" == "stable" ]] && echo "  This machine now tracks promoted releases only."
+        fi
+        ;;
+
+    promote)
+        # Promote the running release to the stable channel (moves + pushes the
+        # stable tag). All guards live in the promote script.
+        shift
+        bash "$AOS_DIR/core/bin/cli/aos-promote" "$@"
+        ;;
+
+    rollback)
+        bash "$AOS_DIR/core/bin/internal/release-manager" rollback
+        # Re-run sync after rollback
+        for cmd in sync-skills sync-agents sync-rules sync-mcp; do
+            bash "$0" "$cmd" 2>/dev/null || true
+        done
+        echo "  Rolled back. Run 'aos self-test' to verify."
+        ;;
+
+    releases)
+        bash "$AOS_DIR/core/bin/internal/release-manager" list
+        ;;
+
+    reconcile)
+        # Run invariant checks — fixes drift from wrong installs, brew updates, etc.
+        "$AOS_DIR/core/bin/internal/aos-python" "$AOS_DIR/core/infra/reconcile/runner.py" "${2:-run}"
+        ;;
+
+    bridge-topics)
+        # Bootstrap ~/.aos/config/projects.yaml + bridge-topics.yaml so the
+        # bridge can route Telegram forum topics instead of running flat.
+        # The one-line fix self-test and the bridge_topics_config reconcile
+        # check both point at when either file is missing.
+        case "${2:-init}" in
+            init)
+                "$AOS_PY" "$AOS_DIR/core/bin/internal/bridge-topics-init"
+                ;;
+            *)
+                echo "Usage: aos bridge-topics init"
+                exit 1
+                ;;
+        esac
+        ;;
+
+    sync-skills)
+        # Sync ALL skills from framework to user space via symlinks.
+        # Auto-discovers skills — no hardcoded lists to maintain.
+        # Deprecated skills are explicitly excluded; everything else is installed.
+        # Skills live in core/skills (moved there in wave 1 / migration 052);
+        # the old .claude/skills path no longer exists, so pointing at it synced
+        # nothing while still reporting success.
+        SOURCE="$AOS_DIR/core/skills"
+        TARGET="$HOME/.claude/skills"
+        mkdir -p "$TARGET"
+
+        # Deprecated — never install (remove if found)
+        DEPRECATED="instagram youtube deliberate"
+
+        synced=0
+        for src in "$SOURCE"/*/; do
+            [ -d "$src" ] || continue
+            name=$(basename "$src")
+
+            # Skip deprecated
+            skip=false
+            for dep in $DEPRECATED; do
+                [ "$name" = "$dep" ] && skip=true && break
+            done
+            $skip && continue
+
+            link="$TARGET/$name"
+            if [ -L "$link" ] && [ "$(readlink "$link")" = "$src" ]; then
+                continue  # already correct
+            fi
+            # Remove stale link or back up existing non-symlink
+            if [ -e "$link" ] || [ -L "$link" ]; then
+                if [ -L "$link" ]; then
+                    rm "$link"
+                elif [ ! -e "$TARGET/${name}.pre-aos" ]; then
+                    mv "$link" "$TARGET/${name}.pre-aos"
+                    echo "  Backed up $name → ${name}.pre-aos"
+                else
+                    rm -rf "$link"
+                fi
+            fi
+            ln -s "$src" "$link"
+            echo "  ✓ Linked $name"
+            ((synced++))
+        done
+
+        # Remove deprecated skills if they exist
+        for name in $DEPRECATED; do
+            link="$TARGET/$name"
+            if [ -L "$link" ]; then
+                rm "$link"
+                echo "  ✗ Removed deprecated: $name"
+            fi
+        done
+
+        if [ "$synced" -eq 0 ]; then
+            echo "  ✓ All skills in sync"
+        else
+            echo "  ✓ Synced $synced skill(s)"
+        fi
+        ;;
+
+    sync-rules)
+        # Sync rules from framework to user space via symlinks.
+        # Rules in ~/.claude/rules/ load globally in every session.
+        SOURCE="$AOS_DIR/.claude/rules"
+        TARGET="$HOME/.claude/rules"
+        mkdir -p "$TARGET"
+
+        synced=0
+        for src in "$SOURCE"/*.md; do
+            [ -f "$src" ] || continue
+            name=$(basename "$src")
+            link="$TARGET/$name"
+            if [ -L "$link" ] && [ "$(readlink "$link")" = "$src" ]; then
+                continue
+            fi
+            if [ -e "$link" ] || [ -L "$link" ]; then
+                if [ -L "$link" ]; then
+                    rm "$link"
+                elif [ ! -e "$TARGET/${name}.pre-aos" ]; then
+                    mv "$link" "$TARGET/${name}.pre-aos"
+                else
+                    rm -f "$link"
+                fi
+            fi
+            ln -s "$src" "$link"
+            echo "  ✓ Linked $name"
+            ((synced++))
+        done
+
+        if [ "$synced" -eq 0 ]; then
+            echo "  ✓ All rules in sync"
+        else
+            echo "  ✓ Synced $synced rule(s)"
+        fi
+        ;;
+
+    sync-mcp)
+        # Register AOS MCP servers as user-scope servers in ~/.claude.json.
+        # Claude Code reads user-scope MCP servers from ~/.claude.json (the same
+        # file `claude mcp add --scope user` writes, and where 059_gws_cli.py
+        # registers gws). The old target ~/.claude/mcp.json is only read for
+        # sessions whose cwd is ~/.claude/, so AOS sessions never saw
+        # crawler registered there.
+        #
+        # aos_servers is intentionally empty (migration 120, aos#221): crawler
+        # never worked as an MCP server (fails to connect at every session
+        # start) and was pulled from ~/.claude.json in the same
+        # commit. Leaving its entry here would have sync-mcp silently
+        # re-register it on the next `aos sync`/update, undoing that cleanup.
+        # The crawler service venv and core/services/crawler/crawl_cli.py are
+        # untouched — core/engine/intelligence/content/backends/crawler.py
+        # still shells out to them directly as a content-extraction backend,
+        # entirely outside MCP. memory and xcode were never registered here;
+        # see migration 110 and migration 120 respectively.
+        MCP_FILE="$HOME/.claude.json"
+
+        "$AOS_PY" - "$AOS_DIR" "$MCP_FILE" << 'SYNCMCP'
+import json, os, sys
+from pathlib import Path
+
+aos_dir = Path(sys.argv[1])
+mcp_file = Path(sys.argv[2])
+home = Path.home()
+
+# Load existing config (preserve everything else in ~/.claude.json)
+if mcp_file.exists():
+    try:
+        config = json.loads(mcp_file.read_text())
+    except json.JSONDecodeError:
+        config = {}
+else:
+    config = {}
+
+servers = config.setdefault("mcpServers", {})
+
+# AOS MCP servers — defined here, single source of truth.
+# Empty as of migration 120 (aos#221) — see the comment above.
+aos_servers = {}
+
+changed = 0
+for name, spec in aos_servers.items():
+    # Only register if the service venv exists
+    if not Path(spec["command"]).exists():
+        print(f"  - Skipping {name} (venv not deployed)")
+        continue
+    if servers.get(name) != spec:
+        servers[name] = spec
+        print(f"  ✓ Registered {name}")
+        changed += 1
+
+if changed == 0:
+    print("  ✓ All MCP servers in sync")
+else:
+    # Atomic write: ~/.claude.json is actively read and written by any running
+    # Claude Code session (including via /config). Back it up, write a sibling
+    # temp file, then os.replace() it into place so a reader never sees a torn
+    # file (mirrors 059_gws_cli.py's _atomic_write_json).
+    if mcp_file.exists():
+        mcp_file.with_suffix(mcp_file.suffix + ".bak").write_text(mcp_file.read_text())
+    tmp = mcp_file.with_suffix(mcp_file.suffix + ".tmp")
+    tmp.write_text(json.dumps(config, indent=2) + "\n")
+    os.replace(tmp, mcp_file)
+    print(f"  ✓ Synced {changed} MCP server(s)")
+SYNCMCP
+        ;;
+
+    sync-agents)
+        # Re-run agent symlinking — picks up new agents
+        SOURCE="$AOS_DIR/core/agents"
+        TARGET="$HOME/.claude/agents"
+        mkdir -p "$TARGET"
+        synced=0
+        for src in "$SOURCE"/*.md; do
+            [ -f "$src" ] || continue
+            name=$(basename "$src")
+            link="$TARGET/$name"
+            if [ -L "$link" ] && [ "$(readlink "$link")" = "$src" ]; then
+                continue
+            fi
+            if [ -e "$link" ] || [ -L "$link" ]; then
+                if [ -L "$link" ]; then
+                    rm "$link"
+                elif [ ! -e "$TARGET/${name}.pre-aos" ]; then
+                    mv "$link" "$TARGET/${name}.pre-aos"
+                else
+                    rm -f "$link"
+                fi
+            fi
+            ln -s "$src" "$link"
+            echo "  ✓ Linked $name"
+            ((synced++))
+        done
+        if [ "$synced" -eq 0 ]; then
+            echo "  ✓ All agents in sync"
+        else
+            echo "  ✓ Synced $synced agent(s)"
+        fi
+        ;;
+
+    version)
+        if [ -f "$HOME/.aos/.version" ]; then
+            echo "AOS version: $(cat "$HOME/.aos/.version")"
+        else
+            echo "AOS version: 0 (not yet migrated)"
+        fi
+        ;;
+
+    self-test)
+        echo "=== AOS Self-Test ==="
+        echo ""
+        errors=0
+
+        # Check Python — the interpreter AOS will ACTUALLY use, and whether it
+        # works. "python3 exists" was the old test, and it passed happily on a
+        # machine whose Homebrew python had an unusable pyexpat: seven service
+        # venvs were frozen, the bridge's API was down, and self-test said fine.
+        if py_path=$("$AOS_PY" -c 'import sys; print(sys.executable)' 2>/dev/null) \
+           && "$AOS_PY" -c 'import platform, pyexpat, sys; sys.exit(0 if platform.mac_ver()[0] else 1)' 2>/dev/null; then
+            py_ver=$("$AOS_PY" -c 'import platform; print(platform.python_version())' 2>/dev/null)
+            echo "  ✓ Python $py_ver healthy ($py_path)"
+        else
+            echo "  ✗ No healthy Python — the resolver found nothing usable."
+            echo "    A python3 that exists but fails an import/platform probe counts"
+            echo "    as absent: pip and uv both refuse to install into it."
+            ((errors++))
+        fi
+
+        # Check PyYAML in the interpreter AOS uses, not whichever python3 is
+        # first on PATH — those are routinely different, and only one matters.
+        if "$AOS_PY" -c "import yaml" 2>/dev/null; then
+            echo "  ✓ PyYAML installed"
+        else
+            echo "  ✗ PyYAML not installed (pip3 install pyyaml)"
+            ((errors++))
+        fi
+
+        # Check user data dir
+        if [ -d "$HOME/.aos" ]; then
+            echo "  ✓ User data dir exists"
+        else
+            echo "  ✗ User data dir missing (run: aos migrate)"
+            ((errors++))
+        fi
+
+        # Check config files
+        if [ -f "$AOS_DIR/config/crons.yaml" ]; then
+            echo "  ✓ Config files exist"
+        else
+            echo "  ✗ Config files missing"
+            ((errors++))
+        fi
+
+        # Check agent symlinks
+        for agent in chief steward advisor; do
+            link="$HOME/.claude/agents/${agent}.md"
+            if [ -L "$link" ]; then
+                echo "  ✓ Agent $agent symlinked"
+            elif [ -f "$link" ]; then
+                echo "  ~ Agent $agent exists but not symlinked"
+            else
+                echo "  ✗ Agent $agent not installed"
+                ((errors++))
+            fi
+        done
+
+        # Check skills
+        for skill in recall work review step-by-step; do
+            link="$HOME/.claude/skills/$skill"
+            if [ -L "$link" ]; then
+                echo "  ✓ Skill $skill symlinked"
+            elif [ -d "$link" ]; then
+                echo "  ~ Skill $skill exists but not symlinked"
+            else
+                echo "  ✗ Skill $skill not installed"
+                ((errors++))
+            fi
+        done
+
+        # Check work engine
+        if "$AOS_PY" -c "
+import sys; sys.path.insert(0, '$AOS_DIR/core/engine/work')
+import backend  # live engine (cli.py does 'import backend as engine')
+" 2>/dev/null; then
+            echo "  ✓ Work engine loads"
+        else
+            echo "  ✗ Work engine failed to load"
+            ((errors++))
+        fi
+
+        # Check scripts parse
+        script_errors=0
+        for script in "$AOS_DIR"/core/bin/cli/* "$AOS_DIR"/core/bin/crons/* "$AOS_DIR"/core/bin/internal/* "$AOS_DIR"/core/bin/setup/*; do
+            [ -f "$script" ] || continue
+            basename=$(basename "$script")
+            [ "$basename" = "__pycache__" ] && continue
+            [ "$basename" = "aos" ] && continue
+
+            # Check if Python script
+            if head -1 "$script" | grep -q python; then
+                if "$AOS_PY" -c "
+import ast, sys
+# ast.parse: pure syntax check, no .pyc write — the runtime tree is
+# read-only, so py_compile's cache write failed and 26 healthy scripts
+# were misreported as parse failures.
+try:
+    ast.parse(open('$script').read(), filename='$script')
+except SyntaxError as e:
+    print(f'  ✗ Script $basename: {e}')
+    sys.exit(1)
+" 2>/dev/null; then
+                    : # ok
+                else
+                    ((script_errors++))
+                fi
+            fi
+        done
+        if [ "$script_errors" -eq 0 ]; then
+            echo "  ✓ All Python scripts parse"
+        else
+            echo "  ✗ $script_errors scripts failed to parse"
+            ((errors++))
+        fi
+
+        # Check events.jsonl
+        if [ -f "$HOME/.aos/events.jsonl" ]; then
+            echo "  ✓ Event bus exists"
+        else
+            echo "  ✗ Event bus missing (run: aos migrate)"
+            ((errors++))
+        fi
+
+        # Check bridge service
+        if pgrep -f "aos-bridge" >/dev/null 2>&1; then
+            echo "  ✓ Bridge service running"
+        else
+            echo "  ✗ Bridge service not running"
+            ((errors++))
+        fi
+
+        # Check bridge topics config. Not an error — the bridge runs fine
+        # flat — but "created on first use" used to be the whole message,
+        # with no first use that ever actually created it. Point at the
+        # exact command instead.
+        if [ -f "$HOME/.aos/config/bridge-topics.yaml" ]; then
+            echo "  ✓ Bridge topics config exists"
+        elif [ -f "$HOME/.aos/config/projects.yaml" ]; then
+            echo "  ~ Bridge topics config missing — run: aos bridge-topics init"
+        else
+            echo "  ~ Bridge running flat (no per-project topics) — run: aos bridge-topics init"
+        fi
+
+        # Check initiative infrastructure
+        if [ -d "$HOME/vault/knowledge/initiatives" ]; then
+            init_count=$(ls "$HOME/vault/knowledge/initiatives/"*.md 2>/dev/null | wc -l | tr -d ' ')
+            echo "  ✓ Initiative directory exists ($init_count docs)"
+        else
+            echo "  ~ Initiative directory missing (run: aos migrate)"
+        fi
+
+        # Check version tracking.
+        #
+        # Report the version that is actually DEPLOYED, not .last-seen-version.
+        # That file answers a different question — "what has the operator been
+        # shown in the what's-new walkthrough" — and it lags by design. Reading
+        # it here made self-test print v0.7.5 in the minutes after a clean
+        # update to v0.7.6: a wrong number inside "All checks passed", which is
+        # worse than no number, because release verification is exactly when
+        # someone reads this line to confirm the update landed.
+        deployed_version=$(cat "$AOS_DIR/VERSION" 2>/dev/null || echo "")
+        if [ -n "$deployed_version" ]; then
+            seen_version=$(cat "$HOME/.aos/config/.last-seen-version" 2>/dev/null || echo "")
+            if [ -n "$seen_version" ] && [ "$seen_version" != "$deployed_version" ]; then
+                # Not an error: the walkthrough simply hasn't run yet.
+                echo "  ✓ Running $deployed_version (what's-new not yet shown for it)"
+            else
+                echo "  ✓ Running $deployed_version"
+            fi
+        else
+            echo "  ~ No VERSION file — cannot determine deployed version"
+        fi
+
+        # Validate config files
+        validate_output=$("$AOS_PY" -c "
+import sys
+sys.path.insert(0, '$AOS_DIR/core')
+from lib.validate import validate_all_configs
+results = validate_all_configs()
+errors = [r for r in results if r.level == 'error']
+warnings = [r for r in results if r.level == 'warning']
+for r in errors:
+    print(f'  ✗ Config error: {r.message}  ({r.path})')
+for r in warnings:
+    print(f'  ~ Config warning: {r.message}  ({r.path})')
+if errors:
+    sys.exit(1)
+" 2>&1)
+        validate_exit=$?
+        if [ -n "$validate_output" ]; then
+            echo "$validate_output"
+        fi
+        if [ "$validate_exit" -eq 0 ]; then
+            echo "  ✓ Config validation passed"
+        else
+            ((errors++))
+        fi
+
+        echo ""
+        if [ "$errors" -eq 0 ]; then
+            echo "  ✓ All checks passed"
+        else
+            echo "  ✗ $errors check(s) failed"
+        fi
+        ;;
+
+    start)
+        # cmux is the only supported surface. One call — `cmux new-workspace`
+        # opens a workspace at $HOME and runs the command in it — replaces the
+        # old VS Code settings.json + tasks.json "runOn: folderOpen" dance.
+        CMUX_BIN=""
+        if command -v cmux &>/dev/null; then
+            CMUX_BIN="$(command -v cmux)"
+        elif [[ -x "/Applications/cmux.app/Contents/Resources/bin/cmux" ]]; then
+            CMUX_BIN="/Applications/cmux.app/Contents/Resources/bin/cmux"
+        fi
+
+        # Build the cld command — if onboarding isn't done, pass initial prompt
+        cld_command="cld"
+        if [[ ! -f "$HOME/.aos/config/onboarding.yaml" ]]; then
+            cld_command="cld 'Start onboarding. Read ~/.claude/skills/onboard/SKILL.md and follow the protocol.'"
+        fi
+
+        if [[ -z "$CMUX_BIN" ]]; then
+            echo ""
+            echo "  cmux is not installed — it's the AOS terminal."
+            echo ""
+            echo "    brew install --cask cmux && aos start"
+            echo ""
+            echo "  Or run Claude Code directly in this terminal:"
+            echo "    ${cld_command}"
+            echo ""
+            exit 1
+        fi
+
+        echo ""
+        echo "  Opening cmux..."
+        if [[ ! -f "$HOME/.aos/config/onboarding.yaml" ]]; then
+            echo "  Claude Code will start automatically — Sahib will walk you through setup."
+        else
+            echo "  Claude Code will start automatically."
+        fi
+        echo ""
+
+        # This used to lead with `new-workspace`, which cmux documents as
+        # "create a new workspace in *the caller's window*" — it resolves its
+        # target from $CMUX_WORKSPACE_ID/$CMUX_SURFACE_ID. `aos start` is always
+        # an outside caller (at the end of an install it runs in Terminal), so
+        # there is no caller window, the call failed, and everything fell
+        # through to running Claude Code in Terminal. The operator watched cmux
+        # launch and then got onboarded in the wrong window.
+        #
+        # The other half of that bug lives in cmux's own config: socket control
+        # defaults to "cmuxOnly", which refuses outside callers outright. The
+        # installer and migration 099 set it to "automation"; this is the
+        # runtime guard for a machine that hasn't been migrated yet.
+        if ! "$CMUX_BIN" list-windows &>/dev/null; then
+            open -a cmux 2>/dev/null || true
+            # Fresh brew installs are slow to first launch (Gatekeeper, first-run
+            # setup), so wait longer than a warm start would need.
+            for _ in $(seq 1 40); do
+                "$CMUX_BIN" list-windows &>/dev/null && break
+                sleep 0.5
+            done
+        fi
+
+        if "$CMUX_BIN" list-windows &>/dev/null; then
+            # Socket is answering. Target window 1 explicitly rather than
+            # relying on a caller window we don't have.
+            if "$CMUX_BIN" new-workspace \
+                    --name "AOS" \
+                    --cwd "$HOME" \
+                    --command "$cld_command" \
+                    --window 1 \
+                    --focus true &>/dev/null; then
+                exit 0
+            fi
+            # Workspace creation refused — open $HOME (the documented
+            # launch-from-outside entry point) and type the command into it.
+            if "$CMUX_BIN" "$HOME" &>/dev/null; then
+                sleep 1
+                if "$CMUX_BIN" send --workspace 1 "${cld_command}\n" &>/dev/null; then
+                    exit 0
+                fi
+                echo "  cmux is open — run this in it to begin:"
+                echo ""
+                echo "    ${cld_command}"
+                echo ""
+                exit 0
+            fi
+        fi
+
+        echo "  cmux did not respond — starting Claude Code here instead."
+        echo ""
+        echo "  To make cmux the default surface, run: aos migrate"
+        echo ""
+        eval "exec $cld_command"
+        ;;
+
+    deploy)
+        SERVICES_SRC="$AOS_DIR/core/services"
+        SERVICES_DST="$HOME/.aos/services"
+        svc="${2:-}"
+
+        # Find best python for venvs (3.11+, prefer homebrew)
+        # A version number is not health. Homebrew's python@3.14 reports 3.14
+        # but ships a pyexpat linked against an expat newer than macOS provides,
+        # and returns an empty platform.mac_ver() — which makes BOTH pip and uv
+        # refuse to install into any venv built on it. Seven service venvs were
+        # silently deployed onto it (2026-08-17) and could not take a package
+        # update; the bridge lost its :4098 API that way, with no error surfaced.
+        # So: prefer the pinned AOS interpreter, and probe every candidate.
+        _python_ok() {
+            [[ -x "$1" ]] || return 1
+            "$1" -c 'import platform, pyexpat, sys; sys.exit(0 if platform.mac_ver()[0] else 1)' 2>/dev/null
+        }
+        _find_python() {
+            for p in "$HOME/.aos/python/bin/python3" \
+                     /opt/homebrew/bin/python3.13 \
+                     /opt/homebrew/bin/python3.12 \
+                     /opt/homebrew/bin/python3 \
+                     "$HOME/.local/bin/python3"; do
+                if [[ -x "$p" ]]; then
+                    local minor
+                    minor=$("$p" --version 2>&1 | awk '{print $2}' | cut -d. -f2)
+                    if [[ "${minor:-0}" -ge 11 ]] && _python_ok "$p"; then
+                        echo "$p"
+                        return
+                    fi
+                fi
+            done
+            echo "python3"
+        }
+
+        deploy_one() {
+            local name="$1"
+            local src="$SERVICES_SRC/$name"
+            local dst="$SERVICES_DST/$name"
+
+            if [ ! -f "$src/pyproject.toml" ]; then
+                echo "  ✗ $name: no pyproject.toml"
+                return 1
+            fi
+
+            echo "  Deploying $name..."
+            mkdir -p "$dst"
+
+            local py_bin
+            py_bin=$(_find_python)
+
+            # Always rebuild venv if its interpreter is too old OR unhealthy.
+            # The health probe is the point: a venv on a broken interpreter looks
+            # fine to `--version` and to launchctl, but can never be updated again.
+            if [[ -d "$dst/.venv" ]]; then
+                local venv_ver
+                venv_ver=$("$dst/.venv/bin/python" --version 2>&1 | awk '{print $2}' | cut -d. -f2 || echo "0")
+                if [[ "${venv_ver:-0}" -lt 11 ]]; then
+                    echo "    Venv has Python 3.$venv_ver — rebuilding with 3.11+"
+                    rm -rf "$dst/.venv"
+                elif ! _python_ok "$dst/.venv/bin/python"; then
+                    echo "    Venv interpreter is broken (pyexpat/mac_ver probe failed) — rebuilding with $py_bin"
+                    rm -rf "$dst/.venv"
+                fi
+            fi
+
+            if [[ ! -d "$dst/.venv" ]]; then
+                echo "    Creating venv with $py_bin..."
+                uv venv "$dst/.venv" --python "$py_bin" 2>&1 | tail -2
+                if [[ ! -f "$dst/.venv/bin/python" ]]; then
+                    echo "  ✗ $name: venv creation failed"
+                    return 1
+                fi
+            fi
+
+            # Install deps — prefer requirements.lock (pinned) over pyproject.toml (unpinned)
+            # Lock files may contain absolute paths from the dev machine, so fall back
+            # to pyproject.toml if lock file install fails.
+            local lockfile="$src/requirements.lock"
+            local lock_ok=false
+            if [[ -f "$lockfile" ]]; then
+                # A lock that has silently fallen behind pyproject is worse than no
+                # lock: deploy prefers it, so a newly declared dependency is never
+                # installed and the service degrades with no error. The bridge lost
+                # its :4098 API this way — aiohttp was declared for weeks and the
+                # lock never carried it. Compare the two before trusting the lock.
+                local missing_deps
+                missing_deps=$("$py_bin" - "$src/pyproject.toml" "$lockfile" <<'PYEOF' 2>/dev/null
+import re, sys
+try:
+    import tomllib
+except ImportError:
+    tomllib = None
+pyproject, lock = sys.argv[1], sys.argv[2]
+if tomllib:
+    with open(pyproject, "rb") as f:
+        deps = tomllib.load(f).get("project", {}).get("dependencies", [])
+else:
+    deps, on = [], False
+    for line in open(pyproject):
+        s = line.strip()
+        if s == "dependencies = [": on = True; continue
+        if on and s == "]": break
+        if on:
+            m = re.search(r'"(.+?)"', line)
+            if m: deps.append(m.group(1))
+norm = lambda s: re.split(r"[<>=!~\[; ]", s.strip())[0].lower().replace("_", "-")
+locked = {norm(l) for l in open(lock) if l.strip() and not l.startswith("#")}
+print(" ".join(sorted({norm(d) for d in deps} - locked)))
+PYEOF
+)
+                if [[ -n "$missing_deps" ]]; then
+                    echo "    ⚠️  LOCK DRIFT — declared in pyproject.toml but absent from requirements.lock:"
+                    echo "        $missing_deps"
+                    echo "        Installing them explicitly; regenerate the lock to make this permanent."
+                fi
+                echo "    Installing from requirements.lock (pinned versions)..."
+                if uv pip install -p "$dst/.venv/bin/python" -r "$lockfile" 2>&1 | tail -5; then
+                    lock_ok=true
+                    # Close the drift now so the service is not left degraded.
+                    if [[ -n "$missing_deps" ]]; then
+                        # shellcheck disable=SC2086
+                        if uv pip install -p "$dst/.venv/bin/python" $missing_deps 2>&1 | tail -3; then
+                            echo "    Installed $(echo "$missing_deps" | wc -w | tr -d ' ') dep(s) missing from the lock."
+                        else
+                            echo "  ✗ $name: could not install lock-drift deps: $missing_deps"
+                            return 1
+                        fi
+                    fi
+                else
+                    echo "    WARN: lock file install failed — falling back to pyproject.toml"
+                fi
+            fi
+            if [[ "$lock_ok" == false ]]; then
+                # Fallback: extract deps from pyproject.toml (unpinned)
+                echo "    Installing from pyproject.toml..."
+                local deps
+                deps=$("$AOS_PY" -c "
+try:
+    import tomllib
+except ImportError:
+    try:
+        import tomli as tomllib
+    except ImportError:
+        import re, sys
+        deps = []
+        in_deps = False
+        for line in open('$src/pyproject.toml'):
+            s = line.strip()
+            if s == 'dependencies = [': in_deps = True; continue
+            if in_deps and s == ']': break
+            if in_deps:
+                m = re.search(r'\"(.+?)\"', line)
+                if m: deps.append(m.group(1))
+        print('\n'.join(deps))
+        sys.exit(0)
+with open('$src/pyproject.toml', 'rb') as f:
+    deps = tomllib.load(f).get('project', {}).get('dependencies', [])
+print('\n'.join(deps))
+" 2>/dev/null)
+
+                if [[ -z "$deps" ]]; then
+                    echo "  ✗ $name: could not read dependencies"
+                    return 1
+                fi
+
+                echo "    Installing: $(echo "$deps" | tr '\n' ' ')"
+                if ! echo "$deps" | uv pip install -p "$dst/.venv/bin/python" -r - 2>&1 | tail -5; then
+                    echo "  ✗ $name: pip install failed"
+                    return 1
+                fi
+            fi
+
+            # Verify critical imports work
+            local verify_ok=true
+            if ! "$dst/.venv/bin/python" -c "import yaml" 2>/dev/null; then
+                echo "    ✗ Missing: yaml"
+                verify_ok=false
+            fi
+
+            if [[ "$verify_ok" == true ]]; then
+                echo "    ✓ $name deployed (Python $("$dst/.venv/bin/python" --version 2>&1 | awk '{print $2}'))"
+            else
+                echo "  ✗ $name: deployed but missing dependencies — try: aos deploy $name"
+                return 1
+            fi
+        }
+
+        echo "=== AOS Deploy ==="
+        echo ""
+        if [ -n "$svc" ]; then
+            deploy_one "$svc"
+        else
+            for src_dir in "$SERVICES_SRC"/*/; do
+                name=$(basename "$src_dir")
+                [ -f "$src_dir/pyproject.toml" ] && deploy_one "$name"
+            done
+        fi
+        echo ""
+        echo "  ✓ Deploy complete"
+        ;;
+
+    activate)
+        # Activate a catalog agent
+        shift
+        bash "$AOS_DIR/core/bin/cli/activate-agent" "$@"
+        ;;
+
+    deactivate)
+        # Deactivate a catalog agent
+        shift
+        bash "$AOS_DIR/core/bin/cli/activate-agent" --deactivate "$@"
+        ;;
+
+    trust)
+        # Trust review and management
+        shift
+        "$AOS_DIR/core/bin/internal/aos-python" "$AOS_DIR/core/bin/cli/trust-review" "$@"
+        ;;
+
+    trust-log)
+        # Log a trust action
+        shift
+        "$AOS_DIR/core/bin/internal/aos-python" "$AOS_DIR/core/bin/cli/trust-log" "$@"
+        ;;
+
+    feedback)
+        shift
+        bash "$AOS_DIR/core/bin/cli/feedback" "$@"
+        ;;
+
+    telemetry)
+        shift
+        bash "$AOS_DIR/core/bin/internal/telemetry" "$@"
+        ;;
+
+    sessions)
+        shift
+        bash "$AOS_DIR/core/bin/internal/session-recorder" "$@"
+        ;;
+
+    rename-agent)
+        # Rename the main orchestrator agent
+        shift
+        new_name="${1:-}"
+        if [[ -z "$new_name" ]]; then
+            echo "Usage: aos rename-agent <new-name>"
+            echo "Example: aos rename-agent sahib"
+            echo ""
+            # Show current name
+            current=$("$AOS_PY" -c "
+import yaml
+from pathlib import Path
+d = yaml.safe_load(Path.home().joinpath('.aos/config/operator.yaml').read_text()) or {}
+print(d.get('agent_name', 'chief'))
+" 2>/dev/null || echo "chief")
+            echo "Current agent name: $current"
+            exit 1
+        fi
+
+        # Validate: lowercase, no spaces
+        if [[ "$new_name" =~ [^a-z0-9_-] ]]; then
+            echo "Agent name must be lowercase letters, numbers, hyphens, or underscores."
+            exit 1
+        fi
+
+        agents_dir="$HOME/.claude/agents"
+        chief_source="$AOS_DIR/core/agents/chief.md"
+
+        # Read current name
+        old_name=$("$AOS_PY" -c "
+import yaml
+from pathlib import Path
+d = yaml.safe_load(Path.home().joinpath('.aos/config/operator.yaml').read_text()) or {}
+print(d.get('agent_name', 'chief'))
+" 2>/dev/null || echo "chief")
+
+        # Create new symlink
+        ln -sf "$chief_source" "$agents_dir/${new_name}.md"
+        echo "  Created agent: $agents_dir/${new_name}.md"
+
+        # Remove old symlink if it was a custom name (don't remove chief.md)
+        if [[ "$old_name" != "chief" ]] && [[ "$old_name" != "$new_name" ]]; then
+            rm -f "$agents_dir/${old_name}.md" 2>/dev/null
+            echo "  Removed old: $agents_dir/${old_name}.md"
+        fi
+
+        # Update operator.yaml
+        "$AOS_PY" -c "
+import yaml
+from pathlib import Path
+p = Path.home() / '.aos/config/operator.yaml'
+d = yaml.safe_load(p.read_text()) or {}
+d['agent_name'] = '$new_name'
+p.write_text(yaml.dump(d, default_flow_style=False, sort_keys=False, allow_unicode=True))
+" 2>/dev/null
+        echo "  Updated operator.yaml: agent_name=$new_name"
+
+        # Update settings.json
+        "$AOS_PY" -c "
+import json
+from pathlib import Path
+p = Path.home() / '.claude/settings.json'
+s = json.loads(p.read_text())
+s['agent'] = '$new_name'
+p.write_text(json.dumps(s, indent=2) + '\n')
+" 2>/dev/null
+        echo "  Updated settings.json: agent=$new_name"
+
+        echo ""
+        echo "  Done! Your agent is now '$new_name'."
+        echo "  Run 'cld' to start a session with $new_name."
+        ;;
+
+    repair)
+        # Full repair — pull latest, rebuild venvs, reload services, fix config
+        echo ""
+        echo "  Repairing AOS..."
+        echo ""
+
+        # Pull latest
+        echo "  Pulling latest..."
+        git -C "$AOS_DIR" pull origin main 2>&1 | tail -3
+        echo ""
+
+        # Delete and rebuild venvs
+        echo "  Rebuilding service venvs..."
+        rm -rf "$HOME/.aos/services/bridge/.venv"
+        bash "$0" deploy
+        echo ""
+
+        # Migrate secrets to login keychain
+        echo "  Migrating secrets..."
+        bash "$AOS_DIR/core/bin/cli/agent-secret" migrate 2>/dev/null || true
+
+        # Repair hooks in settings.json
+        echo "  Repairing settings..."
+        bash "$AOS_DIR/install.sh" 2>/dev/null | grep -E "patched|repaired|OK|CHANGED" || true
+
+        # Sync agents and skills
+        echo "  Syncing agents, skills, rules, MCP..."
+        bash "$0" sync-agents 2>/dev/null
+        bash "$0" sync-skills 2>/dev/null
+        bash "$0" sync-rules 2>/dev/null
+        bash "$0" sync-mcp 2>/dev/null
+
+        # Reload all LaunchAgents. Discover the deployed plists rather than
+        # carrying a hardcoded list (which drifts and omitted transcriber, n8n,
+        # sentinel, qareen-tunnel, …), and route each through the shared guarded
+        # choke-point so a bare unload/load can't race launchd and leave a job
+        # unloaded (aos#180).
+        echo "  Reloading services..."
+        for la_plist in "$HOME/Library/LaunchAgents/com.aos."*.plist; do
+            [[ -f "$la_plist" ]] || continue
+            la=$(basename "$la_plist" .plist)
+            "$AOS_DIR/core/bin/internal/aos-python" \
+                "$AOS_DIR/core/infra/lib/service_ctl.py" restart "$la" \
+                --plist "$la_plist" --actor "aos-repair" \
+                || echo "    ⚠ $la restart incomplete — check 'aos status'"
+        done
+
+        echo ""
+        echo "  Repair complete. Run 'aos self-test' to verify."
+        echo ""
+        ;;
+
+    doctor)
+        echo "=== AOS Doctor ==="
+        echo ""
+        echo "Checking migration state vs actual filesystem..."
+        echo ""
+        "$AOS_PY" -c "
+import sys, importlib.util
+from pathlib import Path
+
+AOS_DIR = Path.home() / 'aos'
+MIGRATION_DIR = AOS_DIR / 'core' / 'migrations'
+errors = 0
+
+# Run each migration's check()
+for f in sorted(MIGRATION_DIR.glob('[0-9][0-9][0-9]_*.py')):
+    num = int(f.stem.split('_')[0])
+    name = f.stem
+    spec = importlib.util.spec_from_file_location(name, f)
+    mod = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(mod)
+    except Exception as e:
+        print(f'  ✗ [{num:03d}] {name}: failed to load ({e})')
+        errors += 1
+        continue
+
+    desc = getattr(mod, 'DESCRIPTION', name)
+    if hasattr(mod, 'check'):
+        try:
+            ok = mod.check()
+            if ok:
+                print(f'  ✓ [{num:03d}] {desc}')
+            else:
+                print(f'  ✗ [{num:03d}] {desc} — DRIFTED (check() returned False)')
+                errors += 1
+        except Exception as e:
+            print(f'  ✗ [{num:03d}] {desc} — check() error: {e}')
+            errors += 1
+    else:
+        print(f'  ~ [{num:03d}] {desc} — no check()')
+
+# Check symlinks
+print()
+print('Symlinks:')
+agents_dir = Path.home() / '.claude' / 'agents'
+for agent in ['chief.md', 'steward.md', 'advisor.md']:
+    link = agents_dir / agent
+    source = AOS_DIR / 'core' / 'agents' / agent
+    if link.is_symlink() and link.resolve() == source.resolve():
+        print(f'  ✓ {agent}')
+    elif link.exists():
+        print(f'  ~ {agent} (exists but not symlinked)')
+        errors += 1
+    else:
+        print(f'  ✗ {agent} missing')
+        errors += 1
+
+# Check for stale plists
+print()
+print('LaunchAgents:')
+la_dir = Path.home() / 'Library' / 'LaunchAgents'
+stale = list(la_dir.glob('com.agent.*'))
+active = list(la_dir.glob('com.aos.*'))
+if stale:
+    for p in stale:
+        print(f'  ✗ Stale: {p.name}')
+        errors += 1
+else:
+    print(f'  ✓ No stale com.agent.* plists')
+print(f'  ✓ {len(active)} active com.aos.* plists')
+
+# Check events
+print()
+events = Path.home() / '.aos' / 'events.jsonl'
+if events.exists():
+    print(f'  ✓ Event bus exists')
+else:
+    print(f'  ✗ Event bus missing')
+    errors += 1
+
+# Check work engine
+work_file = Path.home() / '.aos' / 'work' / 'work.yaml'
+if work_file.exists():
+    print(f'  ✓ Work system exists')
+else:
+    print(f'  ✗ Work system missing')
+    errors += 1
+
+# Summary
+print()
+if errors == 0:
+    print('  ✓ All checks passed')
+else:
+    print(f'  ✗ {errors} issue(s) found — run \"aos migrate\" to fix')
+sys.exit(0 if errors == 0 else 1)
+"
+        ;;
+
+    test)
+        # Run the full verification test suite
+        echo "=== AOS Test Suite ==="
+        echo ""
+        TEST_DIR="$AOS_DIR/tests"
+        if [ ! -d "$TEST_DIR" ]; then
+            echo "  ✗ No test directory found at $TEST_DIR"
+            exit 1
+        fi
+
+        # Run under the AOS-owned interpreter (aos-python resolver), never bare
+        # python3: on operator machines PATH python3 can be Apple's 3.9 with no
+        # pytest — 24 of 25 "failures" in the v0.7.2 rollout were the grader
+        # failing to open the exam, not the system being broken.
+        test_errors=0
+        failed_suites=""
+        for test_file in "$TEST_DIR"/test_*.py; do
+            [ -f "$test_file" ] || continue
+            name=$(basename "$test_file" .py)
+            echo "Running: $name"
+            echo "─────────────────────────────────────────"
+            if "$AOS_PY" "$test_file"; then
+                echo ""
+            else
+                ((test_errors++))
+                failed_suites="${failed_suites:+$failed_suites,}$name"
+                echo ""
+            fi
+        done
+
+        # Record the verdict where `aos status` can see it — a machine failing
+        # verification every night must be visible without ssh (update-state is
+        # what status reads; before this, the verdict evaporated).
+        "$AOS_PY" - "$test_errors" "$failed_suites" <<'PYEOF' 2>/dev/null || true
+import json, sys, datetime
+from pathlib import Path
+state_file = Path.home() / ".aos" / "data" / "update-state.json"
+try:
+    state = json.loads(state_file.read_text()) if state_file.exists() else {}
+except Exception:
+    state = {}
+errors, suites = int(sys.argv[1]), sys.argv[2]
+state["last_verify"] = {
+    "time": datetime.datetime.now().isoformat(),
+    "result": "ok" if errors == 0 else "failed",
+    "failed_suites": [s for s in suites.split(",") if s],
+}
+state_file.parent.mkdir(parents=True, exist_ok=True)
+state_file.write_text(json.dumps(state, indent=2))
+PYEOF
+
+        if [ "$test_errors" -eq 0 ]; then
+            echo "  ✓ All test suites passed"
+        else
+            echo "  ✗ $test_errors suite(s) had failures"
+            exit 1
+        fi
+        ;;
+
+    help|--help|-h)
+        echo "AOS — Agentic Operating System"
+        echo ""
+        echo "Usage: aos <command>"
+        echo ""
+        echo "Commands:"
+        echo "  start           Open editor with Claude Code ready"
+        echo "  update          Pull latest + migrate + sync"
+        echo "  check-update    Check if updates are available"
+        echo "  channel         Show or set release channel (aos channel edge|stable)"
+        echo "  promote         Promote running release to stable (moves stable tag)"
+        echo "  status          Show migration version + pending"
+        echo "  self-test       Validate system health"
+        echo "  test            Run full verification test suite"
+        echo "  doctor          Check migration state vs actual filesystem"
+        echo "  deploy          Deploy service venvs (all or: aos deploy bridge)"
+        echo "  reconcile       Run invariant checks and auto-fix drift"
+        echo "  sync-skills     Re-sync skill symlinks (auto-discovers all)"
+        echo "  sync-agents     Re-sync agent symlinks"
+        echo "  sync-rules      Re-sync rule symlinks"
+        echo "  sync-mcp        Register AOS MCP servers with Claude Code"
+        echo "  activate        Activate a catalog agent (aos activate engineer)"
+        echo "  deactivate      Deactivate a catalog agent"
+        echo "  trust           Review agent trust levels"
+        echo "  trust-log       Log agent trust actions"
+        echo "  migrate         Run pending migrations"
+        echo "  feedback         Report a bug or issue (auto-files to GitHub)"
+        echo "  rename-agent     Rename your main agent (aos rename-agent sahib)"
+        echo "  repair           Pull latest, rebuild venvs, reload everything"
+        echo "  telemetry        Anonymous usage telemetry (opt-in/out/report)"
+        echo "  sessions         View recorded onboarding/setup sessions"
+        echo "  arm              Arms: what is installed, what works, what to remove"
+        echo "  snapshot        What this system consists of, read live (--json)"
+        echo "  discover        Scan machine for existing setup"
+        echo "  hygiene         Find orphaned instance artifacts (services, plists, caches)"
+        echo "  version         Show current version"
+        echo "  claude-profile  Isolated Claude Code login profiles (add/list/remove/path)"
+        echo ""
+        ;;
+
+    arm)
+        # Arms — what capabilities exist on this machine and whether they work.
+        # The engine is the single authority on module state; the desktop app
+        # shells out to `aos arm status --json` rather than reimplementing it.
+        # NOTE: aos-python, not bare python3. On a machine where Homebrew's
+        # python3 is the broken 3.14 (no pyexpat), `import plistlib` explodes
+        # and the subcommand dies before it can report anything.
+        shift
+        exec "$AOS_DIR/core/bin/internal/aos-python" -c "
+import sys
+sys.path.insert(0, '$AOS_DIR/core/engine')
+from arms.cli import main
+raise SystemExit(main(sys.argv[1:]))
+" "$@"
+        ;;
+
+    hygiene)
+        # Instance hygiene — find orphaned artifacts and optionally clean them.
+        # NEVER auto-deletes. Shows what it found, asks for each item.
+        "$AOS_PY" -c "
+import sys, os, shutil, subprocess
+sys.path.insert(0, '$AOS_DIR/core/infra/reconcile')
+sys.path.insert(0, '$AOS_DIR/core/infra/reconcile/checks')
+from instance_hygiene import find_orphans, _format_size, _dir_size, HYGIENE_STATE_FILE
+
+orphans = find_orphans()
+if not orphans:
+    print('  No orphaned artifacts found. System is clean.')
+    sys.exit(0)
+
+total_items = sum(len(v) for v in orphans.values())
+total_bytes = sum(size for items in orphans.values() for _, _, size in items)
+print(f'  Found {total_items} orphaned artifacts ({_format_size(total_bytes)})')
+print()
+
+apply = '--apply' in sys.argv
+dismiss_list = []
+
+for category, items in orphans.items():
+    for path, label, size in items:
+        size_str = f' ({_format_size(size)})' if size > 1024 else ''
+        tag = f'{category}:{label}'
+
+        if not apply:
+            print(f'  {category}: {label}{size_str}')
+            continue
+
+        # Interactive: ask for each item
+        print(f'  {category}: {label}{size_str}')
+        choice = input(f'    Delete? [y/N/dismiss]: ').strip().lower()
+
+        if choice == 'y':
+            try:
+                if category == 'launchagents':
+                    subprocess.run(['launchctl', 'bootout', f'gui/{os.getuid()}/{label}'],
+                                   capture_output=True, timeout=5)
+                    path.unlink()
+                elif category in ('services', 'models'):
+                    shutil.rmtree(path)
+                elif category in ('skills', 'logs'):
+                    path.unlink()
+                print(f'    ✓ Deleted')
+            except Exception as e:
+                print(f'    ✗ Failed: {e}')
+        elif choice == 'dismiss':
+            dismiss_list.append(tag)
+            print(f'    — Dismissed (won\\'t ask again)')
+        else:
+            print(f'    — Skipped')
+
+if not apply:
+    print()
+    print('  Run \\'aos hygiene --apply\\' to review each item and decide.')
+    sys.exit(0)
+
+# Save dismissed items
+if dismiss_list:
+    import yaml
+    HYGIENE_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    existing = {}
+    if HYGIENE_STATE_FILE.exists():
+        with open(HYGIENE_STATE_FILE) as f:
+            existing = yaml.safe_load(f) or {}
+    dismissed = set(existing.get('dismissed', []))
+    dismissed.update(dismiss_list)
+    existing['dismissed'] = sorted(dismissed)
+    with open(HYGIENE_STATE_FILE, 'w') as f:
+        yaml.dump(existing, f, default_flow_style=False)
+    print(f'  Saved {len(dismiss_list)} dismissals to {HYGIENE_STATE_FILE}')
+" "$@"
+        ;;
+
+    mesh)
+        shift
+        exec "$AOS_DIR/core/bin/cli/mesh" "$@"
+        ;;
+
+    claude-profile)
+        # Isolated Claude Code login profiles — add/list/remove/path.
+        shift
+        exec "$AOS_DIR/core/bin/cli/claude-profile" "$@"
+        ;;
+
+    snapshot)
+        # Live system inventory — every fact read from what declares it.
+        # Consumed by the onboard and whats-new skills so their descriptions
+        # of the system cannot drift out of date.
+        shift
+        "$AOS_DIR/core/bin/internal/aos-python" "$AOS_DIR/core/bin/cli/aos-snapshot" "$@"
+        ;;
+
+    *)
+        echo "Unknown command: $1"
+        echo "Run 'aos help' for usage"
+        exit 1
+        ;;
+esac

@@ -1,0 +1,414 @@
+#!/bin/bash
+# watchdog — checks AOS services, network, and disk every 5 minutes
+# Run by the scheduler (crons.yaml) or manually: bash ~/aos/core/bin/watchdog
+#
+# Tier 1: Service down → restart → notify Telegram (best-effort)
+# Tier 2: 3+ restarts in 24 hours (flapping) → escalate to technician via Listen
+# Also checks: Tailscale, internet, disk space
+
+# Never crash on any individual failure
+
+# Always resolve Python through the AOS resolver — a python3 on PATH can be
+# present, correctly versioned, and unusable (Homebrew 3.14's pyexpat).
+AOS_PY="${AOS_PY:-$HOME/aos/core/bin/internal/aos-python}"
+set +e
+
+AOS_DIR="$HOME/aos"
+AOS_DIR="$HOME/aos"  # v1 services still live here during migration
+STATE_DIR="$HOME/.aos/logs/.watchdog"
+LOG_PREFIX="[$(date '+%Y-%m-%d %H:%M:%S')]"
+
+mkdir -p "$STATE_DIR"
+
+log() {
+    echo "$LOG_PREFIX $*"
+}
+
+# ── Telegram: best-effort via topic-routed aos-notify, never crash ─────────
+# Service failures/recoveries go to the alerts forum topic; the router
+# falls back to group General, then operator DM (never drops a message).
+
+notify() {
+    local msg="$1"
+    if ! "$AOS_DIR/core/bin/cli/aos-notify" "$msg" --topic alerts > /dev/null 2>&1; then
+        log "NOTIFY (not delivered): $msg"
+    fi
+    return 0
+}
+
+# ── State helpers ──────────────────────────────────────────────────────────
+
+check_state_change() {
+    local key="$1"
+    local new_val="$2"
+    local state_file="$STATE_DIR/${key}.state"
+    local prev="unknown"
+    if [[ -f "$state_file" ]]; then
+        prev=$(cat "$state_file" 2>/dev/null || echo "unknown")
+    fi
+    echo "$new_val" > "$state_file"
+    [[ "$prev" != "$new_val" ]]
+}
+
+record_restart() {
+    local name="$1"
+    local ts_file="$STATE_DIR/${name}.timestamps"
+    date '+%s' >> "$ts_file" 2>/dev/null || true
+}
+
+count_restarts_24h() {
+    local name="$1"
+    local ts_file="$STATE_DIR/${name}.timestamps"
+    local cutoff
+    cutoff=$(( $(date '+%s') - 86400 ))
+    local count=0
+    if [[ -f "$ts_file" ]]; then
+        while IFS= read -r ts; do
+            [[ -z "$ts" ]] && continue
+            if (( ts >= cutoff )); then
+                count=$(( count + 1 ))
+            fi
+        done < "$ts_file"
+        # Compact: drop old entries
+        awk -v cutoff="$cutoff" '$1 >= cutoff' "$ts_file" > "${ts_file}.tmp" 2>/dev/null \
+            && mv "${ts_file}.tmp" "$ts_file" 2>/dev/null || true
+    fi
+    echo "$count"
+}
+
+# ── Escalation via Listen ──────────────────────────────────────────────────
+
+escalate_to_technician() {
+    local name="$1"
+    local reason="$2"
+    local log_tail="$3"
+    local escalation_file="$STATE_DIR/${name}.escalated"
+
+    # Only escalate once until service recovers
+    if [[ -f "$escalation_file" ]]; then
+        log "$name already escalated — skipping duplicate"
+        return 0
+    fi
+
+    log "$name ESCALATING to technician via Listen: $reason"
+    date '+%Y-%m-%d %H:%M:%S' > "$escalation_file" 2>/dev/null || true
+    notify "🔧 <b>${name}</b> keeps failing, so I've handed it to the repair agent to dig into. ${reason}"
+
+    local prompt
+    prompt="[WATCHDOG ESCALATION] Service: ${name}
+
+Reason: ${reason}
+
+Recent log tail:
+${log_tail}
+
+You are the system technician. Service '${name}' has been flagged by the watchdog as critically unhealthy. Please:
+1. Read the relevant logs
+2. Diagnose the root cause
+3. Attempt a fix
+4. Write a brief vault note at ~/vault/log/watchdog-escalation-$(date '+%Y-%m-%d')-${name}.md
+5. Send a Telegram message reporting what you found and what you did"
+
+    local escaped_prompt
+    escaped_prompt=$(printf '%s' "$prompt" | "$AOS_PY" -c 'import sys,json; print(json.dumps(sys.stdin.read()))' 2>/dev/null || echo '"'"$prompt"'"')
+
+    curl -s --max-time 10 -X POST "http://127.0.0.1:7600/job" \
+        -H "Content-Type: application/json" \
+        -d "{\"prompt\": ${escaped_prompt}}" \
+        > /dev/null 2>&1 && log "$name escalation job posted to Listen" \
+        || log "$name WARN: could not reach Listen to post escalation job"
+}
+
+clear_escalation() {
+    local name="$1"
+    rm -f "$STATE_DIR/${name}.escalated" 2>/dev/null || true
+}
+
+# ── LaunchAgent helpers ────────────────────────────────────────────────────
+
+check_launchagent() {
+    local label="$1"
+    launchctl list "$label" > /dev/null 2>&1
+}
+
+restart_service() {
+    local label="$1"
+    log "Restarting $label..."
+    # Route through the shared guarded choke-point so the watchdog's restarts
+    # get the same settle → verify → retry guarantee and land in the lifecycle
+    # audit log. The old inline kickstart-then-bare-bootout/bootstrap could race
+    # launchd's async teardown and leave the job unloaded (aos#180).
+    "$AOS_DIR/core/bin/internal/aos-python" \
+        "$AOS_DIR/core/infra/lib/service_ctl.py" restart "$label" \
+        --plist "$HOME/Library/LaunchAgents/${label}.plist" --actor "watchdog" \
+        || log "  WARN: $label guarded restart failed — still down"
+}
+
+check_health() {
+    local url="$1"
+    curl -sf --max-time 5 "$url" > /dev/null 2>&1
+}
+
+# ── Network checks (aos#2354) ───────────────────────────────────────────────
+#
+# Internet: HTTPS reachability across two independent hosts, not ICMP. ICMP
+# is filtered by policy on many consumer/corporate networks and VPNs; the
+# system already depends on outbound HTTPS to deliver the alert at all, so
+# HTTPS is both the more accurate signal and the more relevant one. A DOWN
+# state is only ever declared (and only ever alerted) after the probe fails
+# on INTERNET_FAIL_THRESHOLD consecutive ticks — debounce state lives in
+# $STATE_DIR/internet.fails — so a single blip never pages the operator.
+# Recovery is single-sample and clears the debounce immediately.
+INTERNET_PROBE_HOSTS=(https://1.1.1.1 https://www.google.com)
+INTERNET_FAIL_THRESHOLD=2
+
+internet_up() {
+    local host
+    for host in "${INTERNET_PROBE_HOSTS[@]}"; do
+        curl -sf --max-time 6 -o /dev/null "$host" 2>/dev/null && return 0
+    done
+    return 1
+}
+
+check_internet() {
+    local fails_file="$STATE_DIR/internet.fails"
+
+    if internet_up; then
+        rm -f "$fails_file" 2>/dev/null || true
+        if check_state_change "internet" "up"; then
+            notify "🟢 Internet is back."
+            log "Internet recovered"
+        fi
+        return 0
+    fi
+
+    local streak=0
+    [[ -f "$fails_file" ]] && streak=$(cat "$fails_file" 2>/dev/null || echo 0)
+    streak=$(( streak + 1 ))
+    echo "$streak" > "$fails_file"
+
+    if (( streak < INTERNET_FAIL_THRESHOLD )); then
+        log "Internet probe failed (streak: $streak) — below alert threshold"
+        return 0
+    fi
+
+    if check_state_change "internet" "down"; then
+        notify "🔴 Internet connection is down."
+    fi
+    log "Internet is DOWN (streak: $streak)"
+    return 1
+}
+
+# Tailscale: read the supported `BackendState` field from `status --json`
+# instead of scraping text. `tailscale status --self` ignores `--self` and
+# prints every peer, so a line-position assumption ("self is line 1") can
+# read a peer's state instead; matching only the literal substring "stopped"
+# also misses NeedsLogin / a logged-out backend entirely. BackendState is the
+# one field the CLI actually documents for this.
+tailscale_backend_state() {
+    "$AOS_PY" -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    print("")
+else:
+    print(data.get("BackendState") or "")
+' 2>/dev/null
+}
+
+check_tailscale() {
+    command -v tailscale > /dev/null 2>&1 || return 0
+
+    local ts_state
+    ts_state=$(tailscale status --json 2>/dev/null | tailscale_backend_state)
+
+    if [[ "$ts_state" == "Running" ]]; then
+        if check_state_change "tailscale" "up"; then
+            notify "🟢 Remote access is back up."
+            log "Tailscale recovered"
+        fi
+        return 0
+    fi
+
+    if check_state_change "tailscale" "down"; then
+        notify "🔴 Remote access is down — you won't be able to reach this Mac from away."
+    fi
+    log "Tailscale is DOWN (state: ${ts_state:-unknown})"
+    return 1
+}
+
+# Sourcing this file with WATCHDOG_UNDER_TEST=1 defines every function above
+# without running the service/network/disk checks below, so tests can call
+# check_internet / check_tailscale / tailscale_backend_state directly against
+# a stubbed curl/tailscale/notify and a sandboxed $STATE_DIR. Never set by the
+# real cron invocation (crons.yaml just runs `bash .../watchdog`).
+if [[ -n "${WATCHDOG_UNDER_TEST:-}" ]]; then
+    return 0 2>/dev/null || exit 0
+fi
+
+# ── Parse services from state.yaml using Python (bash 3.2 safe) ───────────
+#
+# The service map lives in the INSTANCE layer (~/.aos/config/state.yaml),
+# rebuilt from the deployed plists by migration 082. The old code read
+# "$AOS_DIR/config/state.yaml" (~/aos/config/state.yaml) — a path that does
+# not exist — so the Python parse threw FileNotFoundError, 2>/dev/null
+# swallowed it, and the watchdog SILENTLY shrank to a hardcoded 4-service list
+# that omitted the transcriber and gave the bridge no health URL. That silent
+# shrink is why a wedged-but-loaded bridge went unseen for ~4h (aos#180).
+
+STATE_YAML="$HOME/.aos/config/state.yaml"
+
+# Parse YAML into "name|label|health_url" lines — one per service
+SERVICES_LIST=""
+if [[ -f "$STATE_YAML" ]]; then
+    SERVICES_LIST=$("$AOS_PY" -c "
+import yaml, sys
+with open('$STATE_YAML') as f:
+    data = yaml.safe_load(f)
+for name, cfg in (data.get('services') or {}).items():
+    if not isinstance(cfg, dict): continue
+    label = cfg.get('launchagent', '')
+    health = cfg.get('health', '')
+    if label:
+        print(f'{name}|{label}|{health}')
+" 2>/dev/null)
+fi
+
+if [[ -z "$SERVICES_LIST" ]]; then
+    # FAIL LOUD — do NOT silently shrink to a hardcoded list. The instance
+    # service map is missing or unparseable; monitoring is degraded until
+    # `aos reconcile` (migration 083) rebuilds it. Alarm once (state-change
+    # dedup) so this doesn't re-ping every 5 minutes, then fall back by asking
+    # the service REGISTRY directly for the active-service map — so even the
+    # degraded path derives from the one source of truth, never a hardcoded
+    # list that can drift (aos#180: bridge health none, transcriber :7602,
+    # retired listen excluded — all handled by the registry, not us).
+    log "CRITICAL: $STATE_YAML missing or unparseable — service monitoring DEGRADED"
+    if check_state_change "state_yaml" "missing"; then
+        notify "⚠️ I'm watching the services in a limited mode right now — my service map needs rebuilding. Everything's still monitored via a backup route; running a system check will sort it out."
+    fi
+    SERVICES_LIST=$("$AOS_DIR/core/bin/internal/aos-python" \
+        "$AOS_DIR/core/infra/lib/service_registry.py" watchdog-map 2>/dev/null)
+else
+    # Map present and parseable — clear any prior degraded-state alarm.
+    check_state_change "state_yaml" "present" > /dev/null || true
+fi
+
+# ── Flapping threshold ─────────────────────────────────────────────────────
+
+FLAP_THRESHOLD=3
+
+# ── Check services ─────────────────────────────────────────────────────────
+
+issues=0
+restarts=0
+service_count=0
+
+# Write to temp file to avoid subshell variable scoping (bash 3.2)
+SERVICES_TMP=$(mktemp)
+echo "$SERVICES_LIST" > "$SERVICES_TMP"
+
+while IFS='|' read -r name label health_url; do
+    [[ -z "$name" || -z "$label" ]] && continue
+    service_count=$(( service_count + 1 ))
+
+    alive=true
+
+    # Check 1: Is the LaunchAgent loaded?
+    if ! check_launchagent "$label"; then
+        alive=false
+    fi
+
+    # Check 2: Does the health endpoint respond? (if configured)
+    if $alive && [[ -n "$health_url" ]]; then
+        if ! check_health "$health_url"; then
+            alive=false
+        fi
+    fi
+
+    if $alive; then
+        if check_state_change "${name}" "up"; then
+            notify "🟢 <b>${name}</b> is back up and running normally."
+            log "$name recovered"
+        fi
+        clear_escalation "$name"
+    else
+        issues=$(( issues + 1 ))
+        log "$name is DOWN"
+
+        restarts_24h=$(count_restarts_24h "$name")
+
+        if (( restarts_24h >= FLAP_THRESHOLD )); then
+            log_tail=$(tail -30 "$HOME/.aos/logs/crons/watchdog.log" 2>/dev/null | grep -i "$name" || echo "(no log entries)")
+            escalate_to_technician "$name" "It's restarted ${restarts_24h} times in the last day and still won't stay up." "$log_tail"
+            continue
+        fi
+
+        # Tier 1: attempt restart
+        restart_service "$label"
+        sleep 5
+
+        restarted=false
+        if check_launchagent "$label"; then
+            if [[ -z "$health_url" ]] || check_health "$health_url"; then
+                restarted=true
+            fi
+        fi
+
+        if $restarted; then
+            restarts=$(( restarts + 1 ))
+            record_restart "$name"
+            check_state_change "${name}" "restarted" > /dev/null || true
+            notify "🔧 <b>${name}</b> had stopped — I restarted it and it's healthy again."
+            log "$name restarted OK"
+
+            restarts_24h_after=$(count_restarts_24h "$name")
+            if (( restarts_24h_after >= FLAP_THRESHOLD )); then
+                log_tail=$(tail -30 "$HOME/.aos/logs/crons/watchdog.log" 2>/dev/null | grep -i "$name" || echo "(no log entries)")
+                escalate_to_technician "$name" "It came back, but it's now restarted ${restarts_24h_after} times in a day — something keeps knocking it over." "$log_tail"
+            fi
+        else
+            record_restart "$name"
+            if check_state_change "${name}" "down"; then
+                restarts_24h_new=$(count_restarts_24h "$name")
+                notify "🔴 <b>${name}</b> is down and I couldn't restart it (${restarts_24h_new} failed tries in the last day). Worth a look when you're at the Mac."
+            fi
+            log "$name restart failed"
+        fi
+    fi
+done < "$SERVICES_TMP"
+rm -f "$SERVICES_TMP"
+
+# ── Network checks ─────────────────────────────────────────────────────────
+# Implementations (HTTPS internet probe with debounce, Tailscale --json
+# parse) live above with the other helpers, near check_health().
+
+check_internet || issues=$(( issues + 1 ))
+check_tailscale || issues=$(( issues + 1 ))
+
+# ── Disk space check ──────────────────────────────────────────────────────
+
+disk_pct=$(df -h / | tail -1 | awk '{print $5}' | tr -d '%')
+if (( disk_pct >= 90 )); then
+    if check_state_change "disk" "critical"; then
+        notify "🚨 The disk is almost full (${disk_pct}%). Worth clearing some space soon."
+    fi
+    log "Disk usage critical: ${disk_pct}%"
+    issues=$(( issues + 1 ))
+elif (( disk_pct >= 80 )); then
+    if check_state_change "disk" "warning"; then
+        notify "⚠️ The disk is filling up (${disk_pct}%). Might be worth a cleanup when you get a chance."
+    fi
+    log "Disk usage warning: ${disk_pct}%"
+else
+    check_state_change "disk" "ok" > /dev/null || true
+fi
+
+# ── Summary ────────────────────────────────────────────────────────────────
+
+if [[ $issues -eq 0 ]]; then
+    log "All healthy (${service_count} services, internet, tailscale, disk ${disk_pct}%)"
+else
+    log "Issues: $issues | Restarts: $restarts"
+fi

@@ -1,0 +1,173 @@
+from .arms_coverage import ArmsCoverageCheck
+from .bridge_poll_liveness import BridgePollLivenessCheck
+from .claude_defaults import ClaudeDefaultsCheck
+from .claude_md import GlobalClaudeMdCheck, RootClaudeMdCheck
+from .cmux_socket_control import CmuxSocketControlCheck
+from .contact_sync_health import ContactSyncHealthCheck
+from .context_freshness import ContextFreshnessCheck
+from .cron_health import CronHealthCheck
+from .dead_code import DeadCodeCheck
+from .default_off_services import DefaultOffServicesCheck
+from .deployment_health import DeploymentHealthCheck
+from .dev_browser import DevBrowserCheck
+from .disk_smart import DiskSmartCheck
+from .google_workspace import GoogleWorkspaceCheck
+from .hooks import HooksPathCheck
+from .initiatives import BridgeTopicsCheck, InitiativeDirectoriesCheck
+from .instance_hygiene import InstanceHygieneCheck
+from .launchagents import LaunchAgentPythonCheck
+from .launcher_naming import LauncherNamingCheck
+from .log_location import LogLocationCheck
+from .mcp_location import McpLocationCheck
+from .network_binding import NetworkBindingCheck
+from .power_autorestart import PowerAutorestartCheck
+from .project_layer import ProjectLayerCheck
+from .push_guard import PushGuardCheck
+from .runtime_protection import RuntimeProtectionCheck
+from .sentinel_plist import SentinelPlistDriftCheck
+from .service_loaded import ServiceLoadedCheck
+from .storage_layout import StorageLayoutCheck
+from .symlinks import AgentSymlinkCheck, RuleSymlinkCheck, SkillSymlinkCheck
+from .transcriber import TranscriberServiceCheck
+from .vault_contract import VaultContractCheck
+from .volume_access import VolumeAccessCheck
+
+# Add new checks here — they run in this order on every update cycle.
+ALL_CHECKS = [
+    # Runtime protection — must run FIRST to unblock git pull
+    RuntimeProtectionCheck,
+
+    # Data layer — AOS-X volume must be accessible before anything trusts reads
+    VolumeAccessCheck,
+
+    # Push discipline — dev workspace pre-push guard (aos#192)
+    PushGuardCheck,
+
+    # Structural — file locations
+    McpLocationCheck,
+    LogLocationCheck,
+
+    # Symlinks — agents, skills, and rules point to framework
+    AgentSymlinkCheck,
+    SkillSymlinkCheck,
+    RuleSymlinkCheck,
+
+    # Config — settings.json hooks have valid paths
+    HooksPathCheck,
+
+    # Config — ~/.claude.json always-on defaults (remote control, chrome)
+    ClaudeDefaultsCheck,
+
+    # Services — LaunchAgent plists reference existing Python
+    LaunchAgentPythonCheck,
+
+    # Services — clean Login Items names via named launchers (aos#198):
+    # any AOS plist exec'ing a bare interpreter gets wrapped so System
+    # Settings shows "AOS Bridge", not "python3"
+    LauncherNamingCheck,
+    ArmsCoverageCheck,
+
+    # Services — the v0.7.7 default-off set stays declared off. Must run
+    # BEFORE ServiceLoadedCheck and the per-service checks: they read the very
+    # file this repairs, so a missing declaration would otherwise be read as
+    # "should be running" for one whole cycle.
+    DefaultOffServicesCheck,
+
+    # Services — deployed Sentinel plist matches its framework template
+    # (catches drift back to hardcoded operator paths after a manual edit
+    # or bad merge; complements LaunchAgentPythonCheck's binary-path check)
+    SentinelPlistDriftCheck,
+
+    # Integrations — Google Workspace gws CLI
+    GoogleWorkspaceCheck,
+
+    # Content — CLAUDE.md managed sections are current
+    RootClaudeMdCheck,
+    GlobalClaudeMdCheck,
+
+    # Services — bridge Telegram poll loop is fetching, not silently wedged
+    # (process-liveness watchdogs miss a stalled getUpdates; this restarts it)
+    BridgePollLivenessCheck,
+
+    # Services — transcriber running and healthy
+    TranscriberServiceCheck,
+
+
+    # Tooling — dev-browser binary for Chrome automation (blueprint,
+    # clone-website, dissect, frontend-craft, harvest skills; reverser agent)
+    DevBrowserCheck,
+
+    # Initiative pipeline + Bridge v2 infrastructure
+    InitiativeDirectoriesCheck,
+    BridgeTopicsCheck,
+
+    # Network — no AOS service listens on 0.0.0.0/::/*. Qareen shipped on
+    # 0.0.0.0:4096 serving people.db + comms.db unauthenticated to the whole
+    # LAN; this is the net that catches the next one. Report-only (NOTIFY) —
+    # rebinding restarts a service and could sever remote access, so migration
+    # 095 owns the supervised flip.
+    NetworkBindingCheck,
+
+    # Hardware — disk SMART health monitoring
+    DiskSmartCheck,
+
+    # Hardware — power: `pmset autorestart 1` survives macOS updates and
+    # NVRAM/SMC resets, so a headless Mac reboots after a power cut.
+    # NOTIFY-only (pmset -a needs sudo); skipped on battery-equipped Macs.
+    PowerAutorestartCheck,
+
+    # Context — CLAUDE.md dynamic content matches system state
+    ContextFreshnessCheck,
+
+    # Hygiene — detect orphaned scripts and stale module refs
+    DeadCodeCheck,
+
+    # Deployment health — verify shipped components are actually deployed
+    # (venvs exist, cron scripts exist, git hooks installed, QMD collections up)
+    DeploymentHealthCheck,
+
+    # Storage layout — verify data dirs are on the data drive per policy.
+    # Reports drift but never auto-moves (operator awareness required).
+    StorageLayoutCheck,
+
+    # Project layer — every directory under ~/project/ is accounted for and
+    # still is what it claims to be (unmanifested, archived-but-active,
+    # unversioned-unmarked, third-party at top level, dirty trees).
+    # Report-only (NOTIFY, log-only): the corrections available here are
+    # git init, git commit and moving directories, and none of those belong
+    # in an unattended health check. `project new/adopt/archive` are the
+    # sanctioned mutations. Runs the reconciler in drift_only mode (~3s).
+    ProjectLayerCheck,
+
+    # Vault inventory — refresh vault_inventory table, report drift.
+    # Never mutates vault files; the bootstrap flow (Part 8) handles
+    # operator-approved upgrades.
+    VaultContractCheck,
+
+    # cmux socket control — cmux's default ("cmuxOnly") refuses socket commands
+    # from outside cmux, which is every call `aos start` makes. Left alone, the
+    # way into the system silently degrades to "Claude Code in whatever terminal
+    # you were already in". periodic_fix=True; the edit is surgical and only
+    # widens from the default, never overrides an operator's chosen mode.
+    CmuxSocketControlCheck,
+
+    # Services — every deployed com.aos.*.plist has a loaded (and healthy)
+    # launchd job. The generic net for the exact silent state that ate the
+    # bridge and transcriber (plist intact, job unloaded). Runs AFTER the
+    # per-service checks so they repair health first; this then catches any
+    # still-unloaded/health-less service. periodic_fix=True — the one service
+    # check allowed to repair between deploys.
+    ServiceLoadedCheck,
+
+    CronHealthCheck,
+
+    # contact-sync's AddressBook access — a TCC denial exits 0 (expected,
+    # recoverable), so cron_health's exit-code telemetry can't see it. This
+    # reads the status file sync_contacts.py writes directly.
+    ContactSyncHealthCheck,
+
+    # Instance hygiene — diff framework declarations against instance state,
+    # clean orphaned service venvs, stale LaunchAgents, broken symlinks,
+    # old model caches, and excess log archives. Runs last.
+    InstanceHygieneCheck,
+]

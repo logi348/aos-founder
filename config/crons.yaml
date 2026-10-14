@@ -1,0 +1,330 @@
+# AOS v2 — Scheduled Jobs
+# Read by ~/aos/core/bin/internal/scheduler every 5 minutes
+#
+# Schedule types:
+#   every: 5m / 30m / 1h / 2h      — interval-based
+#   at: "HH:MM"                    — daily at this time
+#   weekday: sunday                 — with `at:`, once per week
+#   monthday: 1                    — with `at:`, once per month
+#   active_hours: "08:00-20:00"    — only run during these hours (for `every:`)
+#   enabled: false                 — skip this job entirely
+#
+# Display metadata (ignored by scheduler, used by dashboard):
+#   tier: 1-4                      — job grouping for UI
+#   description: "..."             — human-readable purpose
+#
+# All scripts are idempotent — safe to run manually anytime.
+
+jobs:
+  # ── Tier 1: System health ───────────────────────────────────────────────────
+
+  watchdog:
+    command: bash ~/aos/core/bin/crons/watchdog
+    every: 5m
+    timeout: 60
+    tier: 1
+    description: Checks services are running, restarts if needed
+
+  check-update:
+    command: bash ~/aos/core/bin/crons/check-update
+    every: 2h
+    timeout: 120
+    tier: 1
+    description: Checks for AOS framework updates
+
+  reconcile-periodic:
+    command: bash ~/aos/core/bin/internal/aos-python ~/aos/core/infra/reconcile/runner.py periodic
+    every: 30m
+    active_hours: "07:00-23:00"
+    timeout: 120
+    tier: 1
+    description: Between-deploy service-health reconcile (ServiceLoadedCheck may repair; rest report-only)
+
+  auto-update:
+    command: bash ~/aos/core/bin/crons/check-update --apply
+    at: "04:00"
+    # No catch_up: this machine is always on, so the 04:00 window is never missed.
+    # The flag was added for a laptop that slept through the 04:00 window; that
+    # laptop has no AOS install. `check-update` (every 2h) still reports an
+    # available update in between, so a missed window is visible, not silent.
+    timeout: 300
+    tier: 1
+    description: Pulls and applies AOS updates automatically
+
+  harness-update:
+    command: bash ~/aos/core/bin/crons/harness-update
+    at: "04:15"
+    # No catch_up — same reason as auto-update above.
+    timeout: 300
+    tier: 1
+    description: Keeps the Claude Code harness current (npm) so new models stay reachable
+
+  sync-sessions:
+    command: python3 ~/aos/core/bin/crons/sync-sessions
+    every: 30m
+    timeout: 120
+    tier: 1
+    description: Syncs Claude Code session data to vault
+
+  auto-commit:
+    command: bash ~/aos/core/bin/crons/auto-commit cron
+    every: 30m
+    timeout: 120
+    tier: 1
+    description: Commits vault and config changes to git
+
+  qmd-reindex:
+    command: bash ~/aos/core/bin/crons/qmd-reindex
+    every: 30m
+    timeout: 120
+    tier: 1
+    description: Rebuilds search index across all collections
+
+  session-export:
+    command: python3 ~/aos/core/bin/crons/session-export
+    every: 2h
+    timeout: 300
+    tier: 1
+    description: Exports session logs to vault for analysis
+
+  rotate-logs:
+    command: bash ~/aos/core/bin/crons/rotate-logs
+    at: "03:00"
+    timeout: 60
+    tier: 1
+    description: Cleans up old log files to free disk space
+
+  # ── Tier 2: Knowledge & awareness ───────────────────────────────────────────
+
+  compile-daily:
+    command: python3 ~/aos/core/bin/crons/compile-daily
+    at: "23:30"
+    timeout: 120
+    tier: 2
+    description: Compiles daily activity log from sessions and work
+
+  compile-weekly:
+    command: python3 ~/aos/core/bin/crons/compile-weekly
+    at: "23:45"
+    weekday: friday
+    timeout: 120
+    tier: 2
+    description: Compiles weekly review with metrics and insights
+
+  notify-flush:
+    command: bash ~/aos/core/bin/internal/aos-python ~/aos/core/bin/crons/notify-flush
+    every: 15m
+    timeout: 60
+    tier: 2
+    description: Delivers notifications held back by quiet hours, as one digest
+
+  session-analysis:
+    command: python3 ~/aos/core/bin/crons/session-analysis
+    at: "22:00"
+    weekday: sunday
+    timeout: 180
+    tier: 2
+    description: Analyzes session patterns for friction and improvements
+
+  memory-curate:
+    command: python3 ~/aos/core/bin/crons/memory-curate
+    at: "06:00"
+    weekday: sunday
+    timeout: 1200
+    tier: 2
+    description: Weekly memory curation — proposes vault log-to-knowledge promotions for operator review
+
+  loop-sensors:
+    # Default-off (v0.7.7, migration 127): blocked by scheduling contention
+    # with enrich-comms (03:30) 27 of the last 28 nights — enrich-comms holds
+    # the serial tick for ~46 min, so this job's 5-minute window has almost
+    # always already closed by the time the scheduler is free. Re-enable with
+    # `enabled: true` once it has its own window (or enrich-comms shrinks).
+    enabled: false
+    command: python3 ~/aos/core/bin/crons/loop-sensors
+    at: "03:40"
+    timeout: 1800
+    tier: 2
+    description: Intelligence Loop nightly sensors (comms entities, initiative drift, eval-gated friction judge)
+
+    # catch_up: enrich-comms (03:30) holds the serial tick for ~46 min, so this
+    # job's 5-minute window has closed by the time the scheduler is free. It ran
+    # only on days enrich-comms crashed early — 1 run in 28 days.
+    catch_up: true
+  contact-sync:
+    command: python3 ~/aos/core/engine/comms/sync_contacts.py
+    at: "05:30"
+    timeout: 120
+    tier: 2
+    description: Syncs macOS Contacts into People DB
+
+  stale-initiatives:
+    command: python3 ~/aos/core/bin/crons/stale-initiatives
+    at: "09:00"
+    timeout: 60
+    tier: 2
+    description: Flags initiative docs untouched for 3+ days
+
+  nightly-pipeline:
+    # v0.7.7 (aos#240.3): narrowed to the one step nothing else owns — the
+    # DAILY session-analysis friction report (Mon-Sat; Sunday's weekly
+    # version runs via session-analysis's own cron). Used to also re-run
+    # stale-detector (retired, aos#240.2) and compile-daily (which has its
+    # own 23:30 cron) — pure redundancy, now removed.
+    command: bash ~/aos/core/bin/crons/nightly-pipeline
+    at: "23:00"
+    timeout: 600
+    tier: 2
+    description: Runs daily session-analysis (Mon-Sat) — the one step with no other owner
+
+  morning-context:
+    command: python3 ~/aos/core/bin/crons/morning-context
+    at: "06:30"
+    timeout: 60
+    tier: 2
+    description: Prepares morning briefing with weather, prayer times, focus
+
+  # ── Tier 3: Integration ─────────────────────────────────────────────────────
+
+  weekly-digest:
+    command: python3 ~/aos/core/bin/crons/weekly-digest
+    at: "20:00"
+    weekday: sunday
+    timeout: 300
+    tier: 3
+    description: Sends weekly summary via Telegram and writes vault review
+
+  compile-patterns:
+    command: python3 ~/aos/core/bin/crons/compile-patterns
+    at: "04:00"
+    timeout: 120
+    tier: 3
+    description: Compiles behavior patterns from session data
+
+    # catch_up: enrich-comms (03:30) holds the serial tick for ~46 min, so this
+    # job's 5-minute window has closed by the time the scheduler is free. It ran
+    # only on days enrich-comms crashed early — 1 run in 28 days.
+    catch_up: true
+  reconcile-sessions:
+    command: python3 ~/aos/core/bin/crons/reconcile-sessions --quiet
+    every: 2h
+    timeout: 60
+    tier: 3
+    description: Catches sessions that didn't end cleanly
+
+  # ── Tier 4: Intelligence ────────────────────────────────────────────────────
+
+  backup-comms:
+    command: bash ~/aos/core/bin/crons/backup-comms
+    at: "03:15"
+    timeout: 300
+    tier: 4
+    description: Snapshots comms.db to AOS-X (rotating 7) before nightly enrichment
+
+  enrich-comms:
+    # Default-off (v0.7.7, migration 131, operator decision — aos#240):
+    # ~46 min/night of Haiku entity extraction, the single heaviest job on
+    # the schedule and the scheduling-contention culprit that starves
+    # loop-sensors/compile-patterns of their catch_up windows most nights it
+    # runs long. Cron audit's own per-job verdict was KEEP (real consumer:
+    # comms.db entities feed ambient nudges) — the operator chose to pause
+    # the whole comms-intelligence nightly stack rather than run four
+    # back-to-back comms-DB jobs nightly for marginal refresh value.
+    # backup-comms (03:15) is untouched — comms.db's snapshot keeps running.
+    # Re-enable with `enabled: true` to resume nightly entity extraction.
+    enabled: false
+    command: bash ~/aos/core/bin/crons/enrich-comms
+    at: "03:30"
+    timeout: 3000
+    tier: 4
+    description: Nightly Haiku entity extraction into comms.db message_entities (Phase 4)
+
+  comms-extract:
+    # Default-off (v0.7.7, migration 127): 27 consecutive nights failing —
+    # the whatsapp_local adapter hangs to its 302s timeout while imessage/
+    # telegram report "Not available". Re-enable with `enabled: true` once
+    # the whatsapp_local adapter is fixed or dropped.
+    enabled: false
+    command: python3 ~/aos/core/engine/comms/extract/lifecycle.py
+    at: "05:00"
+    timeout: 300
+    tier: 4
+    description: Extracts insights from communications
+
+  comms-patterns:
+    # Default-off (v0.7.7, migration 131, operator decision — aos#240):
+    # parked alongside enrich-comms — computes per-person response
+    # patterns/importance downstream of enrich-comms's entities, so parking
+    # one without the other leaves a half-fed job running for no reason.
+    # Re-enable with `enabled: true` (after re-enabling enrich-comms too).
+    enabled: false
+    command: python3 ~/aos/core/engine/comms/patterns/compute.py
+    at: "05:30"
+    timeout: 180
+    tier: 4
+    description: Computes communication patterns and trends
+
+  comms-graduation:
+    # Default-off (v0.7.7, migration 131, operator decision — aos#240):
+    # parked alongside enrich-comms/comms-patterns — graduates contacts
+    # through trust levels downstream of comms-patterns' output. Re-enable
+    # with `enabled: true` (after re-enabling the two jobs above it).
+    enabled: false
+    command: python3 ~/aos/core/engine/comms/graduation/runner.py
+    at: "06:00"
+    timeout: 120
+    tier: 4
+    description: Graduates contacts through trust levels
+
+  people-intel-refresh:
+    # Default-off (v0.7.7, migration 127): 28 consecutive nights failing on
+    # "Operation not permitted: ~/Library/Mail" (TCC denial), timing out at
+    # 602s. Re-enable with `enabled: true` once Mail access is granted or the
+    # Mail adapter is dropped.
+    enabled: false
+    command: bash ~/aos/core/bin/crons/people-intel-refresh
+    at: "02:00"
+    timeout: 600
+    tier: 4
+    description: Refreshes signal_store, person_classification, and intelligence_queue nudges
+
+  feed-ingest:
+    command: bash ~/aos/core/bin/internal/cron-wrap feed-ingest bash ~/aos/core/bin/crons/feed-ingest
+    every: 30m
+    timeout: 300
+    tier: 4
+    description: Polls internet sources, scores relevance, stores to feed DB
+
+  feed-digest:
+    command: bash ~/aos/core/bin/internal/cron-wrap feed-digest bash ~/aos/core/bin/crons/feed-digest
+    at: "07:00"
+    timeout: 60
+    tier: 4
+    description: Sends morning intelligence digest to Telegram
+
+  vault-maintenance:
+    # v0.7.7 (aos#240.5): the script now hardcodes --skip-llm — topic refresh
+    # and synthesis drafts call an ExecutionRouter that doesn't exist in this
+    # tree, so they errored every night for 0 tokens spent. Deterministic
+    # orphan/stale detection is real and runs as before.
+    command: bash ~/aos/core/bin/internal/cron-wrap vault-maintenance bash ~/aos/core/bin/crons/vault-maintenance
+    at: "04:30"
+    timeout: 1800
+    tier: 4
+    description: Nightly lint pass — orphans and stale docs (topic refresh/synthesis disabled, see comment)
+
+  # ── Planned (scripts not yet built) ─────────────────────────────────────────
+  # These entries are placeholders. Scripts will be created when their
+  # integration dependencies are ready.
+  #
+  # email-digest:     needs email integration
+  # meeting-prep:     needs calendar integration
+  # monthly-review:   needs 4+ weekly digests
+  #
+  # The hourly status post was deleted rather than parked here (aos#235): its
+  # service check probed a path that had moved, so every run reported the bridge
+  # down, and its raw output was the opposite of the house message style. Whether
+  # an hourly status should exist at all under the digest model is an open
+  # question — see docs/specs/ for the stub.
+
+  # friction-rules:   needs bridge approval workflow

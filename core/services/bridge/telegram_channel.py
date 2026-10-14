@@ -1,0 +1,1946 @@
+"""Telegram channel — polls for messages, routes to Claude, sends responses."""
+
+import asyncio
+import fcntl
+import html
+import json
+import logging
+import os
+import re
+import subprocess
+import sys
+import tempfile
+import time as _time
+from pathlib import Path
+
+from bridge_events import bridge_event
+from conversation_store import record_inbound, record_outbound
+from evening_checkin import (
+    _save_checkin_to_daily,
+    is_awaiting_checkin_reply,
+    mark_checkin_replied,
+    was_checkin_replied,
+)
+from execution_logger import log_execution
+from intent_classifier import dispatch as classify_intent
+from interactive_buttons import (
+    build_option_keyboard,
+    detect_options,
+    resolve_callback,
+)
+from message_copy import humanize_job_report, humanize_tool_status
+from message_renderer import render_stream
+from session_manager import (
+    cancel_stream,
+    clear_session,
+    get_session_id,
+    stream_claude,
+)
+from telegram import ReactionTypeEmoji, Update
+from telegram.error import BadRequest, TimedOut
+from telegram.ext import (
+    Application,
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
+from voice_transcriber import get_mode, set_mode, transcribe_voice
+
+logger = logging.getLogger("aos.bridge.telegram")
+
+
+def _esc(value) -> str:
+    """Escape a value for interpolation into a parse_mode="HTML" message.
+
+    Escape at the INTERPOLATION boundary, never at the send boundary — escaping
+    an assembled message would flatten the intentional <b>/<i> markup into
+    visible tag soup.
+
+    ``quote=False`` is deliberate: escaping quotes would mangle every apostrophe
+    in a task title. Telegram's HTML mode only requires < > &.
+
+    Stdlib-only and defined locally on purpose. The canonical copy lives in
+    message_renderer, but that module imports ``telegram``, which is absent
+    outside the bridge venv — a security primitive must never be the reason a
+    module fails to import.
+    """
+    return html.escape("" if value is None else str(value), quote=False)
+
+# ── Task dispatch ──────────────────────────────────────
+# Tasks that should run in tmux (non-blocking) instead of streaming.
+# The agent in the tmux session decides which tools to use (obsidian CLI,
+# Drive, AppleScript, etc.) — the bridge doesn't guess.
+_TASK_KEYWORDS = [
+    # Explicit triggers
+    "/do ", "/task ",
+    # Desktop/GUI automation (agent will pick AppleScript vs CLI)
+    "open ", "launch ", "use computer",
+    "click ", "navigate to ",
+    "on the desktop", "on my screen", "screenshot",
+    "graph view", "open the app", "switch to ",
+    # Multi-step work (agent needs time + tools)
+    "find and ", "search and ", "organize ", "create a note",
+    "go through ", "check all ", "summarize the ",
+    "set up ", "configure ", "install ",
+]
+
+# ── Voice notes ────────────────────────────────────────────────────────
+# A voice note is someone thinking out loud, which is exactly what the ramble
+# skill is for — and `core/skills/ramble/SKILL.md` has claimed "Also called by
+# bridge after voice note transcription" since it was written, while this module
+# piped transcripts into the same generic chat path as typed text. Whether ramble
+# engaged depended on Claude spotting its own trigger phrases in an open-ended
+# session: no forced routing, no confirm, no guarantee anything was captured.
+#
+# The routing is forced here rather than hoped for. The skill itself is unchanged
+# — it already holds task creation behind its own "Ready to commit?" gate, so the
+# bridge's job is to get the operator there and say so.
+_RAMBLE_PROMPT = (
+    "Use the ramble skill for this. It came in as a voice note, so treat it as the "
+    "operator thinking out loud: organize what they said into tasks, ideas, thoughts "
+    "and notes, cross-reference their existing work, and show them the summary for "
+    "approval before creating anything.\n\n"
+    "[Voice transcript: {text}]"
+)
+
+# One line, no skill names, says plainly that nothing has happened yet.
+_RAMBLE_CONFIRM = ("🎙 Got it — organizing that now. I'll show you what I caught "
+                   "before anything gets created.")
+
+
+def _is_task_dispatch(text: str) -> bool:
+    """Detect if a message is a TASK (needs tmux dispatch) vs CHAT (stream response).
+
+    Tasks: multi-step work, GUI automation, file operations, etc.
+    Chat: questions, quick answers, code help, conversation.
+
+    The agent in the tmux session picks the right tools — AppleScript/Chrome
+    MCP for GUI, obsidian CLI for vault ops, Drive for terminal, APIs for
+    services.
+    """
+    lower = text.lower().strip()
+    # Explicit triggers
+    if lower.startswith(("/do ", "/task ")):
+        return True
+    # Keyword matching
+    return any(kw in lower for kw in _TASK_KEYWORDS)
+
+async def _dispatch_steer_and_report(chat, message, text: str, thread_id=None):
+    """Dispatch a STEER job via tmux and report results back to Telegram."""
+    try:
+        dispatch_script = Path.home() / "aos" / "core" / "steer" / "dispatch.py"
+        # Create and dispatch the job
+        result = subprocess.run(
+            ["python3", str(dispatch_script), "run", text],
+            capture_output=True, text=True, timeout=15,
+        )
+        if result.returncode != 0:
+            # The stderr is genuinely useful — to whoever reads the log.
+            logger.error(f"STEER dispatch failed: {result.stderr[:500]}")
+            reply = humanize_job_report("dispatch_failed")
+            await message.reply_text(reply, message_thread_id=thread_id)
+            record_outbound(reply, kind="job_report")
+            return ""
+
+        job_data = json.loads(result.stdout)
+        job_id = job_data["job_id"]
+
+        # Acknowledge dispatch
+        send_kwargs = {}
+        if thread_id:
+            send_kwargs["message_thread_id"] = thread_id
+        logger.info(f"STEER job dispatched: {job_id}")
+        status_msg = await chat.send_message(
+            humanize_job_report("started"), parse_mode="HTML", **send_kwargs,
+        )
+
+        # Poll for completion (async, non-blocking)
+        poll_script = str(dispatch_script)
+        max_wait = 300  # 5 minutes
+        poll_interval = 5
+        elapsed = 0
+
+        while elapsed < max_wait:
+            await asyncio.sleep(poll_interval)
+            elapsed += poll_interval
+
+            poll_result = subprocess.run(
+                ["python3", poll_script, "poll", job_id],
+                capture_output=True, text=True, timeout=10,
+            )
+            if poll_result.returncode != 0:
+                continue
+
+            job_status = json.loads(poll_result.stdout)
+            status = job_status.get("status", "unknown")
+
+            if status == "completed":
+                summary = job_status.get("summary", "Task completed (no summary).")
+                apps = job_status.get("apps_opened", [])
+                updates = job_status.get("updates", [])
+
+                response_text = _esc(humanize_job_report("done", summary))
+                if apps:
+                    response_text += ("\n\n<i>Apps used: "
+                                      + ", ".join(_esc(a) for a in apps) + "</i>")
+
+                try:
+                    await status_msg.edit_text(response_text, parse_mode="HTML")
+                except Exception:
+                    await chat.send_message(response_text, parse_mode="HTML", **send_kwargs)
+
+                # Cleanup
+                subprocess.run(
+                    ["python3", poll_script, "cleanup", job_id],
+                    capture_output=True, text=True,
+                )
+                record_outbound(response_text, kind="job_report")
+                return summary
+
+            elif status == "failed":
+                error = job_status.get("error", "Unknown error")
+                # The raw error belongs in the log. It also routinely embeds task
+                # titles that arrived from email/WhatsApp intake, so even the
+                # escaped form was an injection surface in a message the operator
+                # trusts because their own system sent it — now nothing from the
+                # job reaches the wire at all.
+                logger.error(f"STEER job {job_id} failed: {error[:500]}")
+                failure_text = humanize_job_report("failed")
+                try:
+                    await status_msg.edit_text(failure_text, parse_mode="HTML")
+                except Exception:
+                    await chat.send_message(failure_text, **send_kwargs)
+
+                subprocess.run(
+                    ["python3", poll_script, "cleanup", job_id],
+                    capture_output=True, text=True,
+                )
+                record_outbound(failure_text, kind="job_report")
+                return f"Failed: {error}"
+
+            # Still running — update progress if there are new updates
+            updates = job_status.get("updates", [])
+            if updates and elapsed % 15 == 0:  # Update every 15s
+                latest = updates[-1] if updates else ""
+                logger.debug(f"STEER job {job_id} progress: {latest[:200]}")
+                try:
+                    await status_msg.edit_text(
+                        humanize_job_report("working"), parse_mode="HTML",
+                    )
+                except Exception:
+                    pass
+
+        # Timeout
+        logger.warning(f"STEER job {job_id} timed out after {max_wait}s")
+        timeout_text = humanize_job_report("timeout")
+        try:
+            await status_msg.edit_text(timeout_text, parse_mode="HTML")
+        except Exception:
+            pass
+        record_outbound(timeout_text, kind="job_report")
+        subprocess.run(["python3", poll_script, "cleanup", job_id], capture_output=True, text=True)
+        return "Job timed out"
+
+    except Exception as e:
+        logger.error(f"STEER dispatch error: {e}", exc_info=True)
+        reply = humanize_job_report("error")
+        await message.reply_text(reply, message_thread_id=thread_id)
+        record_outbound(reply, kind="job_report")
+        return f"Error: {e}"
+
+# In-flight message persistence — survives bridge restarts
+# Stored in runtime dir (~/.aos/), NOT in the git-tracked code tree
+_RUNTIME_DIR = Path.home() / ".aos" / "services" / "bridge"
+_RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+_INFLIGHT_PATH = _RUNTIME_DIR / ".inflight.json"
+
+
+def _save_inflight(chat_id: int, text: str, user_key: str,
+                   thread_id: int = None, cwd: str = None):
+    """Persist an in-flight message atomically so it can be replayed after restart."""
+    data = {
+        "chat_id": chat_id,
+        "text": text,
+        "user_key": user_key,
+        "thread_id": thread_id,
+        "cwd": cwd,
+        "timestamp": _time.time(),
+    }
+    try:
+        fd, tmp_path = tempfile.mkstemp(dir=_RUNTIME_DIR, suffix=".tmp")
+        with os.fdopen(fd, "w") as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            json.dump(data, f)
+            f.flush()
+            os.fsync(f.fileno())
+            fcntl.flock(f, fcntl.LOCK_UN)
+        os.rename(tmp_path, _INFLIGHT_PATH)
+        bridge_event("inflight_saved", user_key=user_key)
+    except Exception as e:
+        logger.warning(f"Failed to save in-flight message: {e}")
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
+
+
+def _clear_inflight():
+    """Remove the in-flight marker after successful response."""
+    try:
+        _INFLIGHT_PATH.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
+def _load_inflight() -> dict | None:
+    """Load a saved in-flight message if one exists and is recent (<5 min)."""
+    try:
+        if not _INFLIGHT_PATH.exists():
+            return None
+        with open(_INFLIGHT_PATH, "r") as f:
+            fcntl.flock(f, fcntl.LOCK_SH)
+            try:
+                data = json.load(f)
+            finally:
+                fcntl.flock(f, fcntl.LOCK_UN)
+        age = _time.time() - data.get("timestamp", 0)
+        if age > 300:  # older than 5 minutes — stale, discard
+            _INFLIGHT_PATH.unlink(missing_ok=True)
+            bridge_event("inflight_stale", level="warn", age_s=int(age))
+            return None
+        return data
+    except Exception as e:
+        logger.warning(f"Failed to load in-flight message: {e}")
+        return None
+
+TELEGRAM_MSG_LIMIT = 4096
+
+# Margin below TELEGRAM_MSG_LIMIT for the <i></i> wrapper (7 chars) around a
+# transcript echo plus any HTML-entity escaping _esc() introduces.
+_TRANSCRIPT_CHUNK_LIMIT = TELEGRAM_MSG_LIMIT - 100
+
+TYPING_INTERVAL = 4.0  # seconds between typing keepalive pings
+EDIT_INTERVAL = 2.0  # seconds between editing the live message
+MIN_CHARS_TO_SHOW = 30  # wait for this much text before first message
+MIN_CHUNK_BEFORE_SPLIT = 300  # minimum chars in a chunk before splitting
+
+# Patterns that indicate a natural split point in raw markdown
+_SPLIT_PATTERN = re.compile(
+    r'\n(?=#{1,3} )'  # markdown heading
+    r'|\n\n(?=\S)',    # paragraph break followed by content
+    re.MULTILINE,
+)
+
+
+WORKSPACE = Path.home() / "aos"
+
+
+def _chunk_text(text: str, limit: int) -> list[str]:
+    """Split plain text into <= `limit`-sized pieces, preferring whitespace.
+
+    A voice transcript is prose, not markdown — no headings or code fences to
+    respect — so this is a plain, simpler cousin of `_split_for_telegram`
+    (aos#2357: a long transcript sent unchunked raised `BadRequest: Message
+    is too long` and killed the handler before the prompt reached Claude).
+    """
+    if len(text) <= limit:
+        return [text]
+    chunks: list[str] = []
+    remaining = text
+    while len(remaining) > limit:
+        cut = remaining.rfind(" ", 0, limit)
+        if cut <= 0:
+            cut = limit
+        chunk = remaining[:cut].rstrip()
+        if chunk:
+            chunks.append(chunk)
+        remaining = remaining[cut:].lstrip()
+    if remaining:
+        chunks.append(remaining)
+    return chunks
+
+
+# Telegram-supported HTML tags
+_TG_TAGS = {"b", "strong", "i", "em", "u", "ins", "s", "strike", "del",
+            "code", "pre", "a", "blockquote", "tg-spoiler", "tg-emoji"}
+
+
+def _sanitize_html(text: str) -> str:
+    """Ensure all opened HTML tags are properly closed for Telegram.
+
+    Fixes unclosed <pre>, <code>, <b>, etc. that cause BadRequest errors.
+    """
+    # Track open tags (only Telegram-supported ones)
+    open_tags = []
+    for m in re.finditer(r"<(/?)(\w[\w-]*)([^>]*)>", text):
+        is_close = m.group(1) == "/"
+        tag = m.group(2).lower()
+        if tag not in _TG_TAGS:
+            continue
+        if is_close:
+            # Remove matching open tag (innermost first)
+            for i in range(len(open_tags) - 1, -1, -1):
+                if open_tags[i] == tag:
+                    open_tags.pop(i)
+                    break
+        else:
+            open_tags.append(tag)
+
+    # Close any unclosed tags in reverse order
+    for tag in reversed(open_tags):
+        text += f"</{tag}>"
+
+    return text
+
+
+def _format_tasks_telegram(tasks: list[dict]) -> str:
+    """Format work engine tasks for Telegram HTML output."""
+    if not tasks:
+        return "<i>No tasks.</i>"
+
+    icons = {"active": "🔄", "todo": "⬜", "done": "✅", "cancelled": "➖"}
+
+    by_project: dict[str, list] = {}
+    unassigned: list = []
+    for t in tasks:
+        proj = t.get("project")
+        if proj:
+            by_project.setdefault(proj, []).append(t)
+        else:
+            unassigned.append(t)
+
+    lines: list[str] = []
+    for proj, proj_tasks in sorted(by_project.items()):
+        lines.append(f"\n<b>{_esc(proj.upper())}</b>")
+        for t in sorted(proj_tasks, key=lambda x: x.get("priority", 9)):
+            icon = icons.get(t.get("status", "todo"), "⬜")
+            title = t.get("title", "Untitled")
+            p = t.get("priority", 3)
+            p_str = f" P{p}" if p and int(p) <= 2 else ""
+            tid = t.get("id", "")
+            lines.append(f"  {icon} {_esc(title)}{p_str}  <i>{_esc(tid)}</i>")
+
+    if unassigned:
+        lines.append("\n<b>UNASSIGNED</b>")
+        for t in sorted(unassigned, key=lambda x: x.get("priority", 9)):
+            icon = icons.get(t.get("status", "todo"), "⬜")
+            title = t.get("title", "Untitled")
+            tid = t.get("id", "")
+            lines.append(f"  {icon} {_esc(title)}  <i>{_esc(tid)}</i>")
+
+    return "\n".join(lines) if lines else "<i>No tasks.</i>"
+
+
+class TelegramChannel:
+    def __init__(self, bot_token: str, allowed_chat_id: int,
+                 forum_group_id: int = None, topic_routes: dict = None):
+        self.bot_token = bot_token
+        self.allowed_chat_id = allowed_chat_id
+        self.forum_group_id = forum_group_id
+        # topic_routes: {thread_id: {"cwd": "/path/to/project", "agent": "nuchay"}}
+        self.topic_routes = topic_routes or {}
+        self.app: Application = None
+        # Per-conversation locks — prevents concurrent Claude processes
+        self._conversation_locks: dict[str, asyncio.Lock] = {}
+
+    def _is_authorized(self, chat_id: int) -> bool:
+        return chat_id == self.allowed_chat_id or chat_id == self.forum_group_id
+
+    def _get_topic_config(self, message) -> dict:
+        """Get routing config for a forum topic message."""
+        thread_id = getattr(message, 'message_thread_id', None)
+        if thread_id and thread_id in self.topic_routes:
+            return self.topic_routes[thread_id]
+        return {}
+
+    # ── Reactions ─────────────────────────────────────────────
+
+    async def _react(self, message, emoji: str):
+        """Set a reaction emoji on a message. Silently falls back to typing."""
+        try:
+            await message.set_reaction(ReactionTypeEmoji(emoji))
+        except Exception as e:
+            logger.debug(f"Reaction '{emoji}' failed: {e}")
+            if emoji == "👀":
+                try:
+                    await message.chat.send_action("typing")
+                except Exception:
+                    pass
+
+    async def _ack_message(self, message):
+        """React to a message with eyes to confirm receipt."""
+        await self._react(message, "👀")
+
+    async def _safe_delete(self, message):
+        """Delete a message, silently ignoring errors."""
+        try:
+            await message.delete()
+        except Exception:
+            pass
+
+    # ── Typing keepalive ────────────────────────────────────
+
+    async def _typing_keepalive(self, chat, stop: asyncio.Event):
+        """Re-send typing action every few seconds until stop is set."""
+        while not stop.is_set():
+            try:
+                await chat.send_action("typing")
+            except Exception:
+                pass
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=TYPING_INTERVAL)
+            except asyncio.TimeoutError:
+                pass
+
+    # ── Live streaming ───────────────────────────────────────
+
+    def _find_split_point(self, markdown: str) -> int | None:
+        """Find the best split point in markdown text.
+
+        Returns the index to split at, or None if no good split exists.
+        Only splits after MIN_CHUNK_BEFORE_SPLIT characters.
+        Forces a split if text approaches the Telegram message limit.
+        """
+        if len(markdown) < MIN_CHUNK_BEFORE_SPLIT:
+            return None
+
+        # Hard ceiling: force split before hitting Telegram limit
+        # Use a safety margin since HTML conversion can expand text
+        hard_limit = TELEGRAM_MSG_LIMIT - 500
+
+        # Search for split points after the minimum chunk size
+        search_start = MIN_CHUNK_BEFORE_SPLIT
+        best = None
+        for m in _SPLIT_PATTERN.finditer(markdown, search_start):
+            # Don't split if we're inside a code block
+            before = markdown[:m.start()]
+            open_fences = before.count("```")
+            if open_fences % 2 == 1:
+                continue  # inside a code block, skip
+            best = m.start()
+            # If we're past the hard limit, take this split immediately
+            if m.start() >= hard_limit:
+                break
+            # If we found a split below hard_limit, keep searching for a better one
+            # but stop if we're getting close to the limit
+            if best and len(markdown) > hard_limit:
+                break  # take the first valid split when content is long
+            break  # take the first valid split
+
+        # If no natural split found but text exceeds hard limit, force split at last newline
+        if best is None and len(markdown) > hard_limit:
+            cut = markdown.rfind("\n", MIN_CHUNK_BEFORE_SPLIT, hard_limit)
+            if cut > 0:
+                best = cut
+
+        return best
+
+    def _split_for_telegram(self, text: str) -> list[str]:
+        """Split text into chunks that fit within Telegram's message limit.
+
+        Tries to split at newlines to avoid breaking mid-sentence or mid-tag.
+        """
+        if len(text) <= TELEGRAM_MSG_LIMIT:
+            return [text]
+
+        chunks = []
+        remaining = text
+        while len(remaining) > TELEGRAM_MSG_LIMIT:
+            # Find the last newline within the limit
+            cut = remaining.rfind("\n", 0, TELEGRAM_MSG_LIMIT)
+            if cut <= 0:
+                # No newline found — try splitting at last space
+                cut = remaining.rfind(" ", 0, TELEGRAM_MSG_LIMIT)
+            if cut <= 0:
+                # Hard cut as last resort
+                cut = TELEGRAM_MSG_LIMIT
+
+            chunk = remaining[:cut].rstrip()
+            if chunk:
+                chunks.append(chunk)
+            remaining = remaining[cut:].lstrip("\n")
+
+        if remaining.strip():
+            chunks.append(remaining.strip())
+
+        return chunks or [text]
+
+    async def _send_html(self, chat, text: str, thread_id: int = None):
+        """Send a message with HTML formatting, falling back to plain text.
+
+        Automatically splits messages that exceed Telegram's 4096 char limit.
+        Sanitizes HTML to close any unclosed tags before sending.
+        """
+        chunks = self._split_for_telegram(text)
+        last_msg = None
+
+        for chunk in chunks:
+            chunk = _sanitize_html(chunk)
+            kwargs = {"parse_mode": "HTML"}
+            if thread_id:
+                kwargs["message_thread_id"] = thread_id
+            try:
+                last_msg = await chat.send_message(chunk, **kwargs)
+            except BadRequest as e:
+                logger.warning(f"HTML send failed, falling back to plain: {e}")
+                clean = re.sub(r"<[^>]+>", "", chunk)
+                kwargs.pop("parse_mode", None)
+                if clean.strip():
+                    last_msg = await chat.send_message(clean, **kwargs)
+
+        return last_msg
+
+    async def _edit_html(self, msg, text: str):
+        """Edit a message with HTML formatting, falling back to plain text."""
+        text = _sanitize_html(text)
+        try:
+            await msg.edit_text(text, parse_mode="HTML")
+        except BadRequest as e:
+            if "not modified" in str(e).lower():
+                return
+            logger.warning(f"HTML edit failed ({e}), trying plain text")
+            try:
+                clean = re.sub(r"<[^>]+>", "", text)
+                if clean.strip():
+                    await msg.edit_text(clean)
+            except BadRequest as e2:
+                logger.warning(f"Plain text edit also failed: {e2}")
+        except TimedOut:
+            pass
+        except Exception as e:
+            logger.debug(f"Edit failed: {e}")
+
+    async def _send_tool_status(self, chat, status_msg, description: str, thread_id: int = None):
+        """Send or edit a tool status message (italic, lightweight).
+
+        The description arrives from the renderer as an arbitrary string — a tool
+        name, a file path, sometimes an error — and lands in the middle of a
+        conversation, so it goes through the same humanizer as everything else.
+        """
+        text = f"<i>{_esc(humanize_tool_status(description))}</i>"
+        if status_msg is None:
+            try:
+                kwargs = {"parse_mode": "HTML"}
+                if thread_id:
+                    kwargs["message_thread_id"] = thread_id
+                return await chat.send_message(text, **kwargs)
+            except Exception as e:
+                logger.debug(f"Tool status send failed: {e}")
+                return None
+        else:
+            try:
+                await status_msg.edit_text(text, parse_mode="HTML")
+                return status_msg
+            except BadRequest as e:
+                if "not modified" not in str(e).lower():
+                    logger.debug(f"Tool status edit failed: {e}")
+                return status_msg
+            except Exception:
+                return status_msg
+
+    async def _stream_response(self, chat, reply_to, message: str, user_key: str,
+                               image_paths: list[str] | None = None,
+                               cwd: str | None = None,
+                               thread_id: int = None) -> str:
+        """Send message to Claude and stream response to Telegram.
+
+        Single-message flow: sends "Thinking..." with stop button immediately,
+        then edits it progressively with tool status and streaming text.
+        """
+        start = _time.time()
+
+        # Typing keepalive
+        stop_typing = asyncio.Event()
+        typing_task = asyncio.create_task(self._typing_keepalive(chat, stop_typing))
+
+        # Determine if this is a DM
+        is_dm = (chat.id == self.allowed_chat_id and thread_id is None
+                 and self.forum_group_id is None)
+
+        # Send immediate thinking indicator with stop button
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+        thinking_kwargs = {}
+        if thread_id:
+            thinking_kwargs["message_thread_id"] = thread_id
+        stop_keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("■ Stop", callback_data="stop_generation")
+        ]])
+        try:
+            thinking_msg = await chat.send_message(
+                "<i>Thinking...</i>", parse_mode="HTML",
+                reply_markup=stop_keyboard,
+                disable_notification=True, **thinking_kwargs,
+            )
+            thinking_msg_id = thinking_msg.message_id
+        except Exception:
+            thinking_msg_id = None
+
+        had_error = False
+        final_text = ""
+        result = None
+
+        try:
+            # Start streaming from Claude
+            agent_name, is_resumed, events = await stream_claude(
+                message=message,
+                user_key=user_key,
+                cwd=cwd,
+                image_paths=image_paths,
+            )
+
+            log_agent = agent_name or "claude"
+
+            # Render stream to Telegram — pass the thinking message so it gets
+            # edited into the response (single message flow, no ghosts)
+            final_text, result = await render_stream(
+                bot=self.app.bot,
+                chat_id=chat.id,
+                events=events,
+                thread_id=thread_id,
+                is_dm=is_dm,
+                is_resumed=is_resumed,
+                initial_msg_id=thinking_msg_id,
+                user_query=message,
+            )
+
+            duration_ms = int((_time.time() - start) * 1000)
+
+            # Log completion
+            if result and not result.is_error:
+                log_execution(
+                    task=message[:200], approach="claude-cli-stream",
+                    success=True, duration_ms=duration_ms,
+                    agent=log_agent,
+                    session_id=result.session_id[:16] if result.session_id else None,
+                    input_tokens=result.input_tokens,
+                    output_tokens=result.output_tokens,
+                    cost_usd=result.cost_usd,
+                    num_turns=result.num_turns,
+                    user_key=user_key,
+                )
+            else:
+                had_error = True
+                log_execution(
+                    task=message[:200], approach="claude-cli-stream",
+                    success=False, duration_ms=duration_ms,
+                    error=(result.text if result else "Unknown error")[:200],
+                    agent=log_agent,
+                    input_tokens=result.input_tokens if result else 0,
+                    output_tokens=result.output_tokens if result else 0,
+                    cost_usd=result.cost_usd if result else 0,
+                    user_key=user_key,
+                )
+
+        except Exception as exc:
+            had_error = True
+            logger.error(f"Stream response failed: {exc}")
+            final_text = final_text or f"Error: {exc}"
+        finally:
+            stop_typing.set()
+            typing_task.cancel()
+            try:
+                await typing_task
+            except asyncio.CancelledError:
+                pass
+
+        # Interactive buttons
+        await self._send_keyboard(chat, final_text, user_key, thread_id=thread_id)
+
+        # Final reaction: 👍 success or 💔 error
+        if reply_to:
+            await self._react(reply_to, "💔" if had_error else "👍")
+
+        return final_text
+
+    async def _send_keyboard(self, chat, response_text: str, user_key: str,
+                              thread_id: int = None):
+        """Detect options or add quick-action buttons after a response."""
+        session_id = get_session_id(user_key) or ""
+
+        detected = detect_options(response_text)
+        if not detected:
+            return
+
+        kwargs = {}
+        if thread_id:
+            kwargs["message_thread_id"] = thread_id
+
+        markup = build_option_keyboard(detected, session_id)
+        try:
+            # Send buttons silently — no extra notification buzz.
+            # Uses a thin prompt instead of "Select an option:".
+            await chat.send_message(
+                "\u2193", reply_markup=markup,
+                disable_notification=True, **kwargs,
+            )
+        except Exception as e:
+            logger.debug(f"Option keyboard send failed: {e}")
+
+    # ── Handlers ────────────────────────────────────────────
+
+    def _queue_message_for_bus(self, update: Update):
+        """Append incoming message to the comms bus queue file.
+
+        Written as JSONL so the TelegramAdapter can read it during poll cycles.
+        This is the bridge→comms layer handoff point.
+        """
+        try:
+            msg = update.message
+            if not msg or not msg.text:
+                return
+            queue_path = Path.home() / ".aos" / "data" / "telegram-messages.jsonl"
+            queue_path.parent.mkdir(parents=True, exist_ok=True)
+            from_user = msg.from_user
+            record = {
+                "id": f"tg-{msg.message_id}",
+                "chat_id": msg.chat_id,
+                "from_user": {
+                    "id": from_user.id if from_user else None,
+                    "first_name": from_user.first_name if from_user else "",
+                    "last_name": from_user.last_name if from_user else "",
+                    "username": from_user.username if from_user else "",
+                },
+                "text": msg.text,
+                "timestamp": msg.date.timestamp() if msg.date else _time.time(),
+                "from_me": False,
+                "thread_id": getattr(msg, "message_thread_id", None),
+            }
+            with open(queue_path, "a") as f:
+                f.write(json.dumps(record, default=str) + "\n")
+        except Exception as e:
+            logger.debug(f"Failed to queue message for bus: {e}")
+
+    async def _handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not update.message or not update.message.text:
+            return
+        chat_id = update.message.chat_id
+        if not self._is_authorized(chat_id):
+            logger.warning(f"Unauthorized message from chat_id={chat_id}")
+            return
+
+        # Queue for comms bus (non-blocking, fire-and-forget)
+        self._queue_message_for_bus(update)
+
+        # Check if this is an evening check-in reply (intercept before Claude dispatch)
+        text_raw = update.message.text.strip()
+        if (is_awaiting_checkin_reply()
+                and not was_checkin_replied()
+                and not text_raw.startswith("/")
+                and "," in text_raw
+                and len(text_raw) < 500):
+            try:
+                _save_checkin_to_daily(text_raw)
+                mark_checkin_replied()
+                await update.message.reply_text(
+                    "Evening check-in saved. Good night.",
+                    parse_mode="HTML",
+                )
+                record_inbound(text_raw, chat_id=chat_id, kind="checkin_reply")
+                record_outbound("Evening check-in saved. Good night.",
+                                chat_id=chat_id, kind="checkin_ack")
+                return
+            except Exception as e:
+                logger.warning(f"Failed to save check-in reply: {e}")
+                # Fall through to normal message handling
+
+        # Friction rules approval intercept (e.g., "/approve-rules 1 3" or "/approve-rules all")
+        if text_raw.startswith("/approve-rules"):
+            try:
+                import subprocess as _sp
+                args = text_raw.split()[1:]  # e.g., ["1", "3"] or ["all"]
+                if not args:
+                    await update.message.reply_text(
+                        "Usage: /approve-rules 1 3 or /approve-rules all",
+                        parse_mode="HTML",
+                    )
+                    return
+                cmd = [sys.executable, str(Path(__file__).resolve().parent.parent.parent / "bin" / "friction-rules"), "apply"] + args
+                result = _sp.run(cmd, capture_output=True, text=True, timeout=30)
+                if result.returncode != 0:
+                    await update.message.reply_text(f"Error: {result.stderr[:500]}", parse_mode="HTML")
+                else:
+                    # The script sends its own Telegram notification, just log it
+                    record_inbound(text_raw, chat_id=chat_id, kind="command")
+                return
+            except Exception as e:
+                logger.warning(f"Failed to process approve-rules: {e}")
+                await update.message.reply_text(f"Error processing rule approval: {e}")
+                return
+
+        # Forum topic routing — use thread_id for session key and cwd
+        topic_config = self._get_topic_config(update.message)
+        thread_id = getattr(update.message, 'message_thread_id', None)
+        if thread_id:
+            user_key = f"telegram:{chat_id}:topic:{thread_id}"
+        else:
+            user_key = f"telegram:{chat_id}"
+        topic_cwd = topic_config.get("cwd")
+        topic_agent = topic_config.get("agent")
+        text = update.message.text
+
+        # ── Reply-to context — when user swipes to reply ──
+        if update.message.reply_to_message and update.message.reply_to_message.text:
+            quoted = update.message.reply_to_message.text[:500]
+            text = f'[Replying to: "{quoted}"]\n\n{text}'
+
+        # ── Quick command intercept ──────────────────────
+        if not topic_agent:
+            try:
+                quick_reply = classify_intent(text)
+                if quick_reply:
+                    logger.info(f"Quick command: {text[:60]}")
+                    record_inbound(text, chat_id=chat_id, kind="quick_command")
+                    record_outbound(quick_reply, chat_id=chat_id, kind="quick_reply")
+                    await update.message.reply_text(
+                        quick_reply, parse_mode="HTML",
+                        message_thread_id=thread_id,
+                    )
+                    return
+            except Exception as e:
+                logger.warning(f"Quick command failed, falling through to Claude: {e}")
+
+        # If topic has a dedicated agent, prepend dispatch
+        if topic_agent and not text.lower().startswith(("ask ", "tell ", "@")):
+            text = f"ask {topic_agent} to {text}"
+
+        # Acknowledge receipt immediately (before lock — user sees 👀 right away)
+        await self._ack_message(update.message)
+        _topic_name = topic_agent or (f"topic:{thread_id}" if thread_id else "dm")
+        logger.info(f"Message: {text[:80]} [{user_key}]")
+        record_inbound(text, chat_id=chat_id, topic=_topic_name, kind="message")
+
+        # Per-conversation lock — only one Claude process at a time
+        lock = self._conversation_locks.setdefault(user_key, asyncio.Lock())
+        if lock.locked():
+            # Another message is being processed — let user know
+            _q_kwargs = {"disable_notification": True}
+            if thread_id:
+                _q_kwargs["message_thread_id"] = thread_id
+            try:
+                await update.message.chat.send_message("⏳", **_q_kwargs)
+            except Exception:
+                pass
+
+        async with lock:
+            _save_inflight(
+                chat_id=update.message.chat_id,
+                text=text,
+                user_key=user_key,
+                thread_id=thread_id,
+                cwd=topic_cwd,
+            )
+
+            _conv_start = _time.monotonic()
+
+            # ── Task dispatch: multi-step work runs in tmux, agent picks tools ──
+            if _is_task_dispatch(text):
+                logger.info(f"Task dispatch: {user_key} → {text[:60]}")
+                response = await _dispatch_steer_and_report(
+                    update.message.chat, update.message, text,
+                    thread_id=thread_id,
+                )
+            else:
+                from session_manager import get_persistent_session
+                _ps = get_persistent_session()
+                _mode = "persistent" if _ps.alive else "new (starting persistent)"
+                logger.info(f"Claude dispatch: {user_key} → {_mode}")
+
+                response = await self._stream_response(
+                    update.message.chat, update.message, text, user_key,
+                    cwd=topic_cwd,
+                    thread_id=thread_id,
+                )
+
+            _clear_inflight()
+
+            _conv_duration = int((_time.monotonic() - _conv_start) * 1000)
+            logger.info(f"Response: {_conv_duration}ms, {len(response)} chars [{user_key}]")
+            record_outbound(response, chat_id=chat_id, topic=_topic_name,
+                            kind="response", meta={"duration_ms": _conv_duration})
+
+    async def _handle_new(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not update.message:
+            return
+        chat_id = update.message.chat_id
+        if not self._is_authorized(chat_id):
+            return
+        # Also clear topic-specific sessions if in a forum topic
+        thread_id = getattr(update.message, 'message_thread_id', None)
+        if thread_id:
+            clear_session(f"telegram:{chat_id}:topic:{thread_id}")
+        else:
+            clear_session(f"telegram:{chat_id}")
+        # Auto-commit any changes from the cleared session
+        import subprocess as _sp
+        _sp.Popen(
+            [str(Path(__file__).resolve().parent.parent.parent / "bin" / "auto-commit"), "bridge"],
+            cwd=str(Path(__file__).resolve().parent.parent.parent),
+            stdout=_sp.DEVNULL, stderr=_sp.DEVNULL,
+        )
+        await update.message.reply_text("New session started.")
+
+    async def _handle_voice(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not update.message or not update.message.voice:
+            return
+        chat_id = update.message.chat_id
+        if not self._is_authorized(chat_id):
+            logger.warning(f"Unauthorized voice from chat_id={chat_id}")
+            return
+
+        # Forum topic routing
+        topic_config = self._get_topic_config(update.message)
+        thread_id = getattr(update.message, 'message_thread_id', None)
+        if thread_id:
+            user_key = f"telegram:{chat_id}:topic:{thread_id}"
+        else:
+            user_key = f"telegram:{chat_id}"
+        topic_cwd = topic_config.get("cwd")
+        topic_agent = topic_config.get("agent")
+
+        # Acknowledge receipt
+        await self._react(update.message, "🎙")
+
+        # Download and transcribe
+        reply_kwargs = {}
+        if thread_id:
+            reply_kwargs["message_thread_id"] = thread_id
+
+        duration_s = getattr(update.message.voice, "duration", 0) or 0
+        try:
+            voice_file = await update.message.voice.get_file()
+            text = await transcribe_voice(voice_file, duration_s=duration_s)
+        except Exception as e:
+            logger.error(f"Voice transcription failed: {e}")
+            await self._react(update.message, "💔")
+            await update.message.reply_text(f"Transcription failed: {e}", **reply_kwargs)
+            bridge_event("voice_transcription_failed", level="error", error=str(e))
+            return
+
+        if not text or not text.strip():
+            await self._react(update.message, "💔")
+            await update.message.reply_text("(couldn't transcribe — empty audio)", **reply_kwargs)
+            return
+
+        record_inbound(text, chat_id=chat_id, kind="voice",
+                       meta={"duration_s": update.message.voice.duration})
+
+        # Show transcription — italic reply to the voice message, no labels.
+        # A long note can transcribe past Telegram's 4096-char limit (aos#2357:
+        # a 6-minute note produced a ~44,700-char transcript); an unchunked
+        # echo raised BadRequest on both the primary send and its fallback,
+        # and the exception killed the handler before the prompt ever reached
+        # Claude. Chunking must never block dispatch: a failed echo is logged
+        # and skipped, not fatal.
+        await self._react(update.message, "✅")
+        for chunk in _chunk_text(text, _TRANSCRIPT_CHUNK_LIMIT):
+            body = f"<i>{_esc(chunk)}</i>"
+            try:
+                await update.message.reply_text(body, parse_mode="HTML", **reply_kwargs)
+            except Exception as e:
+                logger.warning(f"Transcript reply failed: {e}")
+                try:
+                    # Fallback: send as regular message
+                    await update.message.chat.send_message(
+                        body, parse_mode="HTML", **reply_kwargs,
+                    )
+                except Exception as e2:
+                    logger.warning(f"Transcript echo failed entirely: {e2}")
+
+        if topic_agent and not text.lower().startswith(("ask ", "tell ", "@")):
+            # A voice note in a project topic belongs to that project's agent —
+            # someone talking into the nuchay thread wants nuchay, not a brain
+            # dump. The ramble force-route is for the DM, which is where
+            # thinking out loud actually happens.
+            prompt = f"ask {topic_agent} to {text}"
+        else:
+            prompt = _RAMBLE_PROMPT.format(text=text)
+            # Confirm BEFORE the session starts: the operator should know their
+            # words landed and that nothing has been created yet, without having
+            # to wait for a turn to finish.
+            try:
+                await update.message.reply_text(_RAMBLE_CONFIRM, **reply_kwargs)
+            except Exception as e:
+                logger.warning(f"Ramble confirm failed: {e}")
+            record_outbound(_RAMBLE_CONFIRM, chat_id=chat_id, kind="ramble_confirm")
+            logger.info(f"Voice note routed to ramble [{user_key}]")
+
+        # Stream Claude's response
+        response = await self._stream_response(
+            update.message.chat, update.message, prompt, user_key,
+            cwd=topic_cwd, thread_id=thread_id,
+        )
+        record_outbound(response, chat_id=chat_id, kind="response",
+                        meta={"source": "voice"})
+
+    async def _handle_whisper(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Switch whisper mode: /whisper fast | /whisper accurate"""
+        if not update.message:
+            return
+        if not self._is_authorized(update.message.chat_id):
+            return
+        args = context.args
+        if not args:
+            current = get_mode()
+            await update.message.reply_text(
+                f"Whisper mode: <b>{current}</b>\n\n"
+                f"<b>fast</b> — base model, quick transcription\n"
+                f"<b>accurate</b> — small model, better for mixed languages\n\n"
+                f"Usage: /whisper fast | accurate",
+                parse_mode="HTML",
+            )
+            return
+        try:
+            set_mode(args[0].lower())
+            await update.message.reply_text(
+                f"Whisper mode switched to: <b>{get_mode()}</b>",
+                parse_mode="HTML",
+            )
+        except ValueError as e:
+            await update.message.reply_text(str(e))
+
+    async def _extract_keyframes(self, video_path: str, max_frames: int = 4) -> list[str]:
+        """Extract keyframes from a video using ffmpeg. Returns list of image paths."""
+        out_dir = tempfile.mkdtemp(prefix="tg_frames_")
+        pattern = f"{out_dir}/frame_%02d.jpg"
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "ffmpeg", "-i", video_path,
+                "-vf", "fps=1/2,select='eq(pict_type\\,I)',scale=1280:-1",
+                "-frames:v", str(max_frames),
+                "-q:v", "2", "-y", pattern,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await asyncio.wait_for(proc.wait(), timeout=30)
+        except (asyncio.TimeoutError, Exception) as e:
+            logger.warning(f"Keyframe extraction failed: {e}")
+            # Fallback: grab a single frame at 1s
+            try:
+                proc2 = await asyncio.create_subprocess_exec(
+                    "ffmpeg", "-i", video_path, "-ss", "1",
+                    "-frames:v", "1", "-q:v", "2", "-y",
+                    f"{out_dir}/frame_01.jpg",
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
+                await asyncio.wait_for(proc2.wait(), timeout=15)
+            except Exception:
+                pass
+
+        frames = sorted(Path(out_dir).glob("frame_*.jpg"))
+        return [str(f) for f in frames]
+
+    async def _handle_media(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle photos, videos, and documents (images/video)."""
+        msg = update.message
+        if not msg:
+            return
+        chat_id = msg.chat_id
+        if not self._is_authorized(chat_id):
+            logger.warning(f"Unauthorized media from chat_id={chat_id}")
+            return
+
+        # Forum topic routing
+        topic_config = self._get_topic_config(msg)
+        thread_id = getattr(msg, 'message_thread_id', None)
+        if thread_id:
+            user_key = f"telegram:{chat_id}:topic:{thread_id}"
+        else:
+            user_key = f"telegram:{chat_id}"
+        topic_cwd = topic_config.get("cwd")
+        topic_agent = topic_config.get("agent")
+
+        caption = msg.caption or ""
+        image_paths: list[str] = []
+        is_video = False
+
+        # Acknowledge receipt immediately
+        await self._ack_message(msg)
+
+        # Show processing status for media that takes time
+        media_status_msg = None
+        if msg.video:
+            media_status_msg = await msg.reply_text("🎬 Processing video...")
+        elif msg.photo:
+            media_status_msg = await msg.reply_text("📎 Processing image...")
+
+        try:
+            if msg.photo:
+                # Photos: download the largest size
+                photo = msg.photo[-1]
+                tg_file = await photo.get_file()
+                tmp = tempfile.NamedTemporaryFile(
+                    suffix=".jpg", prefix="tg_photo_", delete=False
+                )
+                tmp.close()
+                await tg_file.download_to_drive(tmp.name)
+                image_paths.append(tmp.name)
+                record_inbound(caption or "(photo)", chat_id=chat_id, kind="photo")
+
+            elif msg.video:
+                is_video = True
+                tg_file = await msg.video.get_file()
+                tmp = tempfile.NamedTemporaryFile(
+                    suffix=".mp4", prefix="tg_video_", delete=False
+                )
+                tmp.close()
+                await tg_file.download_to_drive(tmp.name)
+                # Extract keyframes for Claude to view
+                image_paths = await self._extract_keyframes(tmp.name)
+                if not image_paths:
+                    await msg.reply_text("Couldn't extract frames from video.")
+                    return
+                record_inbound(caption or "(video)", chat_id=chat_id, kind="video",
+                               meta={"duration_s": msg.video.duration})
+
+            elif msg.document:
+                mime = msg.document.mime_type or ""
+                if mime.startswith("image/"):
+                    ext = mime.split("/")[-1].replace("jpeg", "jpg")
+                    tg_file = await msg.document.get_file()
+                    tmp = tempfile.NamedTemporaryFile(
+                        suffix=f".{ext}", prefix="tg_doc_", delete=False
+                    )
+                    tmp.close()
+                    await tg_file.download_to_drive(tmp.name)
+                    image_paths.append(tmp.name)
+                    record_inbound(caption or "(image file)", chat_id=chat_id,
+                                   kind="document")
+                elif mime.startswith("video/"):
+                    is_video = True
+                    tg_file = await msg.document.get_file()
+                    tmp = tempfile.NamedTemporaryFile(
+                        suffix=".mp4", prefix="tg_vdoc_", delete=False
+                    )
+                    tmp.close()
+                    await tg_file.download_to_drive(tmp.name)
+                    image_paths = await self._extract_keyframes(tmp.name)
+                    if not image_paths:
+                        await msg.reply_text("Couldn't extract frames from video.")
+                        return
+                    record_inbound(caption or "(video file)", chat_id=chat_id,
+                                   kind="document")
+                else:
+                    await msg.reply_text(
+                        f"Unsupported file type: {mime}\n"
+                        "I can handle photos, videos, and image files."
+                    )
+                    return
+            else:
+                return
+
+        except Exception as e:
+            logger.error(f"Media download failed: {e}")
+            if media_status_msg:
+                await self._safe_delete(media_status_msg)
+            await self._react(msg, "💔")
+            await msg.reply_text(f"Failed to download media: {e}")
+            return
+
+        # Clear processing status
+        if media_status_msg:
+            await self._safe_delete(media_status_msg)
+
+        if not image_paths:
+            await self._react(msg, "💔")
+            await msg.reply_text("Couldn't process the media file.")
+            return
+
+        # Build prompt
+        media_type = "video (keyframes extracted)" if is_video else "photo"
+        prompt = caption if caption else f"The user sent a {media_type}. Describe what you see."
+
+        # If topic has a dedicated agent, prepend dispatch
+        if topic_agent and not prompt.lower().startswith(("ask ", "tell ", "@")):
+            prompt = f"ask {topic_agent} to {prompt}"
+
+        # Stream response (live HTML streaming)
+        response = await self._stream_response(
+            msg.chat, msg, prompt, user_key, image_paths=image_paths,
+            cwd=topic_cwd, thread_id=thread_id,
+        )
+        record_outbound(response, chat_id=chat_id, kind="response",
+                        meta={"source": "media"})
+
+        # Clean up temp files
+        for p in image_paths:
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
+            # Also clean up parent dir if it was a keyframes dir
+            parent = Path(p).parent
+            if parent.name.startswith("tg_frames_"):
+                try:
+                    for f in parent.iterdir():
+                        f.unlink(missing_ok=True)
+                    parent.rmdir()
+                except OSError:
+                    pass
+
+    async def _handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle inline keyboard button taps."""
+        query = update.callback_query
+        if not query:
+            return
+
+        chat_id = query.message.chat_id
+        if not self._is_authorized(chat_id):
+            await query.answer("Unauthorized")
+            return
+
+        # ── Stop button — kill the active Claude process ──
+        if query.data == "stop_generation":
+            thread_id = getattr(query.message, 'message_thread_id', None)
+            user_key = f"telegram:{chat_id}:topic:{thread_id}" if thread_id else f"telegram:{chat_id}"
+            cancelled = cancel_stream(user_key)
+            await query.answer("Stopping..." if cancelled else "Nothing running")
+            # Don't edit the message here — the renderer will handle final delivery
+            # when the process dies and the generator ends.
+            return
+
+        await query.answer()  # dismiss the loading spinner
+
+        result = resolve_callback(query.data)
+        if not result:
+            try:
+                await query.edit_message_text(
+                    "This button is from an older session.\n"
+                    "Send your message again to get fresh options."
+                )
+            except Exception:
+                pass
+            bridge_event("button_expired", level="info",
+                         callback_data=query.data[:30])
+            return
+
+        kind, message_text = result
+
+        # Show what was selected and remove buttons
+        if kind == "option":
+            try:
+                await query.edit_message_text(f"Selected: {message_text}")
+            except Exception:
+                pass
+        else:
+            try:
+                await query.edit_message_text(f"{message_text}")
+            except Exception:
+                pass
+
+        # Determine user_key (check for forum topic thread)
+        thread_id = getattr(query.message, 'message_thread_id', None)
+        if thread_id:
+            user_key = f"telegram:{chat_id}:topic:{thread_id}"
+        else:
+            user_key = f"telegram:{chat_id}"
+
+        topic_config = self._get_topic_config(query.message) if thread_id else {}
+        topic_cwd = topic_config.get("cwd")
+
+        # Send to Claude via the existing streaming path
+        response = await self._stream_response(
+            query.message.chat, query.message, message_text, user_key,
+            cwd=topic_cwd, thread_id=thread_id,
+        )
+        record_outbound(response, chat_id=chat_id, kind="response",
+                        meta={"source": "button"})
+
+    # ── Vault commands (/note, /search, /capture) ─────────
+
+    VAULT_ROOT = Path.home() / "vault"
+    QMD_BIN = Path.home() / ".bun" / "bin" / "qmd"
+
+    def _qmd_reindex_async(self):
+        """Trigger QMD re-index in background (non-blocking)."""
+        if self.QMD_BIN.exists():
+            try:
+                qmd_env = {**os.environ, "PATH": f"{self.QMD_BIN.parent}:{os.environ.get('PATH', '')}"}
+                subprocess.Popen(
+                    [str(self.QMD_BIN), "update"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    env=qmd_env,
+                )
+                subprocess.Popen(
+                    [str(self.QMD_BIN), "embed"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    env=qmd_env,
+                )
+            except Exception:
+                pass
+
+    async def _handle_note(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Save a quick note to the vault. Usage: /note <text>"""
+        if not update.message or not self._is_authorized(update.message.chat_id):
+            return
+        text = " ".join(context.args) if context.args else ""
+        if not text:
+            await update.message.reply_text(
+                "<b>Usage:</b> <code>/note your thought here</code>",
+                parse_mode="HTML",
+            )
+            return
+
+        import datetime
+        now = datetime.datetime.now()
+        slug = re.sub(r'[^\w\s-]', '', text[:40]).strip().replace(' ', '-').lower()
+        filename = f"{now.strftime('%Y%m%d-%H%M')}-{slug}.md"
+        filepath = self.VAULT_ROOT / "ideas" / filename
+
+        content = (
+            f"---\n"
+            f"date: \"{now.strftime('%Y-%m-%d')}\"\n"
+            f"time: \"{now.strftime('%H:%M')}\"\n"
+            f"type: idea\n"
+            f"source: telegram\n"
+            f"tags: []\n"
+            f"---\n\n"
+            f"{text}\n"
+        )
+
+        filepath.parent.mkdir(parents=True, exist_ok=True)
+        filepath.write_text(content)
+        self._qmd_reindex_async()
+        record_inbound(text, chat_id=update.message.chat_id, kind="note")
+        await update.message.reply_text(
+            f"Saved to <code>ideas/{_esc(filename)}</code>",
+            parse_mode="HTML",
+        )
+
+    async def _handle_search(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Search the knowledge vault via QMD. Usage: /search <query>"""
+        if not update.message or not self._is_authorized(update.message.chat_id):
+            return
+        query = " ".join(context.args) if context.args else ""
+        if not query:
+            await update.message.reply_text(
+                "<b>Usage:</b> <code>/search your query here</code>",
+                parse_mode="HTML",
+            )
+            return
+
+        if not self.QMD_BIN.exists():
+            await update.message.reply_text("QMD not installed. Run: bun install -g @tobilu/qmd")
+            return
+
+        await update.message.chat.send_action("typing")
+        try:
+            result = subprocess.run(
+                [str(self.QMD_BIN), "query", query, "-n", "5"],
+                capture_output=True, text=True, timeout=30,
+                env={**os.environ, "PATH": f"{self.QMD_BIN.parent}:{os.environ.get('PATH', '')}"},
+            )
+            output = result.stdout.strip()
+            if not output:
+                await update.message.reply_text("No results found.")
+                return
+
+            # Format for Telegram (truncate long output)
+            if len(output) > 3000:
+                output = output[:3000] + "\n..."
+            await update.message.reply_text(
+                f"<b>Search:</b> <i>{_esc(query)}</i>\n\n<pre>{_esc(output)}</pre>",
+                parse_mode="HTML",
+            )
+        except subprocess.TimeoutExpired:
+            await update.message.reply_text("Search timed out.")
+        except Exception as e:
+            await update.message.reply_text(f"Search failed: {e}")
+
+    async def _handle_capture(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Universal capture — detect type and route to vault. Usage: /capture <text or URL>"""
+        if not update.message or not self._is_authorized(update.message.chat_id):
+            return
+        text = " ".join(context.args) if context.args else ""
+        if not text:
+            await update.message.reply_text(
+                "<b>Usage:</b> <code>/capture your thought, URL, or task</code>\n\n"
+                "Auto-detects: YouTube links, URLs, tasks (todo:/task:), ideas",
+                parse_mode="HTML",
+            )
+            return
+
+        import datetime
+        now = datetime.datetime.now()
+
+        # Classify input type
+        youtube_re = re.compile(r'(youtube\.com/watch\?v=|youtu\.be/)')
+        url_re = re.compile(r'https?://')
+        task_re = re.compile(r'^(todo|task|remind)[\s:]+', re.IGNORECASE)
+
+        if youtube_re.search(text):
+            folder = "materials/video-research"
+            note_type = "youtube"
+            slug = "youtube-" + now.strftime('%Y%m%d-%H%M')
+        elif task_re.match(text):
+            folder = "ideas"
+            note_type = "task"
+            text = task_re.sub('', text).strip()
+            slug = "task-" + re.sub(r'[^\w\s-]', '', text[:30]).strip().replace(' ', '-').lower()
+        elif url_re.search(text):
+            folder = "materials"
+            note_type = "bookmark"
+            slug = "link-" + now.strftime('%Y%m%d-%H%M')
+        else:
+            folder = "ideas"
+            note_type = "idea"
+            slug = re.sub(r'[^\w\s-]', '', text[:40]).strip().replace(' ', '-').lower()
+
+        filename = f"{now.strftime('%Y%m%d-%H%M')}-{slug}.md"
+        filepath = self.VAULT_ROOT / folder / filename
+
+        content = (
+            f"---\n"
+            f"date: \"{now.strftime('%Y-%m-%d')}\"\n"
+            f"time: \"{now.strftime('%H:%M')}\"\n"
+            f"type: {note_type}\n"
+            f"source: telegram\n"
+            f"tags: []\n"
+            f"---\n\n"
+            f"{text}\n"
+        )
+
+        filepath.parent.mkdir(parents=True, exist_ok=True)
+        filepath.write_text(content)
+
+        # Post-capture: search for related content
+        related_msg = ""
+        if self.QMD_BIN.exists():
+            try:
+                result = subprocess.run(
+                    [str(self.QMD_BIN), "search", text[:100], "-n", "3"],
+                    capture_output=True, text=True, timeout=15,
+                    env={**os.environ, "PATH": f"{self.QMD_BIN.parent}:{os.environ.get('PATH', '')}"},
+                )
+                if result.stdout.strip():
+                    # Extract just filenames from output
+                    lines = result.stdout.strip().split('\n')
+                    related = [l.strip() for l in lines[:3] if l.strip()]
+                    if related:
+                        related_msg = "\n\n<b>Related:</b>\n" + "\n".join(
+                            f"  • <code>{r[:80]}</code>" for r in related
+                        )
+            except Exception:
+                pass
+
+        # Post-capture: append wiki-links to related vault notes
+        if self.QMD_BIN.exists():
+            try:
+                link_result = subprocess.run(
+                    [str(self.QMD_BIN), "search", text[:80], "-n", "3", "--files"],
+                    capture_output=True, text=True, timeout=15,
+                    env={**os.environ, "PATH": f"{self.QMD_BIN.parent}:{os.environ.get('PATH', '')}"},
+                )
+                if link_result.stdout.strip():
+                    links = []
+                    for line in link_result.stdout.strip().split('\n'):
+                        parts = line.split(',')
+                        if len(parts) >= 3:
+                            raw_path = parts[2].strip().strip('"')
+                            if 'qmd://' in raw_path:
+                                segments = raw_path.replace('qmd://', '').split('/')
+                                note_stem = Path(segments[-1]).stem if segments else ""
+                                if note_stem and note_stem not in filename:
+                                    links.append(f"[[{note_stem}]]")
+                    if links:
+                        existing = filepath.read_text()
+                        link_section = "\n\n## Related\n\n" + "\n".join(f"- {l}" for l in links[:5]) + "\n"
+                        filepath.write_text(existing.rstrip() + link_section)
+            except Exception:
+                pass
+
+        self._qmd_reindex_async()
+        record_inbound(text, chat_id=update.message.chat_id, kind="capture")
+        await update.message.reply_text(
+            f"Captured [{_esc(note_type)}] → <code>{_esc(folder)}/{_esc(filename)}</code>{related_msg}",
+            parse_mode="HTML",
+        )
+
+        # If YouTube, trigger transcription in the background
+        if note_type == "youtube":
+            asyncio.create_task(
+                self._transcribe_youtube_capture(update.message.chat, text, filepath, update.message.message_thread_id)
+            )
+
+    async def _transcribe_youtube_capture(self, chat, url_text: str, note_path: Path,
+                                             thread_id: int = None):
+        """Background: transcribe a YouTube URL and append transcript to the vault note."""
+        # Extract YouTube URL from the text
+        yt_match = re.search(r'(https?://(?:www\.)?(?:youtube\.com/watch\?v=|youtu\.be/)[\w-]+)', url_text)
+        if not yt_match:
+            return
+
+        yt_url = yt_match.group(1)
+        # NOTE: this script path does not exist on any current install (no
+        # apps/transcriber/ directory ships — see apps/content-engine/ for
+        # what replaced it), so this call is already dead code; pre-existing,
+        # not introduced or fixed here. The --output target is still moved
+        # off WORKSPACE (~/aos, read-only at runtime) so that if this path
+        # is ever rewired to a real script, it doesn't reintroduce the
+        # write-to-read-only-tree bug (aos#2320's class).
+        transcriber = WORKSPACE / "apps" / "transcriber" / "transcribe.py"
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "python3", str(transcriber), yt_url,
+                "--output", str(Path.home() / ".aos" / "data" / "bridge" / "transcriber-output"),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+            output = stdout.decode()
+
+            # Find the saved transcript file from output
+            match = re.search(r'Transcript saved to: (.+\.txt)', output)
+            if match and proc.returncode == 0:
+                transcript_path = Path(match.group(1).strip())
+                if transcript_path.exists():
+                    transcript = transcript_path.read_text()
+                    # Append transcript to the vault note
+                    existing = note_path.read_text()
+                    note_path.write_text(
+                        existing.rstrip() + "\n\n## Transcript\n\n" + transcript + "\n"
+                    )
+                    kwargs = {}
+                    if thread_id:
+                        kwargs["message_thread_id"] = thread_id
+                    await chat.send_message(
+                        f"Transcript ready ({len(transcript)} chars) → <code>{_esc(note_path.name)}</code>",
+                        parse_mode="HTML", **kwargs,
+                    )
+                    return
+
+            # If transcription failed, notify
+            logger.warning(f"YouTube transcription failed: {stderr.decode()[:200]}")
+        except asyncio.TimeoutError:
+            logger.warning(f"YouTube transcription timed out for {yt_url}")
+        except Exception as e:
+            logger.warning(f"YouTube transcription error: {e}")
+
+    async def _handle_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not update.message:
+            return
+        chat_id = update.message.chat_id
+        if not self._is_authorized(chat_id):
+            return
+        await update.message.reply_text("Bridge is running. Send any message to interact with the agent.")
+
+    async def _handle_read(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Publish a .md file to Telegraph for Instant View reading."""
+        if not update.message:
+            return
+        chat_id = update.message.chat_id
+        if not self._is_authorized(chat_id):
+            return
+
+        if not context.args:
+            # List available .md files
+            from pathlib import Path
+            workspace = Path.home() / "aos"
+            md_files = sorted(
+                [str(p.relative_to(workspace)) for p in workspace.rglob("*.md")
+                 if not any(part.startswith(".") or part in ("node_modules", "vendor", ".venv")
+                           for part in p.relative_to(workspace).parts)]
+            )[:20]
+            listing = "\n".join(f"  <code>{f}</code>" for f in md_files)
+            await update.message.reply_text(
+                f"<b>Usage:</b> <code>/read path/to/file.md</code>\n\n"
+                f"<b>Available files:</b>\n{listing}",
+                parse_mode="HTML",
+            )
+            return
+
+        filepath = context.args[0]
+        full_path = str(Path.home() / "aos" / filepath)
+
+        from pathlib import Path
+        p = Path(full_path)
+        if not p.exists():
+            # Try common locations
+            for prefix in ["docs/", "specs/", "config/", ""]:
+                alt = Path.home() / "aos" / f"{prefix}{filepath}"
+                if alt.exists():
+                    p = alt
+                    break
+
+        if not p.exists() or not p.is_file():
+            await update.message.reply_text(f"File not found: <code>{_esc(filepath)}</code>", parse_mode="HTML")
+            return
+
+        try:
+            from telegraph_publisher import publish_md
+            content = p.read_text()
+            title = p.stem.replace("-", " ").replace("_", " ").title()
+            url = publish_md(title, content)
+            await update.message.reply_text(
+                # url sits in an ATTRIBUTE: html.escape's default quote=True is
+                # required here — a bare " would close href= and let the value
+                # inject further attributes. _esc (quote=False) is text-only.
+                f'<a href="{html.escape(url)}">{_esc(title)}</a>',
+                parse_mode="HTML",
+                disable_web_page_preview=False,
+            )
+        except Exception as e:
+            logger.error(f"Telegraph publish failed: {e}")
+            await update.message.reply_text(f"Failed to publish: {e}")
+
+    async def _handle_tasks(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /tasks command — vault-based task management.
+
+        Usage:
+          /tasks             — show active tasks (not done)
+          /tasks all         — show everything including done
+          /tasks add <name>  — create a new task
+          /tasks do <name>   — start a task
+          /tasks done <name> — mark as done
+        """
+        if not update.message:
+            return
+        if not self._is_authorized(update.message.chat_id):
+            return
+
+        args = context.args or []
+        thread_id = getattr(update.message, 'message_thread_id', None)
+        kwargs = {}
+        if thread_id:
+            kwargs["message_thread_id"] = thread_id
+
+        work_cli = str(Path.home() / "aos" / "core" / "engine" / "work" / "cli.py")
+
+        def _run(*cmd_args):
+            try:
+                result = subprocess.run(
+                    ["python3", work_cli] + list(cmd_args),
+                    capture_output=True, text=True, timeout=15,
+                )
+                return result.stdout.strip(), result.returncode == 0
+            except Exception as e:
+                return str(e), False
+
+        if not args:
+            await update.message.chat.send_action("typing")
+            out, ok = _run("list", "--json")
+            if ok and out:
+                try:
+                    tasks = json.loads(out)
+                    msg = _format_tasks_telegram(tasks)
+                except Exception:
+                    msg = "<i>Could not parse tasks.</i>"
+            else:
+                msg = "<i>No tasks found.</i>"
+            await update.message.reply_text(
+                f"<b>Tasks</b>\n{msg}", parse_mode="HTML", **kwargs,
+            )
+
+        elif args[0].lower() == "all":
+            await update.message.chat.send_action("typing")
+            out, ok = _run("list", "--all", "--json")
+            if ok and out:
+                try:
+                    tasks = json.loads(out)
+                    msg = _format_tasks_telegram(tasks)
+                except Exception:
+                    msg = "<i>Could not parse tasks.</i>"
+            else:
+                msg = "<i>No tasks found.</i>"
+            await update.message.reply_text(
+                f"<b>All Tasks</b>\n{msg}", parse_mode="HTML", **kwargs,
+            )
+
+        elif args[0].lower() == "add" and len(args) > 1:
+            task_name = " ".join(args[1:])
+            topic_config = self._get_topic_config(update.message)
+            topic_agent = topic_config.get("agent")
+            project = "nuchay" if topic_agent == "nuchay" else "aos"
+            out, ok = _run("add", task_name, "--project", project)
+            if ok:
+                await update.message.reply_text(
+                    f"✅ {out}", parse_mode="HTML", **kwargs,
+                )
+                record_outbound(out, chat_id=update.message.chat_id, kind="task_reply")
+            else:
+                await update.message.reply_text(
+                    "Failed to create task.", **kwargs,
+                )
+
+        elif args[0].lower() == "done" and len(args) > 1:
+            search = " ".join(args[1:])
+            out, ok = _run("done", search)
+            if ok:
+                await update.message.reply_text(
+                    f"✅ {out}", parse_mode="HTML", **kwargs,
+                )
+                record_outbound(out, chat_id=update.message.chat_id, kind="task_reply")
+            else:
+                await update.message.reply_text(
+                    f"No task matching '<b>{search}</b>'.",
+                    parse_mode="HTML", **kwargs,
+                )
+
+        elif args[0].lower() == "do" and len(args) > 1:
+            search = " ".join(args[1:])
+            out, ok = _run("start", search)
+            if ok:
+                await update.message.reply_text(
+                    f"🔄 {out}", parse_mode="HTML", **kwargs,
+                )
+                record_outbound(out, chat_id=update.message.chat_id, kind="task_reply")
+            else:
+                await update.message.reply_text(
+                    f"No task matching '<b>{search}</b>'.",
+                    parse_mode="HTML", **kwargs,
+                )
+
+        elif args[0].lower() == "focus" and len(args) > 1:
+            search = " ".join(args[1:])
+            out, ok = _run("start", search)
+            if ok:
+                await update.message.reply_text(
+                    f"🎯 {out}", parse_mode="HTML", **kwargs,
+                )
+                record_outbound(out, chat_id=update.message.chat_id, kind="task_reply")
+            else:
+                await update.message.reply_text(
+                    f"No task matching '<b>{search}</b>'.",
+                    parse_mode="HTML", **kwargs,
+                )
+
+        else:
+            await update.message.reply_text(
+                "<b>Usage:</b>\n"
+                "  /tasks — show active tasks\n"
+                "  /tasks all — show everything\n"
+                "  /tasks add &lt;name&gt; — create task\n"
+                "  /tasks do &lt;name&gt; — start task\n"
+                "  /tasks done &lt;name&gt; — complete task\n"
+                "  /tasks focus &lt;name&gt; — focus on task",
+                parse_mode="HTML", **kwargs,
+            )
+
+    async def _replay_inflight(self, app: Application):
+        """Post-init: replay crashed messages + start API server."""
+        # ── Start Bridge API server (for Mission Control) ──
+        if hasattr(self, '_api_start'):
+            try:
+                await self._api_start()
+                # Register bot so MC messages forward to Telegram. Prefer the
+                # forum's daily topic; fall back to the DM when no forum.
+                from api_server import set_telegram_bot
+                mc_chat, mc_thread = self.allowed_chat_id, None
+                if self.forum_group_id:
+                    try:
+                        from daily_briefing import _get_daily_thread_id
+                        mc_thread = _get_daily_thread_id(
+                            self.bot_token, self.forum_group_id)
+                        if mc_thread:
+                            mc_chat = self.forum_group_id
+                    except Exception:
+                        mc_chat, mc_thread = self.allowed_chat_id, None
+                set_telegram_bot(app.bot, mc_chat, mc_thread)
+                logger.info("Bridge API server started on :4098")
+            except Exception as e:
+                logger.warning(f"Bridge API failed to start: {e}", exc_info=True)
+
+        # ── Auto-warm persistent session so Mission Control works immediately ──
+        try:
+            from session_manager import get_persistent_session
+            session = get_persistent_session()
+            if not session.alive:
+                asyncio.create_task(session.start())
+                logger.info("Persistent session warming started")
+        except Exception as e:
+            logger.warning(f"Failed to auto-warm persistent session: {e}")
+
+        # ── Replay in-flight message from crash ──
+        pending = _load_inflight()
+        if not pending or not pending.get("text"):
+            _clear_inflight()
+            return
+
+        ts = pending.get("timestamp", 0)
+        if _time.time() - ts > 600:
+            logger.info(f"Discarding stale inflight message ({int(_time.time() - ts)}s old)")
+            _clear_inflight()
+            return
+
+        chat_id = pending["chat_id"]
+        text = pending["text"]
+        user_key = pending["user_key"]
+        thread_id = pending.get("thread_id")
+        cwd = pending.get("cwd")
+
+        logger.info(f"Replaying in-flight message after restart: {text[:80]}")
+
+        try:
+            chat = await app.bot.get_chat(chat_id)
+            resume_kwargs = {"parse_mode": "HTML"}
+            if thread_id:
+                resume_kwargs["message_thread_id"] = thread_id
+            await app.bot.send_message(
+                chat_id,
+                "<i>Bridge restarted — resuming your request...</i>",
+                **resume_kwargs,
+            )
+            response = await self._stream_response(
+                chat, None, text, user_key,
+                cwd=cwd, thread_id=thread_id,
+            )
+            _clear_inflight()
+            record_outbound(response, chat_id=chat_id, kind="response",
+                            meta={"replayed": True})
+        except Exception as e:
+            logger.error(f"Failed to replay in-flight message: {e}")
+            _clear_inflight()
+
+    def start(self):
+        """Start the Telegram bot (blocking)."""
+        # Install the poll-liveness heartbeat before the bot is built so every
+        # getUpdates cycle records a timestamp. A wedged poll loop (process
+        # alive, fetching stopped) then shows up as a stale timestamp that the
+        # bridge_poll_liveness reconcile check can catch and restart.
+        from poll_heartbeat import install_poll_heartbeat
+        install_poll_heartbeat()
+
+        # Global error handler — registered FIRST so no errors are ever unhandled
+        async def _error_handler(update, context):
+            logger.error(f"Unhandled error: {context.error}", exc_info=context.error)
+            if update and update.effective_chat:
+                try:
+                    await context.bot.send_message(
+                        chat_id=update.effective_chat.id,
+                        text="Something went wrong processing your message. Please try again.",
+                    )
+                except Exception:
+                    pass
+
+        self.app = (
+            Application.builder()
+            .token(self.bot_token)
+            .concurrent_updates(True)
+            .post_init(self._replay_inflight)
+            .build()
+        )
+
+        # Error handler before any message handlers
+        self.app.add_error_handler(_error_handler)
+
+        self.app.add_handler(CommandHandler("new", self._handle_new))
+        self.app.add_handler(CommandHandler("status", self._handle_status))
+        self.app.add_handler(CommandHandler("tasks", self._handle_tasks))
+        self.app.add_handler(CommandHandler("read", self._handle_read))
+        self.app.add_handler(CommandHandler("whisper", self._handle_whisper))
+        self.app.add_handler(CommandHandler("note", self._handle_note))
+        self.app.add_handler(CommandHandler("search", self._handle_search))
+        self.app.add_handler(CommandHandler("capture", self._handle_capture))
+        self.app.add_handler(MessageHandler(filters.VOICE, self._handle_voice))
+        self.app.add_handler(MessageHandler(
+            filters.PHOTO | filters.VIDEO | filters.Document.IMAGE | filters.Document.VIDEO,
+            self._handle_media,
+        ))
+        self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_message))
+        self.app.add_handler(CallbackQueryHandler(self._handle_callback))
+
+        logger.info(f"Telegram channel started (chat_id={self.allowed_chat_id})")
+        self.app.run_polling(drop_pending_updates=True)

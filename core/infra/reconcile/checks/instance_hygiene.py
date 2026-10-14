@@ -1,0 +1,439 @@
+"""
+Invariant: Instance-layer artifacts match what the framework declares.
+
+The framework IS the manifest:
+  - core/services/*/pyproject.toml  → declares expected service venvs
+  - config/launchagents/com.aos.*   → declares expected LaunchAgent plists
+  - config/preserved-services.yaml  → instance services used by framework code
+  - core/skills/*/SKILL.md          → declares expected skill symlinks
+
+Anything in instance space that doesn't trace back to the framework is
+potentially orphaned. This check REPORTS orphans — it never deletes.
+Cleanup requires explicit operator approval via `aos hygiene --apply`.
+
+Runs every update cycle. Only flags AOS-namespaced items: a LaunchAgent
+must carry a com.aos.* or com.agent.* label to even be a candidate for
+orphan classification (aos#2346) — the operator's own business tooling
+or personal automation is never ours to judge, whatever the framework
+does or doesn't declare about it.
+"""
+
+import subprocess
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from base import CheckResult, ReconcileCheck, Status
+
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+from lib.service_registry import ManifestError, load_registry
+
+AOS = Path.home() / "aos"
+USER = Path.home() / ".aos"
+CLAUDE = Path.home() / ".claude"
+
+PRESERVED_SERVICES_FILE = AOS / "config" / "preserved-services.yaml"
+HYGIENE_STATE_FILE = USER / "config" / "hygiene-known.yaml"
+
+
+def _registry():
+    """The service registry, or None if it fails to load."""
+    try:
+        return load_registry()
+    except ManifestError:
+        return None
+
+
+def _registry_service_names() -> set[str]:
+    """Every service name the registry declares — ANY status. A declared
+    service (active, optional, or retired) is framework-known, so its instance
+    venv is never an orphan; a retired service dir is an expected archive."""
+    reg = _registry()
+    return {m.name for m in reg} if reg else set()
+
+
+def _registry_labels() -> set[str]:
+    """Every launchd label the registry declares (including com.agent.* like
+    whatsmeow) — a declared service's installed plist is never an orphan."""
+    reg = _registry()
+    return {m.label for m in reg} if reg else set()
+
+
+def _load_preserved():
+    """Load preserved artifacts from config.
+
+    Returns dict with 'services' and 'launchagents' sets.
+    """
+    result = {"services": set(), "launchagents": set()}
+    if not PRESERVED_SERVICES_FILE.exists():
+        return result
+    try:
+        import yaml
+        with open(PRESERVED_SERVICES_FILE) as f:
+            data = yaml.safe_load(f) or {}
+        result["services"] = set(data.get("services", {}).keys())
+        result["launchagents"] = set(data.get("launchagents", {}).keys())
+    except Exception:
+        pass
+    return result
+
+
+def _known_orphans():
+    """Orphans the operator has already reviewed and dismissed.
+
+    Once the operator sees an orphan report and says "leave it",
+    it gets written here so we don't nag every update cycle.
+    """
+    if not HYGIENE_STATE_FILE.exists():
+        return set()
+    try:
+        import yaml
+        with open(HYGIENE_STATE_FILE) as f:
+            data = yaml.safe_load(f) or {}
+        return set(data.get("dismissed", []))
+    except Exception:
+        return set()
+
+
+def _framework_services():
+    """Service names the framework declares: the registry (any status) plus the
+    pyproject-declared dirs plus preserved services."""
+    svc_dir = AOS / "core" / "services"
+    declared = set()
+    if svc_dir.is_dir():
+        declared = {
+            d.name for d in svc_dir.iterdir()
+            if d.is_dir() and (d / "pyproject.toml").exists()
+        }
+    return declared | _registry_service_names() | _load_preserved()["services"]
+
+
+def _framework_launchagents():
+    """LaunchAgent labels the framework declares: the registry (any status) plus
+    the config/launchagents templates plus preserved LaunchAgents."""
+    la_dir = AOS / "config" / "launchagents"
+    labels = set()
+    if la_dir.is_dir():
+        for f in la_dir.iterdir():
+            name = f.name
+            if name.endswith(".plist.template"):
+                labels.add(name.removesuffix(".plist.template"))
+            elif name.endswith(".plist"):
+                labels.add(name.removesuffix(".plist"))
+    return (
+        labels
+        | _registry_labels()
+        | _load_preserved()["launchagents"]
+        | _manifest_labels()
+    )
+
+
+def _manifest_labels():
+    """LaunchAgent labels declared in config/modules.yaml.
+
+    The module manifest describes services on the machine that have no
+    core/services/ dir and no services.d entry and aren't covered by
+    preserved-services.yaml either — today that's just ios-deploy (converse
+    and work-runner are also registry-covered; envoy moved to
+    preserved-services.yaml and sana-watch was removed outright — aos#236.8,
+    neither had a real deployed LaunchAgent anywhere and sana-watch has no
+    framework code at all). Without reading this file, hygiene called live
+    services orphans and offered to delete them: daemons and periodic jobs
+    that were merely idle between ticks, which is what healthy looks like
+    for a periodic job.
+    """
+    manifest = AOS / "config" / "modules.yaml"
+    if not manifest.is_file():
+        return set()
+    try:
+        import yaml
+        data = yaml.safe_load(manifest.read_text()) or {}
+    except Exception:
+        return set()
+    labels = {s for m in (data.get("modules") or []) for s in (m.get("services") or [])}
+    labels |= {f["label"] for f in (data.get("foreign") or []) if f.get("label")}
+    return labels
+
+
+def _loaded_labels():
+    """Labels currently known to launchd.
+
+    A loaded job is not an orphan, whatever the declarations say. This is the
+    backstop: a declaration can be missing for many reasons, but proposing to
+    delete something the system is actively running is never right.
+    """
+    try:
+        out = subprocess.run(
+            ["launchctl", "list"], capture_output=True, text=True, timeout=15
+        ).stdout
+    except Exception:
+        return set()   # can't tell → assume loaded → propose nothing
+    return {
+        parts[2]
+        for parts in (line.split("\t") for line in out.splitlines()[1:])
+        if len(parts) >= 3
+    }
+
+
+# LaunchAgent label prefixes AOS treats as its own namespace. A plist
+# outside this namespace — the operator's own business tooling
+# (nearpay-*, oaks-*, sales-coach-*), a personal portal agent under
+# am.hish.*, or any other app's plist — is not ours to have an opinion
+# about, whatever the framework does or doesn't declare (aos#2346). It
+# must never be classified as an orphan, dismissed, or even listed.
+AOS_LABEL_PREFIXES = ("com.aos.", "com.agent.")
+
+
+def _is_aos_label(label: str) -> bool:
+    """True when a LaunchAgent label carries an AOS namespace prefix."""
+    return label.startswith(AOS_LABEL_PREFIXES)
+
+
+def _installed_launchagents():
+    """AOS-namespaced (com.aos.*, com.agent.*) LaunchAgent labels actually
+    installed. Anything outside that namespace is never a candidate for
+    orphan classification — "not shipped by the framework" and "orphaned"
+    are not the same thing, and collapsing them is exactly how `aos
+    hygiene --apply` ended up offering to delete the operator's live
+    briefings and email sequences (aos#2346)."""
+    la_dir = Path.home() / "Library" / "LaunchAgents"
+    if not la_dir.is_dir():
+        return set()
+    return {
+        f.name.removesuffix(".plist")
+        for f in la_dir.glob("*.plist")
+        if _is_aos_label(f.stem)
+    }
+
+
+def _live_exec_paths():
+    """Filesystem paths that currently-loaded LaunchAgents actually execute.
+
+    Following the launcher matters: AOS points each plist at a named wrapper in
+    ~/.aos/launchers ("AOS Slack Watch") so Login Items shows a readable name,
+    and the wrapper execs the real target. Reading only ProgramArguments finds
+    the wrapper and misses the code — which is how ~/.aos/services/slack-watch,
+    the directory a running job execs, ended up on a deletion list.
+    """
+    import plistlib
+    import re
+
+    paths = set()
+    la_dir = Path.home() / "Library" / "LaunchAgents"
+    for label in _loaded_labels():
+        plist = la_dir / f"{label}.plist"
+        if not plist.is_file():
+            continue
+        try:
+            args = plistlib.loads(plist.read_bytes()).get("ProgramArguments") or []
+        except Exception:
+            continue
+        for arg in args:
+            arg = str(arg)
+            if arg.startswith("/"):
+                paths.add(Path(arg))
+        if not args:
+            continue
+        launcher = Path(str(args[0]))
+        if launcher.parent == Path.home() / ".aos" / "launchers" and launcher.is_file():
+            try:
+                for m in re.finditer(r"(/[^\s\"']+)", launcher.read_text()):
+                    paths.add(Path(m.group(1)))
+            except Exception:
+                pass
+    return paths
+
+
+def _is_live(candidate: Path, live_paths) -> bool:
+    """True when a loaded job executes something at or beneath this path."""
+    for lp in live_paths:
+        try:
+            lp.relative_to(candidate)
+            return True
+        except ValueError:
+            if lp == candidate:
+                return True
+    return False
+
+
+def _stale_model_caches():
+    """HuggingFace model dirs that aren't the active whisper model."""
+    cache_dir = Path.home() / ".cache" / "huggingface" / "hub"
+    if not cache_dir.is_dir():
+        return []
+
+    active_model = "models--mlx-community--whisper-large-v3-turbo"
+
+    stale = []
+    for d in cache_dir.iterdir():
+        if not d.is_dir():
+            continue
+        name = d.name
+        if "whisper" in name.lower() and name != active_model:
+            stale.append(d)
+    return stale
+
+
+def _format_size(total_bytes):
+    if total_bytes > 1_073_741_824:
+        return f"{total_bytes / 1_073_741_824:.1f} GB"
+    elif total_bytes > 1_048_576:
+        return f"{total_bytes / 1_048_576:.0f} MB"
+    elif total_bytes > 1024:
+        return f"{total_bytes / 1024:.0f} KB"
+    return f"{total_bytes} bytes"
+
+
+def _dir_size(path):
+    try:
+        return sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
+    except Exception:
+        return 0
+
+
+def find_orphans():
+    """Returns dict of category → list of (path, label, size_bytes) orphans.
+
+    Public so `aos hygiene` CLI can call it directly.
+    """
+    known = _known_orphans()
+    orphans = {}
+
+    # 1. Service venvs
+    fw_services = _framework_services()
+    live_paths = _live_exec_paths()
+    instance_services = USER / "services"
+    if instance_services.is_dir():
+        svc_orphans = []
+        for d in instance_services.iterdir():
+            if d.is_dir() and d.name not in fw_services:
+                if f"service:{d.name}" in known:
+                    continue
+                # A directory a loaded job execs is not an orphan, whatever the
+                # framework declares. ~/.aos/services/slack-watch holds the
+                # watch.py that com.aos.slack-watch runs every 120 seconds.
+                if _is_live(d, live_paths):
+                    continue
+                is_service = (
+                    (d / ".venv").exists()
+                    or (d / "pyproject.toml").exists()
+                    or any(d.glob("*.py"))
+                )
+                if is_service:
+                    svc_orphans.append((d, d.name, _dir_size(d)))
+        if svc_orphans:
+            orphans["services"] = svc_orphans
+
+    # 2. LaunchAgents
+    fw_agents = _framework_launchagents()
+    inst_agents = _installed_launchagents()
+    loaded = _loaded_labels()
+    la_orphans = []
+    for label in inst_agents - fw_agents:
+        # Belt and suspenders on top of _installed_launchagents()'s own
+        # filter: a label outside the AOS namespace is never our call to
+        # make, whatever else is true about it.
+        if not _is_aos_label(label):
+            continue
+        if f"launchagent:{label}" in known:
+            continue
+        # Never offer to delete something launchd is running. A missing
+        # declaration is a coverage gap in the manifest; a loaded job is a
+        # working part of the system, and the two must not be confused.
+        if label in loaded:
+            continue
+        plist = Path.home() / "Library" / "LaunchAgents" / f"{label}.plist"
+        if plist.exists():
+            la_orphans.append((plist, label, plist.stat().st_size))
+    if la_orphans:
+        orphans["launchagents"] = la_orphans
+
+    # 3. Skills (only broken symlinks)
+    skills_dir = CLAUDE / "skills"
+    if skills_dir.is_dir():
+        skill_orphans = []
+        for d in skills_dir.iterdir():
+            if d.is_symlink() and not d.resolve().exists():
+                if f"skill:{d.name}" in known:
+                    continue
+                skill_orphans.append((d, d.name, 0))
+        if skill_orphans:
+            orphans["skills"] = skill_orphans
+
+    # 4. Stale model caches
+    stale_models = _stale_model_caches()
+    model_orphans = []
+    for m in stale_models:
+        if f"model:{m.name}" in known:
+            continue
+        model_orphans.append((m, m.name, _dir_size(m)))
+    if model_orphans:
+        orphans["models"] = model_orphans
+
+    # 5. Old rotated log archives (keep last 3 per base name)
+    logs_dir = USER / "logs"
+    if logs_dir.is_dir():
+        from collections import defaultdict
+        by_base = defaultdict(list)
+        for gz in logs_dir.glob("**/*.gz"):
+            base = gz.name.split(".gz")[0]
+            parts = base.rsplit(".", 1)
+            if len(parts) == 2 and parts[1].isdigit():
+                base = parts[0]
+            by_base[base].append(gz)
+
+        log_orphans = []
+        for base, files in by_base.items():
+            files.sort(key=lambda p: p.stat().st_mtime if p.exists() else 0)
+            if len(files) > 3:
+                for old_file in files[:-3]:
+                    key = f"log:{old_file.name}"
+                    if key not in known:
+                        log_orphans.append((old_file, old_file.name, old_file.stat().st_size))
+        if log_orphans:
+            orphans["logs"] = log_orphans
+
+    return orphans
+
+
+class InstanceHygieneCheck(ReconcileCheck):
+    name = "instance_hygiene"
+    description = "Instance artifacts match framework declarations"
+
+    def check(self) -> bool:
+        orphans = find_orphans()
+        return len(orphans) == 0
+
+    def fix(self) -> CheckResult:
+        """Report orphans — NEVER auto-delete.
+
+        Destructive cleanup requires operator approval. This check only
+        surfaces what it found. Actual cleanup runs via `aos hygiene --apply`.
+        """
+        orphans = find_orphans()
+        if not orphans:
+            return CheckResult(
+                name=self.name,
+                status=Status.OK,
+                message="No orphaned instance artifacts"
+            )
+
+        total_items = sum(len(v) for v in orphans.values())
+        total_bytes = sum(size for items in orphans.values() for _, _, size in items)
+
+        lines = []
+        for category, items in orphans.items():
+            for path, label, size in items:
+                size_str = f" ({_format_size(size)})" if size > 1024 else ""
+                lines.append(f"  {category}: {label}{size_str}")
+
+        detail = "\n".join(lines)
+        detail += "\n\nRun `aos hygiene` to review and clean."
+
+        return CheckResult(
+            name=self.name,
+            status=Status.NOTIFY,
+            message=f"{total_items} orphaned artifacts found ({_format_size(total_bytes)})",
+            detail=detail,
+            notify=True
+        )

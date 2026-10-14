@@ -1,0 +1,626 @@
+#!/usr/bin/env python3
+"""
+AOS Scheduler — core automation engine
+Reads ~/aos/config/crons.yaml, runs due jobs, updates status.json.
+Designed to be invoked every 5 minutes by com.aos.scheduler LaunchAgent.
+"""
+
+import json
+import os
+import signal
+import subprocess
+import sys
+import time
+import urllib.request
+from datetime import datetime, timedelta
+from pathlib import Path
+
+try:
+    import yaml
+except ImportError:
+    print("[scheduler] ERROR: PyYAML not available", file=sys.stderr)
+    sys.exit(0)
+
+# ── Paths ─────────────────────────────────────────────────────────────────────
+
+HOME = Path.home()
+CRONS_YAML       = HOME / "aos" / "config" / "crons.yaml"
+LOGS_DIR         = HOME / ".aos" / "logs" / "crons"
+LOCKS_DIR        = LOGS_DIR / "locks"
+STATUS_FILE      = LOGS_DIR / "status.json"
+HEALTHCHECKS_CFG = HOME / ".aos" / "config" / "healthchecks.yaml"
+
+DEFAULT_TIMEOUT = 120  # seconds
+UPTIME_LOG       = HOME / ".aos" / "logs" / "uptime.log"
+LAST_BOOT_FILE   = LOGS_DIR / ".last-boot"
+
+# Reboot dedupe (aos#2356): `kern.boottime` is not a constant — NTP clock slew
+# nudges its reported second back and forth across a boundary, so two ticks
+# of the *same* boot can read e.g. :35 then :36 then :35 again. Any two
+# readings within this many seconds of each other are treated as one boot.
+BOOT_TOLERANCE_SECONDS = 120
+# A "new" boot is only ever announced if the scheduler catches it within this
+# window of the actual boot. Anything older (a first-ever run days after
+# install, or a stale/missing state file) is adopted silently — this is the
+# uptime<10min guard the docstring and core/agents/steward.md always promised
+# but that was previously computed and never checked.
+REBOOT_FRESH_WINDOW_SECONDS = 600
+
+# Failure alerting: notify the operator via Telegram once a job has failed
+# this many times in a row (1 = alert on the first nonzero exit). Debounced
+# to at most one alert per job per ALERT_DEBOUNCE_SECONDS so a nightly-failing
+# cron can't spam. Debounce state is persisted in status.json (under ~/.aos).
+ALERT_AFTER_FAILURES = 1
+ALERT_DEBOUNCE_SECONDS = 86400  # 24h
+
+# ── Reboot Detection ─────────────────────────────────────────────────────────
+
+def check_reboot():
+    """Detect if the machine just rebooted. Run once per boot, not every 5 min.
+
+    aos#2356: `kern.boottime` slews under NTP, so two ticks of the SAME boot
+    can report different seconds — dedupe is therefore a tolerance
+    (BOOT_TOLERANCE_SECONDS) around the persisted last-seen boot, not an exact
+    match. State is the raw integer boot-second; a legacy ISO-string value
+    left by a pre-fix scheduler is treated as "nothing recorded yet" (never a
+    crash) and converges onto the new format on this tick.
+
+    Decision (documented, not left implicit): a "new" boot only gets a
+    Telegram notification if it is caught within REBOOT_FRESH_WINDOW_SECONDS
+    of the actual boot — this covers the first-ever run on a fresh install
+    too. An older "new" boot (stale/missing state file days after the actual
+    reboot) is adopted — state written, so it converges and never spams — but
+    is never announced as something that "just happened".
+    """
+    try:
+        # Get boot time from sysctl (full path — /usr/sbin not in LaunchAgent PATH)
+        result = subprocess.run(["/usr/sbin/sysctl", "-n", "kern.boottime"],
+                                capture_output=True, text=True, timeout=5)
+        # Parse: "{ sec = 1711036800, usec = 0 } ..."
+        boot_sec = int(result.stdout.split("sec =")[1].split(",")[0].strip())
+        boot_time = datetime.fromtimestamp(boot_sec)
+        boot_key = boot_time.strftime("%Y-%m-%dT%H:%M:%S")
+
+        LAST_BOOT_FILE.parent.mkdir(parents=True, exist_ok=True)
+
+        last_raw = LAST_BOOT_FILE.read_text().strip() if LAST_BOOT_FILE.exists() else ""
+        last_boot_sec = int(last_raw) if last_raw.isdigit() else None
+
+        # Same boot as last tick (within tolerance)? Already handled.
+        if last_boot_sec is not None and abs(last_boot_sec - boot_sec) <= BOOT_TOLERANCE_SECONDS:
+            return
+
+        # New boot detected — how long ago?
+        uptime_seconds = int(time.time()) - boot_sec
+
+        if uptime_seconds > REBOOT_FRESH_WINDOW_SECONDS:
+            # Too old to have "just happened" — adopt silently so this
+            # doesn't get recomputed (and re-considered) every tick, but
+            # never announce a reboot that's actually days old.
+            LAST_BOOT_FILE.write_text(str(boot_sec))
+            log(f"Reboot detection: adopting boot at {boot_key} without notifying "
+                f"(uptime {uptime_seconds}s, past the {REBOOT_FRESH_WINDOW_SECONDS}s fresh window)")
+            return
+
+        # Log it
+        UPTIME_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with open(UPTIME_LOG, "a") as f:
+            f.write(f"{ts()} REBOOT detected. Boot at {boot_key}. Uptime: {uptime_seconds}s\n")
+
+        log(f"Reboot detected — boot at {boot_key}, uptime {uptime_seconds}s")
+
+        # Ensure all LaunchAgents are loaded
+        for la in ["com.aos.bridge"]:
+            result = subprocess.run(["launchctl", "list"], capture_output=True, text=True, timeout=5)
+            if la not in result.stdout:
+                plist = HOME / "Library" / "LaunchAgents" / f"{la}.plist"
+                if plist.exists():
+                    subprocess.run(["launchctl", "load", str(plist)], capture_output=True, timeout=5)
+                    log(f"Loaded {la} after reboot")
+
+        # Send Telegram notification if configured (topic-routed, best-effort)
+        msg = f"System rebooted at {boot_time.strftime('%H:%M')}. Services restarted. Uptime: {uptime_seconds}s."
+        if _send_telegram(msg, topic="system") is True:
+            log("Sent reboot notification to Telegram")
+
+        # Mark this boot as handled
+        LAST_BOOT_FILE.write_text(str(boot_sec))
+
+    except Exception as e:
+        log(f"Reboot detection error: {e}")
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def ts() -> str:
+    """ISO-format timestamp without microseconds."""
+    return datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+
+def log(msg: str):
+    print(f"[scheduler {ts()}] {msg}", flush=True)
+
+def parse_interval(value: str) -> int:
+    """Convert '5m', '30m', '2h', '4h' → seconds. Returns 0 on failure."""
+    value = str(value).strip()
+    if value.endswith("m"):
+        return int(value[:-1]) * 60
+    if value.endswith("h"):
+        return int(value[:-1]) * 3600
+    try:
+        return int(value)
+    except ValueError:
+        return 0
+
+def parse_time(value: str):
+    """Parse 'HH:MM' → (hour, minute) tuple. Returns None on failure."""
+    try:
+        h, m = value.strip().split(":")
+        return int(h), int(m)
+    except Exception:
+        return None
+
+def parse_active_hours(value: str):
+    """
+    Parse 'HH:MM-HH:MM' → (start_hour, start_min, end_hour, end_min).
+    Returns None on failure.
+    """
+    try:
+        start_str, end_str = value.strip().split("-")
+        sh, sm = map(int, start_str.split(":"))
+        eh, em = map(int, end_str.split(":"))
+        return sh, sm, eh, em
+    except Exception:
+        return None
+
+def within_active_hours(active_hours_str: str, now: datetime) -> bool:
+    """Return True if now is within the active hours window."""
+    parsed = parse_active_hours(active_hours_str)
+    if parsed is None:
+        return True  # malformed → don't block the job
+    sh, sm, eh, em = parsed
+    start = now.replace(hour=sh, minute=sm, second=0, microsecond=0)
+    end   = now.replace(hour=eh, minute=em, second=0, microsecond=0)
+    if end < start:  # crosses midnight
+        return now >= start or now <= end
+    return start <= now <= end
+
+WEEKDAY_MAP = {
+    "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
+    "friday": 4, "saturday": 5, "sunday": 6,
+}
+
+# ── Config loading ─────────────────────────────────────────────────────────────
+
+def load_crons() -> dict:
+    if not CRONS_YAML.exists():
+        log(f"ERROR: {CRONS_YAML} not found — nothing to run")
+        sys.exit(0)
+    try:
+        with open(CRONS_YAML) as f:
+            data = yaml.safe_load(f)
+        jobs = data.get("jobs", {})
+        if not isinstance(jobs, dict):
+            log("ERROR: 'jobs' key missing or not a dict in crons.yaml")
+            sys.exit(0)
+        return jobs
+    except yaml.YAMLError as exc:
+        log(f"ERROR: Could not parse crons.yaml — {exc}")
+        sys.exit(0)
+
+# ── Status file ────────────────────────────────────────────────────────────────
+
+def load_status() -> dict:
+    if not STATUS_FILE.exists():
+        return {}
+    try:
+        with open(STATUS_FILE) as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            raise ValueError("root is not a dict")
+        return data
+    except Exception as exc:
+        log(f"WARNING: status.json corrupted ({exc}) — starting fresh")
+        return {}
+
+def save_status(status: dict):
+    STATUS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    tmp = STATUS_FILE.with_suffix(".tmp")
+    with open(tmp, "w") as f:
+        json.dump(status, f, indent=2)
+    tmp.replace(STATUS_FILE)
+
+# ── Schedule evaluation ────────────────────────────────────────────────────────
+
+def is_due(name: str, job: dict, status: dict, now: datetime) -> bool:
+    """Return True if this job should run right now."""
+    last_run_str = status.get(name, {}).get("last_run")
+    last_run = None
+    if last_run_str:
+        try:
+            last_run = datetime.fromisoformat(last_run_str)
+        except ValueError:
+            last_run = None
+
+    # `every:` — interval-based
+    if "every" in job:
+        interval = parse_interval(str(job["every"]))
+        if interval <= 0:
+            log(f"WARNING: {name}: could not parse every='{job['every']}'")
+            return False
+
+        # active_hours check
+        if "active_hours" in job:
+            if not within_active_hours(str(job["active_hours"]), now):
+                return False
+
+        if last_run is None:
+            return True  # never ran → run now
+        elapsed = (now - last_run).total_seconds()
+        return elapsed >= interval
+
+    # `at:` — time-of-day based
+    if "at" in job:
+        parsed = parse_time(str(job["at"]))
+        if parsed is None:
+            log(f"WARNING: {name}: could not parse at='{job['at']}'")
+            return False
+        at_h, at_m = parsed
+        now_minutes = now.hour * 60 + now.minute
+        target_minutes = at_h * 60 + at_m
+        # 5-minute window: target in [now-4, now]
+        in_window = target_minutes <= now_minutes <= target_minutes + 4
+        # catch_up: true — if the machine was asleep/off during the window,
+        # run at the first tick after it wakes (same day only; the
+        # once-per-day/week/month guards below prevent double runs).
+        # Without this, a Mac that sleeps overnight silently skips its
+        # 04:00 jobs forever (faisal-mini: 25 consecutive missed
+        # auto-updates before anyone noticed).
+        missed = bool(job.get("catch_up")) and now_minutes > target_minutes + 4
+        if not (in_window or missed):
+            return False
+
+        # weekday check
+        if "weekday" in job:
+            wd = str(job["weekday"]).lower()
+            required_wd = WEEKDAY_MAP.get(wd)
+            if required_wd is None:
+                log(f"WARNING: {name}: unknown weekday='{wd}'")
+                return False
+            if now.weekday() != required_wd:
+                return False
+            # only once per week: check last_run is not this week
+            if last_run is not None:
+                days_since = (now.date() - last_run.date()).days
+                if days_since < 7:
+                    return False
+            return True
+
+        # monthday check
+        if "monthday" in job:
+            try:
+                required_day = int(job["monthday"])
+            except (TypeError, ValueError):
+                log(f"WARNING: {name}: invalid monthday='{job['monthday']}'")
+                return False
+            if now.day != required_day:
+                return False
+            # only once per month
+            if last_run is not None:
+                if last_run.year == now.year and last_run.month == now.month:
+                    return False
+            return True
+
+        # daily `at:` — only once per day
+        if last_run is not None:
+            if last_run.date() == now.date():
+                return False
+        return True
+
+    log(f"WARNING: {name}: no 'every' or 'at' defined — skipping")
+    return False
+
+# ── Lock file ─────────────────────────────────────────────────────────────────
+
+def lock_path(name: str) -> Path:
+    return LOCKS_DIR / f"{name}.lock"
+
+def acquire_lock(name: str) -> bool:
+    """
+    Returns True if the lock was acquired (safe to proceed).
+    Returns False if another process is still running (skip).
+    """
+    LOCKS_DIR.mkdir(parents=True, exist_ok=True)
+    lpath = lock_path(name)
+
+    if lpath.exists():
+        try:
+            pid = int(lpath.read_text().strip())
+            os.kill(pid, 0)  # raises OSError if dead
+            log(f"{name}: lock held by pid {pid} — skipping")
+            return False
+        except (OSError, ValueError):
+            log(f"{name}: removing stale lock")
+            lpath.unlink(missing_ok=True)
+
+    lpath.write_text(str(os.getpid()))
+    return True
+
+def release_lock(name: str):
+    lock_path(name).unlink(missing_ok=True)
+
+# ── Job execution ─────────────────────────────────────────────────────────────
+
+def run_job(name: str, job: dict, status: dict):
+    command = job.get("command", "").strip()
+    if not command:
+        log(f"{name}: ERROR — no 'command' defined")
+        return
+
+    timeout = int(job.get("timeout", DEFAULT_TIMEOUT))
+    log_file = LOGS_DIR / f"{name}.log"
+
+    if not acquire_lock(name):
+        return
+
+    start_dt = datetime.now()
+    start_str = start_dt.strftime("%Y-%m-%d %H:%M:%S")
+
+    log(f"{name}: starting (timeout: {timeout}s)")
+
+    exit_code = 0
+    duration  = 0
+
+    try:
+        with open(log_file, "a") as lf:
+            lf.write(f"\n--- [{start_str}] START {name} (timeout: {timeout}s) ---\n")
+            lf.flush()
+
+            proc = subprocess.Popen(
+                command,
+                shell=True,
+                stdout=lf,
+                stderr=lf,
+                preexec_fn=os.setsid,  # process group for clean kill
+            )
+
+            try:
+                proc.wait(timeout=timeout)
+                exit_code = proc.returncode
+            except subprocess.TimeoutExpired:
+                log(f"{name}: TIMEOUT after {timeout}s — killing")
+                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                time.sleep(2)
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                proc.wait()
+                exit_code = -1
+
+            end_dt = datetime.now()
+            duration = int((end_dt - start_dt).total_seconds())
+            end_str = end_dt.strftime("%Y-%m-%d %H:%M:%S")
+
+            if exit_code == -1:
+                lf.write(f"--- [{end_str}] TIMEOUT {name} (exit: -1, duration: {duration}s) ---\n")
+            else:
+                lf.write(f"--- [{end_str}] END {name} (exit: {exit_code}, duration: {duration}s) ---\n")
+            lf.flush()
+
+    except Exception as exc:
+        log(f"{name}: ERROR running job — {exc}")
+        exit_code = -2
+        duration = int((datetime.now() - start_dt).total_seconds())
+    finally:
+        release_lock(name)
+
+    # Update status
+    entry = status.setdefault(name, {})
+    run_ts = start_dt.strftime("%Y-%m-%dT%H:%M:%S")
+    entry["last_run"]    = run_ts
+    entry["exit_code"]   = exit_code
+    entry["duration_s"]  = duration
+    entry["run_count"]   = entry.get("run_count", 0) + 1
+
+    # Determine success — check success_codes in job config (default: [0])
+    is_success = _job_succeeded(exit_code, job.get("success_codes"))
+
+    if not is_success:
+        entry["last_failure"] = run_ts
+        entry["consecutive_failures"] = entry.get("consecutive_failures", 0) + 1
+        # Alert on 3 consecutive failures (max once per day per job)
+        _maybe_alert_failure(name, entry, log_file)
+    else:
+        if "last_failure" not in entry:
+            entry["last_failure"] = None
+        entry["consecutive_failures"] = 0
+
+    log(f"{name}: done (exit: {exit_code}, duration: {duration}s)")
+
+    # Ping healthchecks.io on success
+    if is_success and "ping" in job:
+        _ping_url = str(job["ping"]).strip()
+        try:
+            urllib.request.urlopen(_ping_url, timeout=10)
+            log(f"{name}: pinged {_ping_url}")
+        except Exception as exc:
+            log(f"{name}: WARNING — ping failed ({exc})")
+
+# ── Failure alerting ─────────────────────────────────────────────────────────
+
+def _job_succeeded(exit_code: int, success_codes) -> bool:
+    """Return True if exit_code counts as success for this job.
+
+    Only exit 0 is success by default; jobs may override with a `success_codes`
+    list in crons.yaml. A missing/malformed override falls back to [0].
+    """
+    if not isinstance(success_codes, list) or not success_codes:
+        success_codes = [0]
+    return exit_code in success_codes
+
+
+def _tail_log_lines(log_file: Path, n: int = 5) -> list:
+    """Return up to the last n meaningful lines of a job log.
+
+    Skips the scheduler's own `--- ... ---` START/END/TIMEOUT markers so the
+    operator sees the real error output rather than the framing.
+    """
+    try:
+        with open(log_file) as f:
+            lines = f.readlines()
+    except Exception:
+        return []
+    meaningful = [
+        ln.rstrip() for ln in lines
+        if ln.strip() and not ln.strip().startswith("---")
+    ]
+    return meaningful[-n:]
+
+
+def _send_telegram(text: str, topic: str = "alerts"):
+    """Send a Telegram message to the operator. Best-effort.
+
+    Routes via aos-notify to the forum topic (falls back group -> DM).
+    Returns True on success, False if Telegram credentials are missing
+    (graceful skip — machines without Telegram configured shouldn't
+    error), or None if a send was attempted but failed.
+    """
+    try:
+        result = subprocess.run(
+            [str(HOME / "aos" / "core" / "bin" / "cli" / "aos-notify"),
+             text, "--topic", topic, "--plain"],
+            capture_output=True, text=True, timeout=30,
+        )
+    except Exception:
+        return None
+    if result.returncode == 0:
+        return True
+    if "no bot token" in result.stderr or "no delivery target" in result.stderr:
+        return False  # Telegram not configured — graceful skip
+    return None
+
+
+def _maybe_alert_failure(name: str, entry: dict, log_file: Path):
+    """Telegram-alert the operator when a cron job fails.
+
+    Fires once the job has failed ALERT_AFTER_FAILURES times in a row (1 = the
+    first nonzero exit), then debounces to at most one alert per job per
+    ALERT_DEBOUNCE_SECONDS. The alert carries the job name, exit code,
+    consecutive-failure count, and the last few log lines for context.
+    Debounce state (last_alert) is persisted by the caller into status.json.
+    """
+    consecutive = entry.get("consecutive_failures", 0)
+    if consecutive < ALERT_AFTER_FAILURES:
+        return
+
+    # Debounce: at most one alert per job per window.
+    last_alert = entry.get("last_alert")
+    if last_alert:
+        try:
+            last_dt = datetime.fromisoformat(last_alert)
+            if (datetime.now() - last_dt).total_seconds() < ALERT_DEBOUNCE_SECONDS:
+                return
+        except ValueError:
+            pass
+
+    exit_code = entry.get("exit_code")
+    tail = _tail_log_lines(log_file, 5)
+    tail_text = "\n".join(tail) if tail else "(no log output)"
+    plural = "s" if consecutive != 1 else ""
+    msg = (
+        f"⚠ Cron '{name}' failed (exit {exit_code}), "
+        f"{consecutive} time{plural} in a row.\n"
+        f"Last log lines:\n{tail_text}"
+    )
+
+    result = _send_telegram(msg)
+    if result is True:
+        entry["last_alert"] = ts()
+        log(f"{name}: sent failure alert (consecutive: {consecutive})")
+    elif result is False:
+        log(f"{name}: failure alert skipped — Telegram not configured")
+    else:
+        log(f"{name}: failure alert send failed")
+
+
+def prune_ghost_jobs(jobs: dict, status: dict):
+    """Remove status entries for jobs no longer in crons.yaml."""
+    ghosts = [name for name in status if name not in jobs]
+    for name in ghosts:
+        del status[name]
+        log(f"Pruned ghost job '{name}' from status.json")
+    return len(ghosts)
+
+
+# ── Main ──────────────────────────────────────────────────────────────────────
+
+def load_healthchecks() -> dict:
+    """Load ~/.aos/config/healthchecks.yaml. Returns {} if missing/empty/invalid."""
+    if not HEALTHCHECKS_CFG.exists():
+        return {}
+    try:
+        with open(HEALTHCHECKS_CFG) as f:
+            data = yaml.safe_load(f)
+        if not isinstance(data, dict):
+            return {}
+        checks = data.get("checks", {})
+        return checks if isinstance(checks, dict) else {}
+    except Exception:
+        return {}
+
+
+def ping_url(url: str, label: str):
+    """Fire-and-forget GET to a healthchecks ping URL. Logs but never raises."""
+    if not url or not url.startswith("http"):
+        return
+    try:
+        urllib.request.urlopen(url, timeout=10)
+        log(f"{label}: pinged healthchecks ({url})")
+    except Exception as exc:
+        log(f"{label}: WARNING — healthchecks ping failed ({exc})")
+
+
+def main():
+    # Ensure directories exist
+    LOGS_DIR.mkdir(parents=True, exist_ok=True)
+    LOCKS_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Check for reboot — runs once per boot, self-heals services
+    check_reboot()
+
+    jobs   = load_crons()
+    status = load_status()
+    now    = datetime.now()
+
+    # Prune status entries for jobs removed from crons.yaml
+    pruned = prune_ghost_jobs(jobs, status)
+    if pruned:
+        save_status(status)
+
+    log(f"scheduler tick — {len(jobs)} jobs defined")
+
+    ran = 0
+    for name, job in jobs.items():
+        if not isinstance(job, dict):
+            log(f"WARNING: job '{name}' is not a dict — skipping")
+            continue
+
+        # enabled: false → skip
+        if not job.get("enabled", True):
+            continue
+
+        if is_due(name, job, status, now):
+            run_job(name, job, status)
+            save_status(status)
+            ran += 1
+
+    log(f"scheduler done — {ran} job(s) ran")
+
+    # Self-ping: prove the scheduler itself is alive on every tick.
+    # Reads checks.scheduler from ~/.aos/config/healthchecks.yaml.
+    # Silently skipped if the file doesn't exist or the URL is empty.
+    hc = load_healthchecks()
+    scheduler_ping = hc.get("scheduler", "")
+    ping_url(scheduler_ping, "scheduler[self]")
+
+if __name__ == "__main__":
+    main()
