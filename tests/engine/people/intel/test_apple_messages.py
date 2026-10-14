@@ -192,11 +192,31 @@ def build_fixture_db(path: Path) -> None:
         conn.close()
 
 
+@pytest.fixture(autouse=True)
+def comms_scope_all(tmp_path: Path, monkeypatch) -> Path:
+    """The adapter goes through the iMessage scope gate (hardened fork).
+    These tests exercise signal extraction, so open the gate explicitly."""
+    cfg = tmp_path / "comms.yaml"
+    cfg.write_text("imessage:\n  access: all\n")
+    monkeypatch.setenv("AOS_COMMS_CONFIG", str(cfg))
+    monkeypatch.setenv("AOS_COMMS_LOG", str(tmp_path / "comms.log"))
+    return cfg
+
+
 @pytest.fixture
 def fixture_db(tmp_path: Path) -> Path:
     db = tmp_path / "chat.db"
     build_fixture_db(db)
     return db
+
+
+def test_scope_gate_applies_missing_config_reads_nothing(
+    fixture_db: Path, person_index: dict, comms_scope_all: Path
+) -> None:
+    """No comms.yaml → empty allowlist → no conversation is read."""
+    comms_scope_all.unlink()
+    result = AppleMessagesAdapter(db_path=fixture_db).extract_all(person_index)
+    assert all(not s.communication for s in result.values())
 
 
 @pytest.fixture

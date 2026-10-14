@@ -2,7 +2,9 @@
 Migration 136: seed ~/.aos/config/comms.yaml for the iMessage scope gate.
 
 Hardened fork: the seeded default is `access: allowlist` with an empty
-`allowed:` list (config/defaults/comms.yaml), not `access: all`.
+`allowed:` list (config/defaults/comms.yaml), not `access: all`, and a
+missing file now fails closed too (scope.load_policy). The "missing file
+means access: all" reasoning below describes upstream.
 
 Background
 ----------
@@ -54,8 +56,8 @@ DESCRIPTION = (
 # template itself is missing. Keep the two in sync when the template changes.
 _FALLBACK_CONFIG = """# Comms configuration — Default Template
 # Instance copy lives at ~/.aos/config/comms.yaml (seeded by install.sh or
-# migration 136 when absent; never overwritten). A missing file means every
-# setting below is at its default.
+# migration 136 when absent; never overwritten). A missing or malformed file
+# means an empty allowlist: AOS sees no iMessage thread (hardened fork).
 #
 # ── iMessage scope ───────────────────────────────────────────────────────
 # macOS Full Disk Access is all-or-nothing: once AOS can open

@@ -157,8 +157,15 @@ def test_denied_send_is_logged_as_denied(sandbox):
     assert f"to={OTHER_PHONE}" in log
 
 
-def test_no_config_means_unrestricted_dry_run(sandbox):
+def test_no_config_fails_closed(sandbox):
+    """Hardened fork: no comms.yaml → empty allowlist → every send denied."""
     sandbox["cfg"].unlink()
+    p = _run("comms-send", "--dry-run", OTHER_PHONE, "hello", env=sandbox["env"])
+    assert p.returncode == 2
+
+
+def test_explicit_access_all_is_unrestricted_dry_run(sandbox):
+    sandbox["cfg"].write_text("imessage:\n  access: all\n")
     p = _run("comms-send", "--dry-run", OTHER_PHONE, "hello", env=sandbox["env"])
     assert p.returncode == 0, p.stderr
     assert p.stdout.strip() == f"would send to {OTHER_PHONE}"

@@ -192,13 +192,15 @@ def _ids(conn, sql):
 # ── Policy loading ────────────────────────────────────────────────────────
 
 
-def test_missing_config_is_unrestricted(env):
+def test_missing_config_fails_closed(env):
+    """Hardened fork: no comms.yaml → empty allowlist, not 'all'."""
     cfg, _ = env
     assert not cfg.exists()
     p = load_policy()
-    assert p.access == "all"
-    assert not p.is_restricted
-    assert p.handle_allowed(OTHER_PHONE)
+    assert p.access == "allowlist"
+    assert p.is_restricted
+    assert p.allowed == []
+    assert not p.handle_allowed(OTHER_PHONE)
 
 
 def test_access_all_is_unrestricted(env):
@@ -218,16 +220,25 @@ def test_allowlist_loads_contacts(env):
     assert p.name_for(OTHER_PHONE) is None
 
 
-def test_unknown_access_value_falls_back_to_all(env):
+def test_unknown_access_value_fails_closed(env):
     cfg, _ = env
     _write_config(cfg, "imessage:\n  access: whatever\n")
-    assert load_policy().access == "all"
+    assert load_policy().access == "allowlist"
+    assert load_policy().allowed == []
 
 
-def test_malformed_yaml_is_unrestricted(env):
+def test_malformed_yaml_fails_closed(env):
     cfg, _ = env
     _write_config(cfg, "imessage: [unclosed\n")
-    assert not load_policy().is_restricted
+    assert load_policy().is_restricted
+
+
+def test_missing_section_or_access_key_fails_closed(env):
+    cfg, _ = env
+    _write_config(cfg, "other: 1\n")
+    assert load_policy().is_restricted
+    _write_config(cfg, "imessage:\n  include_groups: true\n")
+    assert load_policy().is_restricted
 
 
 # ── Handle matching ───────────────────────────────────────────────────────
@@ -275,8 +286,18 @@ def test_email_and_phone_kinds_never_cross():
 # ── The gate ──────────────────────────────────────────────────────────────
 
 
-def test_no_config_leaves_everything_visible(env, chat_db):
-    _, log = env
+def test_no_config_hides_everything(env, chat_db):
+    """Hardened fork: fail closed."""
+    conn = _ro(chat_db)
+    result = apply(conn, source="test")
+    assert result.restricted
+    assert _ids(conn, "SELECT ROWID FROM message") == []
+    assert _ids(conn, "SELECT ROWID FROM chat") == []
+
+
+def test_explicit_access_all_leaves_everything_visible(env, chat_db):
+    cfg, log = env
+    _write_config(cfg, "imessage:\n  access: all\n")
     conn = _ro(chat_db)
     result = apply(conn, source="test")
     assert not result.restricted
@@ -447,8 +468,14 @@ def test_open_chat_db_missing_file_raises(env, tmp_path):
 
 
 def test_send_allowed_unrestricted(env):
+    cfg, _ = env
+    _write_config(cfg, "imessage:\n  access: all\n")
     assert send_allowed(OTHER_PHONE)
     assert_send_allowed(OTHER_PHONE)  # no raise
+
+
+def test_send_refused_without_config(env):
+    assert not send_allowed(OTHER_PHONE)
 
 
 def test_send_allowed_restricted(env):

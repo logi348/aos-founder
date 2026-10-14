@@ -64,8 +64,9 @@ the narrowing has to happen here, and only here.
 **Config** — `~/.aos/config/comms.yaml` (operator-written; template in
 `config/defaults/comms.yaml`, which in this hardened fork seeds
 `access: allowlist` with an empty `allowed:` list — no thread is visible until
-the operator adds one). A missing file means `access: all`, upstream's
-behaviour on every machine that never wrote one:
+the operator adds one). A missing, unreadable or malformed file also means
+an empty allowlist (fail closed); only an explicit `access: all` opens
+everything:
 
 ```yaml
 imessage:
