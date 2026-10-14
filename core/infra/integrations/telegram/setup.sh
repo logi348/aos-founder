@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # ─── Telegram Integration — Health Check ──────────────────
 # Verifies Telegram integration is working.
-# Actual setup is done by Sahib (onboard agent) via Chrome MCP.
+# Actual setup: the operator creates the bot with @BotFather on their phone and
+# links it with `aos telegram-pair` (core/bin/cli/telegram-pair).
 #
 # Usage:
 #   setup.sh              — run all checks

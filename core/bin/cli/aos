@@ -1189,6 +1189,7 @@ PYEOF
         echo "  version         Show current version"
         echo "  claude-profile  Isolated Claude Code login profiles (add/list/remove/path)"
         echo "  claude-features Opt in/out: remote-control, chrome (aos claude-features enable chrome)"
+        echo "  telegram-pair   Link the Telegram bot to your own account (run it yourself)"
         echo ""
         ;;
 
@@ -1293,6 +1294,12 @@ if dismiss_list:
         # Isolated Claude Code login profiles — add/list/remove/path.
         shift
         exec "$AOS_DIR/core/bin/cli/claude-profile" "$@"
+        ;;
+
+    telegram-pair)
+        # Pair the Telegram bot with the operator's own account (run by hand).
+        shift
+        exec "$AOS_DIR/core/bin/internal/aos-python" "$AOS_DIR/core/bin/cli/telegram-pair" "$@"
         ;;
 
     claude-features)

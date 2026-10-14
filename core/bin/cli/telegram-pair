@@ -1,0 +1,178 @@
+#!/usr/bin/env python3
+"""telegram-pair — link this Mac's AOS bot to YOUR Telegram account (hardened fork).
+
+Run it yourself in a Terminal window on the Mac (it refuses to run from an
+agent session):
+
+    aos telegram-pair
+
+Before you start, on your phone:
+  1. In Telegram, open @BotFather → /newbot → choose a name and a username.
+  2. BotFather replies with a token. Store it on the Mac (hidden prompt, never
+     on the command line):   agent-secret set TELEGRAM_BOT_TOKEN
+
+What this does:
+  1. Asks for your own Telegram @username.
+  2. Shows a one-time code. You send that code to your bot from your phone.
+  3. Waits for a PRIVATE message containing that exact code, sent by the
+     @username you typed. Every other update is ignored and counted.
+  4. Shows who it found and asks you to confirm before storing
+     TELEGRAM_CHAT_ID (and TELEGRAM_USER_ID) in the Keychain.
+
+Upstream instead logged into your Telegram in Chrome and stored the chat of
+whoever had messaged the (publicly searchable) bot most recently.
+
+The bridge must not be polling while this runs (both would read the same
+updates): it is stopped and restarted for you if it is running.
+"""
+from __future__ import annotations
+
+import json
+import os
+import secrets
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+AOS = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(AOS / "core" / "infra"))
+from lib.human_gate import require_human  # noqa: E402
+
+SECRET = str(AOS / "core" / "bin" / "cli" / "agent-secret")
+BRIDGE_LABEL = "com.aos.bridge"
+WAIT_SECONDS = 300
+
+
+def _secret(name: str) -> str | None:
+    r = subprocess.run([SECRET, "get", name], capture_output=True, text=True)
+    return r.stdout.strip() or None if r.returncode == 0 else None
+
+
+def _api(token: str, method: str, **params) -> dict:
+    url = f"https://api.telegram.org/bot{token}/{method}"
+    data = urllib.parse.urlencode(params).encode() if params else None
+    with urllib.request.urlopen(url, data=data, timeout=40) as r:
+        body = json.loads(r.read().decode())
+    if not body.get("ok"):
+        raise RuntimeError(body.get("description", "Telegram API error"))
+    return body["result"]
+
+
+def match_update(update: dict, code: str, username: str) -> dict | None:
+    """The message to pair with, or None. Pure, so it can be tested."""
+    msg = update.get("message") or {}
+    chat = msg.get("chat") or {}
+    sender = msg.get("from") or {}
+    if chat.get("type") != "private":
+        return None
+    if sender.get("is_bot"):
+        return None
+    if (sender.get("username") or "").lower() != username.lower():
+        return None
+    if chat.get("id") != sender.get("id"):
+        return None
+    if code not in (msg.get("text") or "").upper().split():
+        return None
+    return msg
+
+
+def _bridge_loaded() -> bool:
+    r = subprocess.run(["launchctl", "list"], capture_output=True, text=True)
+    return BRIDGE_LABEL in r.stdout
+
+
+def _bridge(action: str) -> None:
+    uid = os.getuid()
+    plist = Path.home() / "Library" / "LaunchAgents" / f"{BRIDGE_LABEL}.plist"
+    if action == "stop":
+        subprocess.run(["launchctl", "bootout", f"gui/{uid}/{BRIDGE_LABEL}"], capture_output=True)
+    elif plist.exists():
+        subprocess.run(["launchctl", "bootstrap", f"gui/{uid}", str(plist)], capture_output=True)
+
+
+def main() -> int:
+    if os.environ.get("CLAUDECODE") or not sys.stdin.isatty():
+        print("Run telegram-pair yourself in a Terminal window (not from an agent).", file=sys.stderr)
+        return 3
+
+    token = _secret("TELEGRAM_BOT_TOKEN")
+    if not token:
+        print(__doc__.split("Before you start, on your phone:")[1].split("What this does:")[0])
+        print("No TELEGRAM_BOT_TOKEN in the Keychain yet. Store it, then run this again.")
+        return 1
+
+    try:
+        bot = _api(token, "getMe")
+    except Exception as e:  # noqa: BLE001
+        print(f"The bot token didn't work ({e}). Re-store it: agent-secret set TELEGRAM_BOT_TOKEN")
+        return 1
+
+    username = input("Your own Telegram username (without @): ").strip().lstrip("@")
+    if not username:
+        print("A username is required (Telegram → Settings → Username).")
+        return 1
+
+    restart = _bridge_loaded()
+    if restart:
+        print("Pausing the AOS bridge while pairing…")
+        _bridge("stop")
+        time.sleep(2)
+
+    code = "".join(secrets.choice("ABCDEFGHJKLMNPQRSTUVWXYZ23456789") for _ in range(6))
+    print(f"\nOn your phone, open @{bot.get('username')} and send this message:\n\n    {code}\n")
+    print(f"Waiting up to {WAIT_SECONDS // 60} minutes…")
+
+    found, ignored, offset = None, 0, None
+    deadline = time.time() + WAIT_SECONDS
+    try:
+        while time.time() < deadline and not found:
+            params = {"timeout": 25, "allowed_updates": json.dumps(["message"])}
+            if offset is not None:
+                params["offset"] = offset
+            for upd in _api(token, "getUpdates", **params):
+                offset = upd["update_id"] + 1
+                m = match_update(upd, code, username)
+                if m:
+                    found = m
+                    break
+                ignored += 1
+        if offset is not None:
+            _api(token, "getUpdates", offset=offset, timeout=0)  # acknowledge
+    finally:
+        if restart and not found:
+            _bridge("start")
+
+    if not found:
+        print(f"\nNo matching message from @{username} (ignored {ignored} other update(s)). Nothing stored.")
+        return 1
+
+    sender = found["from"]
+    name = " ".join(x for x in (sender.get("first_name"), sender.get("last_name")) if x)
+    print(f"\nFound: @{sender.get('username')} ({name}), Telegram user id {sender['id']}, private chat.")
+    if ignored:
+        print(f"(Ignored {ignored} other update(s) — someone else may have messaged the bot.)")
+    try:
+        require_human(f"pair AOS with Telegram user @{sender.get('username')} (id {sender['id']})")
+        for key in ("TELEGRAM_CHAT_ID", "TELEGRAM_USER_ID"):
+            subprocess.run([SECRET, "set", key, str(sender["id"])], check=True, capture_output=True)
+        try:
+            _api(token, "sendMessage", chat_id=sender["id"],
+                 text="Hello. This chat is now paired with AOS. "
+                      "Only messages from your account will be accepted.")
+        except Exception:  # noqa: BLE001
+            pass
+        print("Stored TELEGRAM_CHAT_ID and TELEGRAM_USER_ID in the Keychain.")
+    finally:
+        if restart:
+            _bridge("start")
+    if not restart:
+        print("Start the bridge with: aos deploy bridge")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -158,17 +158,17 @@ Browser automation is connected. This is what lets me do things
 in Chrome for you -- like setting up Telegram next.
 ```
 
-#### Step 3c: Telegram (recommended, automate via Chrome MCP)
+#### Step 3c: Telegram (recommended, set up on your phone)
 
 Present this as the key integration:
 
 ```
 Telegram is how you'll talk to AOS from your phone -- send commands,
-get updates, stay in the loop. Want me to set it up? I'll do the
-work in Chrome, you just watch.
+get updates, stay in the loop. You'll create the bot on your phone and
+pair it from Terminal; I'll walk you through it.
 ```
 
-If yes, follow the **Telegram Chrome MCP Protocol** below.
+If yes, follow the **Telegram Pairing Protocol** below.
 
 #### Step 3d: Other Built-in Integrations
 
@@ -208,173 +208,76 @@ After all integrations, write the state:
 
 ---
 
-## Telegram Chrome MCP Protocol
+## Telegram Pairing Protocol
 
-This is the crown jewel of onboarding. You automate the entire Telegram bot setup using Chrome MCP while the operator watches.
+Hardened fork. Never log into the operator's Telegram in a browser, never read
+their messages, and never take a chat id from "the most recent message to the
+bot" — the bot is publicly searchable, so that could be anyone. The operator
+creates the bot on their phone and pairs it with `aos telegram-pair`, which
+only accepts a private message carrying a one-time code from the @username
+they type, and asks them to confirm before storing anything.
 
-### Prerequisites
-- Chrome must be running (install.sh ensures this)
-- Claude-in-Chrome extension must be installed
+You guide; the operator does every step. You cannot run the pairing yourself
+(it refuses to run inside an agent session) and must never ask them to paste
+the bot token into this chat.
 
-### GIF Recording
+### Step 1: Create the bot on their phone
 
-Record the entire Telegram setup as a GIF so the operator has a visual record of what happened (and can share it).
+"Open Telegram on your phone and do this:
 
-Before starting step 1, begin recording:
-```
-mcp__claude-in-chrome__gif_creator with filename "telegram-setup.gif"
-```
+1. Search for **@BotFather** (blue check mark) and open it.
+2. Send `/newbot`.
+3. Give it a display name, e.g. `My AOS`.
+4. Give it a username ending in `bot`, e.g. `myname_aos_bot`. If it's taken,
+   try a variation.
+5. BotFather replies with a long token like `123456789:AA...`. Keep that
+   message open — don't send it to me."
 
-Capture extra frames at each major step (QR code, BotFather chat, token received, test message). After the setup is complete (step 9), stop recording.
+AskUserQuestion:
+- question: "Got the token from BotFather?"
+- options: ["Yes", "BotFather said the username is taken", "Something else went wrong"]
 
-Tell the operator:
-```
-I recorded the whole setup as a GIF — saved to telegram-setup.gif.
-You can share it or reference it later.
-```
+### Step 2: Store the token (they type it, hidden)
 
-### Flow
+"On this Mac, open a new Terminal window and run:
 
-**1. Open Telegram Web**
+    agent-secret set TELEGRAM_BOT_TOKEN
 
-```
-Let me open Telegram Web in Chrome. You'll need to scan a QR code
-with your phone to log in -- just like WhatsApp Web.
-```
+It asks for the value without showing it. Copy the token from Telegram
+(long-press the message → Copy) and paste it there."
 
-- Use `mcp__claude-in-chrome__tabs_create_mcp` to open `https://web.telegram.org`
-- Wait for the page to load
-- Use `mcp__claude-in-chrome__get_screenshot` to see the state
-
-**2. QR Code Login**
-
-The page will show a QR code. Tell the operator:
-
-```
-I see the QR code. On your phone:
-  1. Open Telegram
-  2. Go to Settings > Devices > Link Desktop Device
-  3. Scan the QR code on screen
-
-Let me know when you've scanned it.
-```
-
-- After they confirm, take a screenshot to verify login succeeded
-- Look for the chat list / main Telegram interface
-
-**3. Navigate to @BotFather**
-
-- Use `mcp__claude-in-chrome__javascript_tool` or click the search bar
-- Type `@BotFather` in the search
-- Click on the BotFather chat
-- Take a screenshot to confirm you're in the right chat
-
-**4. Create the Bot**
-
-Send `/newbot` by typing it into the message input and pressing Enter.
-
-- Read BotFather's response (use `mcp__claude-in-chrome__get_page_text` or screenshot)
-- BotFather will ask: "Alright, a new bot. How are we going to call it?"
-
-Ask the operator:
-```
-BotFather wants a name for your bot. This is the display name
-people see. Something like "Hisham's AOS" or "My Assistant"?
-```
-
-- Type their answer and send it
-
-**5. Set Bot Username**
-
-BotFather will ask for a username (must end in `bot`).
-
-Generate a suggestion based on their name: `{name}_aos_bot`
-
-```
-Now it needs a username (the @handle). I'd suggest @{name}_aos_bot.
-Want that, or something different?
-```
-
-- Type the username and send it
-- If taken, BotFather will say so -- try `{name}_aos_agent_bot` or ask
-
-**6. Extract the Token**
-
-BotFather will respond with the token. It looks like:
-```
-Use this token to access the HTTP API:
-7123456789:AAF1234567890abcdefghijklmnop
-```
-
-- Read the page text or screenshot to find the token
-- Extract it using pattern matching (digits:alphanumeric string)
-- Store it: `~/aos/core/bin/cli/agent-secret set TELEGRAM_BOT_TOKEN <token>`
-
-Tell the operator:
-```
-Got it! Bot created and token stored securely.
-```
-
-**7. Get Chat ID**
-
-- Still in Telegram Web, navigate to the new bot's chat (search for the bot username)
-- Send `/start` to the bot
-- Then hit the Telegram API to get the chat ID:
-
+Verify without reading the value:
 ```bash
-token=$(~/aos/core/bin/cli/agent-secret get TELEGRAM_BOT_TOKEN)
-curl -s "https://api.telegram.org/bot${token}/getUpdates" | python3 -c "
-import json, sys
-data = json.load(sys.stdin)
-updates = data.get('result', [])
-if updates:
-    chat_id = updates[-1]['message']['chat']['id']
-    print(chat_id)
-"
+~/aos/core/bin/cli/agent-secret check TELEGRAM_BOT_TOKEN
 ```
 
-- Store it: `~/aos/core/bin/cli/agent-secret set TELEGRAM_CHAT_ID <chat_id>`
+### Step 3: Pair it with their account
 
-**8. Send Test Message**
+"In that Terminal window, run:
 
+    aos telegram-pair
+
+It asks for your Telegram username, then shows a short code. Send that code
+to your new bot from your phone. It checks the message really came from you,
+shows you what it found, and asks you to type a confirmation before it saves
+anything."
+
+AskUserQuestion:
+- question: "Did telegram-pair say it stored TELEGRAM_CHAT_ID?"
+- options: ["Yes — and the bot said hello", "It didn't find my message", "Something else"]
+
+If it didn't find the message: check they typed their username exactly as in
+Telegram → Settings (no @), that they messaged the bot itself (not BotFather),
+and run it again. A new code is issued each time.
+
+Verify (values are never shown):
 ```bash
-token=$(~/aos/core/bin/cli/agent-secret get TELEGRAM_BOT_TOKEN)
-chat_id=$(~/aos/core/bin/cli/agent-secret get TELEGRAM_CHAT_ID)
-curl -s -X POST "https://api.telegram.org/bot${token}/sendMessage" \
-    -d "chat_id=${chat_id}" \
-    -d "text=Asalamualaikum! AOS is connected. You can talk to your agents from here."
+~/aos/core/bin/cli/agent-secret check TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID
+launchctl list | grep com.aos.bridge || bash ~/aos/core/bin/cli/aos deploy bridge
 ```
 
-Tell the operator:
-```
-Done! Check your Telegram -- you should see a message from your bot.
-That's how AOS will talk to you. You can send commands, get updates,
-and stay in the loop right from your phone.
-```
-
-**9. Verify**
-
-Run the health check:
-```bash
-bash ~/aos/core/infra/integrations/telegram/setup.sh --check
-```
-
-### Error Recovery
-
-- **QR code expired**: Refresh the page, ask them to scan again
-- **BotFather unresponsive**: Rare. Try navigating away and back
-- **Username taken**: Suggest alternatives, let operator pick
-- **Token extraction failed**: Ask operator to read it from the screen and paste it
-- **Chrome MCP not responding**: Fall back to manual instructions:
-  "Chrome automation isn't cooperating. Let me walk you through it manually instead."
-
-### Fallback
-
-If Chrome MCP tools are not available (extension not installed), fall back to guided manual setup:
-1. Tell the operator to open Telegram on their phone
-2. Walk them through messaging @BotFather step by step
-3. Ask them to paste the token
-4. Continue from step 7 above
+The bridge only accepts messages from that one Telegram account; anything from
+any other account or chat is dropped and logged.
 
 ### Phase 4: Projects
 
