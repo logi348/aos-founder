@@ -12,9 +12,21 @@ import os
 import sqlite3
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
+
+# Suite-wide default: the work DB is a throwaway file for the whole session.
+# Tests that need their own DB still set AOS_WORK_DB (work_env, monkeypatch);
+# tests that check the default path delenv it. Without this, any test that
+# reached the work engine without a fixture — or a subprocess it started —
+# created or wrote the real ~/.aos/data/work.db, which the
+# _live_instance_is_never_touched backstop below (rightly) failed on CI.
+# Set at import time, before any test module imports `backend` (whose
+# DB_PATH is resolved at import).
+_SESSION_WORK_DB_DIR = tempfile.mkdtemp(prefix="aos-test-workdb-")
+os.environ["AOS_WORK_DB"] = os.path.join(_SESSION_WORK_DB_DIR, "work.db")
 
 # Make the work package importable without installing it. `backend` handles its
 # own ontology path setup at import time.
