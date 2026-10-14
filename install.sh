@@ -1406,7 +1406,7 @@ daily_loop:
 
 # Trust preferences
 trust:
-  default_level: 0          # 0=SHADOW, 1=APPROVAL, 2=SEMI-AUTO, 3=FULL-AUTO (hardened fork: start at SHADOW)
+  default_level: 2          # 0=SHADOW, 1=APPROVAL, 2=SEMI-AUTO, 3=FULL-AUTO (agents; messaging people stays 0 — see trust.yaml)
   escalation: always        # always ask before destructive actions
 OPERATOR
         _ok "Operator profile scaffolded (name: ${op_name:-Operator}, tz: $op_tz)"
@@ -1617,7 +1617,7 @@ HOOK
 # Levels: 0=SHADOW, 1=APPROVAL, 2=SEMI-AUTO, 3=FULL-AUTO
 agents: {}
 defaults:
-  agent_level: 0
+  agent_level: 2
   comms_level: 0
 graduation:
   0_to_1:

@@ -544,13 +544,14 @@ but need your approval before sending a message. You can adjust this anytime."
 
 AskUserQuestion:
 - question: "How much autonomy should AOS have?"
-- options: ["Shadow — watch and suggest only (default)", "Training wheels — I approve everything", "Copilot — routine is automatic, important decisions need approval", "Autopilot — handle everything, only escalate exceptions"]
+- options: ["Copilot — routine is automatic, important decisions need approval (default)", "Training wheels — I approve everything", "Shadow — watch and suggest only", "Autopilot — handle everything, only escalate exceptions"]
 
 Write the choice (0–3) to `operator.yaml` `trust.default_level`. Do not edit
-`~/.aos/config/trust.yaml` yourself: everything starts at level 0, and raising
-an agent's level is something the operator does in their own terminal with
-`aos trust promote <agent> [capability] --to N` (it asks them to confirm).
-If they picked anything above Shadow, give them that command.
+`~/.aos/config/trust.yaml` yourself: agents start at level 2 (Copilot) and
+messages to other people at 0 (always drafted for approval). Changing a level
+is something the operator does in their own terminal with
+`aos trust promote|demote <agent> [capability] --to N` (raising asks them to
+confirm). If they picked anything other than Copilot, give them that command.
 
 ### Telemetry
 

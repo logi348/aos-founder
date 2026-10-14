@@ -314,24 +314,26 @@ Write any changes to `operator.yaml` daily_loop section.
 ```
 One last thing -- how much autonomy should AOS have?
 
-  0. Shadow -- I watch and suggest, but don't act on my own (the default)
+  0. Shadow -- I watch and suggest, but don't act on my own
   1. Training wheels -- I propose everything, you approve
-  2. Copilot -- I handle routine stuff, ask for important decisions
+  2. Copilot -- I handle routine stuff, ask for important decisions (the default)
   3. Autopilot -- I handle everything, only escalate exceptions
 
-Everything starts at Shadow. You can raise it whenever you're ready.
+Agents start at Copilot. Messages to other people are always drafted for
+your approval until you change that.
 ```
 
 Map to trust levels:
-- Shadow = level 0 (SHADOW) — default
+- Shadow = level 0 (SHADOW)
 - Training wheels = level 1 (APPROVAL)
-- Copilot = level 2 (SEMI-AUTO)
+- Copilot = level 2 (SEMI-AUTO) — default
 - Autopilot = level 3 (FULL-AUTO)
 
 Write the chosen number to `operator.yaml` `trust.default_level` (it records
 the operator's stated preference). Do not edit `~/.aos/config/trust.yaml`:
-per-agent levels change only when the operator runs `aos trust promote` in
-their own terminal. If they chose 1–3, tell them that command.
+levels change only when the operator runs `aos trust promote` / `demote` in
+their own terminal. If they chose something other than Copilot, tell them
+that command.
 
 ### Completion
 
