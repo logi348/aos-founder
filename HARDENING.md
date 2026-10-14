@@ -8,6 +8,8 @@ inventory and UPSTREAM.md for pulling in upstream changes.
 
 ## Pre-install checklist (Mac mini)
 
+The step-by-step version is in **SETUP.md**.
+
 These are setup choices, not code, and they matter as much as the code.
 
 1. **Two macOS accounts.** Create an admin account for installs and system
