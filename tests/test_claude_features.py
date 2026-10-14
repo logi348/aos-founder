@@ -37,7 +37,7 @@ def _st(tmp_path):
 
 
 def test_defaults_are_off():
-    assert cf.DEFAULTS == {"remote-control": False, "chrome": False}
+    assert cf.DEFAULTS == {"remote-control": False, "chrome": False, "sandbox": False}
 
 
 def test_reconcile_turns_upstream_always_on_off(tmp_path, monkeypatch):
@@ -101,3 +101,18 @@ def test_missing_settings_json_is_not_created(tmp_path, monkeypatch):
     ClaudeDefaultsCheck().fix()
     assert not (tmp_path / ".claude" / "settings.json").exists()
     assert ClaudeDefaultsCheck().check() is True
+
+
+def test_sandbox_profile_applies_and_removes(tmp_path, monkeypatch):
+    _home(tmp_path, monkeypatch, claude_json={}, settings={"agent": "chief"})
+    assert cf.DEFAULTS["sandbox"] is False
+    cf.save({"remote-control": False, "chrome": False, "sandbox": True})
+    cf.apply()
+    sb = _st(tmp_path)["sandbox"]
+    assert sb["enabled"] is True and sb["allowUnsandboxedCommands"] is False
+    assert "~/aos" in sb["filesystem"]["denyWrite"]
+    assert "~/.ssh" in sb["filesystem"]["denyRead"]
+    assert ClaudeDefaultsCheck().check() is True      # no perpetual drift on a dict value
+    cf.save({"remote-control": False, "chrome": False, "sandbox": False})
+    cf.apply()
+    assert "sandbox" not in _st(tmp_path)

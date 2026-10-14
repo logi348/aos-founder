@@ -7,6 +7,8 @@ Usage:
   aos claude-features disable remote-control
   aos claude-features enable chrome
   aos claude-features disable chrome
+  aos claude-features enable sandbox     (experimental: OS-enforced limits for shell commands)
+  aos claude-features disable sandbox
 
 Both are OFF by default in this hardened fork. The choice is stored in
 ~/.aos/config/claude-features.json and applied to ~/.claude.json and
@@ -51,6 +53,10 @@ def main(argv: list[str]) -> int:
     cf.save(state)
     cf.apply()
     print(f"{argv[2]}: {'enabled' if state[argv[2]] else 'disabled'}. Restart Claude sessions to pick it up.")
+    if argv[2] == "sandbox" and state[argv[2]]:
+        print("Try a few normal tasks now. If shell commands fail (network, git, Keychain),\n"
+              "run: aos claude-features disable sandbox — and add what's missing to SANDBOX in\n"
+              "core/infra/lib/claude_features.py via the fork.")
     if argv[2] == "remote-control" and state[argv[2]]:
         print("Note: anyone signed in to your Claude account can now drive sessions on this Mac.")
     return 0

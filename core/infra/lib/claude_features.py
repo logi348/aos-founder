@@ -26,8 +26,55 @@ from pathlib import Path
 FEATURES = {
     "remote-control": "Remote Control for every session (control this Mac's Claude from claude.ai / the app)",
     "chrome": "Claude in Chrome enabled by default in every session",
+    "sandbox": "macOS sandbox for agents' shell commands (OS-enforced write/read limits; experimental)",
 }
-DEFAULTS = {"remote-control": False, "chrome": False}
+DEFAULTS = {"remote-control": False, "chrome": False, "sandbox": False}
+
+# Claude Code's sandbox (Seatbelt) for the Bash tool and everything it starts.
+# Unlike permission rules and the guard hook, this is enforced by macOS: a
+# script an agent writes to /tmp and runs still can't write to ~/aos or read
+# ~/.ssh. Opt-in because it is untested on this setup. Documented caveats:
+#   - network: hosts not listed below are refused in background jobs and
+#     prompt in interactive sessions;
+#   - gh, git over the network, open/osascript, launchctl and the Keychain
+#     may not work inside it, hence excludedCommands (those run unsandboxed
+#     but still under the permission rules and the guard);
+#   - hooks, MCP servers and Claude's own Read/Edit tools are not sandboxed
+#     (the permission rules cover those).
+# If shell commands start failing: `aos claude-features disable sandbox`.
+_SECRET_READ = [
+    "~/.ssh", "~/Library/Keychains", "~/Library/Cookies", "~/Library/Safari",
+    "~/Library/Containers/com.apple.Safari",
+    "~/Library/Application Support/Google/Chrome", "~/Library/Application Support/Chromium",
+    "~/Library/Application Support/BraveSoftware", "~/Library/Application Support/Microsoft Edge",
+    "~/Library/Application Support/Arc", "~/Library/Application Support/Firefox",
+]
+SANDBOX = {
+    "enabled": True,
+    "allowUnsandboxedCommands": False,   # no "retry outside the sandbox" escape hatch
+    "excludedCommands": [
+        "aos", "aos *", "agent-secret *", "launchctl *", "brew *", "gh *", "open *",
+        "tailscale *", "git fetch *", "git pull *", "git push *", "git clone *",
+    ],
+    "filesystem": {
+        "allowWrite": ["~/.aos", "~/vault", "~/project", "/tmp", "/private/tmp"],
+        "denyWrite": ["~/aos", "~/aos-releases", "~/.aos/config", "~/Library/LaunchAgents"],
+        "denyRead": _SECRET_READ,
+    },
+    "network": {
+        "allowedDomains": [
+            "api.telegram.org", "telegra.ph", "api.telegra.ph",
+            "github.com", "api.github.com", "codeload.github.com", "raw.githubusercontent.com",
+            "objects.githubusercontent.com",
+            "pypi.org", "files.pythonhosted.org", "registry.npmjs.org",
+            "openrouter.ai", "huggingface.co", "*.huggingface.co", "*.hf.co",
+            "wttr.in", "api.open-meteo.com",
+            "*.googleapis.com", "accounts.google.com",
+            "slack.com", "*.slack.com", "api.fxtwitter.com",
+            "api.appstoreconnect.apple.com",
+        ],
+    },
+}
 
 
 def config_path() -> Path:
@@ -57,7 +104,7 @@ def load() -> dict:
 def save(choices: dict) -> None:
     p = config_path()
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps({k: bool(choices[k]) for k in DEFAULTS}, indent=2) + "\n")
+    p.write_text(json.dumps({k: bool(choices.get(k, v)) for k, v in DEFAULTS.items()}, indent=2) + "\n")
 
 
 def desired() -> dict:
@@ -71,6 +118,7 @@ def desired() -> dict:
         settings_json(): {
             "remoteControlAtStartup": c["remote-control"],
             "chrome": True if c["chrome"] else None,
+            "sandbox": SANDBOX if c["sandbox"] else None,
         },
     }
 
@@ -84,7 +132,7 @@ def drift() -> list[str]:
         for k, v in keys.items():
             if v is None and k in data:
                 out.append(f"{path.name}:{k} present")
-            elif v is not None and data.get(k) is not v:
+            elif v is not None and data.get(k) != v:
                 out.append(f"{path.name}:{k}={data.get(k)!r}, want {v}")
     return out
 

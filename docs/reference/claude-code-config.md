@@ -37,6 +37,9 @@ These have been tested and confirmed working:
   Read/Edit allows, deny rules) and the Bash guard hook
   `core/hooks/guard_bash.py`; reconcile restores both. Change the module, not
   the live file.
+- **Sandbox** (OS-enforced limits for shell commands) is opt-in:
+  `aos claude-features enable sandbox` writes the `sandbox` block defined in
+  `core/infra/lib/claude_features.py`. Change it there, not in settings.json.
 - `~/.claude/` is protected by Claude Code itself: no allow rule lets an
   agent edit it outside bypass mode. That is intended.
 
