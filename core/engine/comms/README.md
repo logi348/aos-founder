@@ -62,7 +62,9 @@ macOS Full Disk Access is all-or-nothing — once a process can open
 the narrowing has to happen here, and only here.
 
 **Config** — `~/.aos/config/comms.yaml` (operator-written; template in
-`config/defaults/comms.yaml`). A missing file means `access: all`, today's
+`config/defaults/comms.yaml`, which in this hardened fork seeds
+`access: allowlist` with an empty `allowed:` list — no thread is visible until
+the operator adds one). A missing file means `access: all`, upstream's
 behaviour on every machine that never wrote one:
 
 ```yaml
