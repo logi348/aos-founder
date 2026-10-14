@@ -17,7 +17,20 @@
 
 set -euo pipefail
 
-REPO_TARBALL="https://codeload.github.com/AOS-Agent/aos/tar.gz/refs/heads/main"
+REPO_TARBALL="https://codeload.github.com/logi348/aos-hardened/tar.gz/refs/heads/main"
+
+# The fork is private, so the anonymous tarball URL above returns 404. With a
+# token (GITHUB_TOKEN, or `gh auth token` when gh is installed and logged in)
+# fetch through the authenticated API tarball endpoint instead.
+CURL_AUTH=()
+_token="${GITHUB_TOKEN:-}"
+if [[ -z "$_token" ]] && command -v gh >/dev/null 2>&1; then
+    _token="$(gh auth token 2>/dev/null || true)"
+fi
+if [[ -n "$_token" ]]; then
+    REPO_TARBALL="https://api.github.com/repos/logi348/aos-hardened/tarball/main"
+    CURL_AUTH=(-H "Authorization: Bearer $_token")
+fi
 
 STAGE="$(mktemp -d "${TMPDIR:-/tmp}/aos-bootstrap.XXXXXX")"
 # Cleaned on failure only. On success we `exec` into install.sh, which replaces
@@ -28,9 +41,10 @@ trap 'rm -rf "$STAGE"' EXIT
 printf '\n  \xef\xb7\xbd\n\n'
 printf '  Bootstrapping AOS...\n\n'
 
-if ! curl -fsSL "$REPO_TARBALL" | tar -xz -C "$STAGE" --strip-components=1; then
+if ! curl -fsSL ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} "$REPO_TARBALL" | tar -xz -C "$STAGE" --strip-components=1; then
     printf '  Could not download AOS.\n' >&2
-    printf '  Check your internet connection and run the command again.\n\n' >&2
+    printf '  Check your internet connection and run the command again.\n' >&2
+    printf '  The repository is private: set GITHUB_TOKEN (or log in with gh) first.\n\n' >&2
     exit 1
 fi
 

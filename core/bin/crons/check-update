@@ -359,8 +359,11 @@ check_release() {
 check_git() {
     cd "$AOS_DIR" || { log "ERROR: AOS dir not found"; _write_state "no_aos_dir" "" ""; return 0; }
 
-    local remote
-    remote=$(git remote 2>/dev/null | head -1)
+    # Hardened fork: always the fork's `origin`, never "whichever remote is
+    # listed first" — an `upstream` remote added for manual review (see
+    # UPSTREAM.md) must never become the update source.
+    local remote=""
+    git remote get-url origin >/dev/null 2>&1 && remote="origin"
     if [[ -z "$remote" ]]; then
         log "No git remote configured — skipping update check"
         _write_state "no_remote" "" ""

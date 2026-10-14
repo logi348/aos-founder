@@ -21,8 +21,12 @@
 
 ## Quick Start
 
+This fork is a private repository, so clone it with an authenticated GitHub CLI
+(`gh auth login`, then `gh auth setup-git` so `aos update` can fetch later):
+
 ```bash
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/AOS-Agent/aos/main/bootstrap.sh)"
+gh repo clone logi348/aos-hardened ~/aos
+bash ~/aos/install.sh
 ```
 
 Idempotent — safe to re-run. Budget **20–30 minutes**: it provisions its own Python,
@@ -242,18 +246,25 @@ Four boundaries. Never crossed.
 
 ## Install
 
-### One-liner
+### Manual (recommended)
 
 ```bash
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/AOS-Agent/aos/main/bootstrap.sh)"
-```
-
-### Manual
-
-```bash
-git clone https://github.com/AOS-Agent/aos.git ~/aos
+gh repo clone logi348/aos-hardened ~/aos
 cd ~/aos && bash install.sh
 ```
+
+### One-liner
+
+`bootstrap.sh` downloads a tarball, which for a private repository needs a token
+(`GITHUB_TOKEN`, or a logged-in `gh`):
+
+```bash
+gh auth login
+bash -c "$(gh api -H 'Accept: application/vnd.github.raw' repos/logi348/aos-hardened/contents/bootstrap.sh)"
+```
+
+Updates come only from this fork, and only when you ask (`aos update`); see
+UPSTREAM.md for pulling in upstream changes and HARDENING.md for what differs.
 
 `bash install.sh --dry-run` walks the stages without touching the machine.
 

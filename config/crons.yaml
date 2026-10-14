@@ -42,6 +42,10 @@ jobs:
 
   auto-update:
     command: bash ~/aos/core/bin/crons/check-update --apply
+    # Hardened fork: updates are applied only by hand (`aos update`) after
+    # reviewing them. check-update above still reports what is available.
+    # Re-enable with `enabled: true` (see HARDENING.md).
+    enabled: false
     at: "04:00"
     # No catch_up: this machine is always on, so the 04:00 window is never missed.
     # The flag was added for a laptop that slept through the 04:00 window; that
@@ -53,6 +57,9 @@ jobs:
 
   harness-update:
     command: bash ~/aos/core/bin/crons/harness-update
+    # Hardened fork: Claude Code is upgraded only by hand
+    # (`bash ~/aos/core/bin/crons/harness-update`). Re-enable with `enabled: true`.
+    enabled: false
     at: "04:15"
     # No catch_up — same reason as auto-update above.
     timeout: 300

@@ -5,10 +5,10 @@
 #
 #  Usage (one-liner — see bootstrap.sh; it fetches a tarball and hands off
 #  here, so a fresh Mac's git-stub CLT prompt can't kill the install):
-#    bash -c "$(curl -fsSL https://raw.githubusercontent.com/AOS-Agent/aos/main/bootstrap.sh)"
+#    bash -c "$(curl -fsSL https://raw.githubusercontent.com/logi348/aos-hardened/main/bootstrap.sh)"
 #
 #  Or manually:
-#    git clone https://github.com/AOS-Agent/aos.git ~/aos
+#    git clone https://github.com/logi348/aos-hardened.git ~/aos
 #    bash ~/aos/install.sh
 #
 #  Idempotent. Safe to re-run. Resumes from where it left off.
@@ -56,7 +56,7 @@ AOS_VERSION=$(
 )
 AOS_VERSION=$(echo "$AOS_VERSION" | tr -d '[:space:]')
 [[ -n "$AOS_VERSION" ]] || AOS_VERSION="0.1.0"
-AOS_REPO="https://github.com/AOS-Agent/aos.git"
+AOS_REPO="https://github.com/logi348/aos-hardened.git"
 AOS_BRANCH="main"
 
 # ── Paths ────────────────────────────────────────────
@@ -460,7 +460,7 @@ prereq_python3() {
     # blaming the version file, which is what sent operators looking for a
     # Python fault that was never there.
     if [[ ! -d "$AOS_DIR/.git" ]]; then
-        _die "AOS repository missing at $AOS_DIR — the clone did not happen. Re-run: curl -fsSL https://install.hish.am | bash"
+        _die "AOS repository missing at $AOS_DIR — the clone did not happen. Re-run: git clone https://github.com/logi348/aos-hardened.git ~/aos && bash ~/aos/install.sh"
     fi
 
     local pinned
@@ -1104,7 +1104,7 @@ run_prereqs() {
     prereq_xcode_clt
     prereq_git
     # The repo has to exist before anything reads out of it. install.sh does not
-    # necessarily run from $AOS_DIR: the install.hish.am bootstrap untars the
+    # necessarily run from $AOS_DIR: the bootstrap.sh one-liner untars the
     # repo into a scratch dir and execs this script from there, on the stated
     # contract that "the repo's install.sh clones ~/aos itself". It did — but in
     # the repo stage, which runs after this one, so prereq_python3 died reading
@@ -1409,7 +1409,8 @@ OPERATOR
   },
   "env": {
     "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1",
-    "CLAUDE_CODE_TEAMMATE_MODE": "in-process"
+    "CLAUDE_CODE_TEAMMATE_MODE": "in-process",
+    "DISABLE_AUTOUPDATER": "1"
   },
   "hooks": {}
 }
@@ -1436,6 +1437,10 @@ if 'CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS' not in s.get('env', {}):
     changed = True
 if 'CLAUDE_CODE_TEAMMATE_MODE' not in s.get('env', {}):
     s['env']['CLAUDE_CODE_TEAMMATE_MODE'] = 'in-process'
+    changed = True
+# Hardened fork: Claude Code updates only when the operator runs them.
+if 'DISABLE_AUTOUPDATER' not in s.get('env', {}):
+    s['env']['DISABLE_AUTOUPDATER'] = '1'
     changed = True
 if changed:
     p.write_text(json.dumps(s, indent=2) + '\n')

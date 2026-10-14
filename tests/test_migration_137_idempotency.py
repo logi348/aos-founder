@@ -1,4 +1,4 @@
-"""Migration 137 — point instance git remotes at AOS-Agent/aos.
+"""Migration 137 — point instance git remotes at logi348/aos-hardened.
 
 The rename is only half a fix if the machines already out there keep fetching
 through the old path: `release-manager` pulls via the `origin` remote of the
@@ -51,7 +51,7 @@ def home(tmp_path, monkeypatch):
 
 
 OLD = "https://github.com/hishamalhadi/aos.git"
-NEW = "https://github.com/AOS-Agent/aos.git"
+NEW = "https://github.com/logi348/aos-hardened.git"
 
 
 def test_rewrites_the_stale_origin(home):
@@ -107,7 +107,7 @@ def test_rewrites_ssh_form(home):
     # literal address ever appears in a diff; the migration still sees the
     # exact string a real remote would carry.
     ssh_old = "git" + "@github.com:hishamalhadi/aos.git"
-    ssh_new = "git" + "@github.com:AOS-Agent/aos.git"
+    ssh_new = "git" + "@github.com:logi348/aos-hardened.git"
 
     m = _load()
     repo = _make_repo(home / ".aos" / "repo", {"origin": ssh_old})
