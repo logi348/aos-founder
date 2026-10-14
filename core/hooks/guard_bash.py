@@ -25,6 +25,12 @@ LaunchAgents/Daemons or shell startup files are denied, as are crontab edits and
 loading new launchd jobs; writes into ~/.aos/config are "ask". Running code
 from ~/aos is of course fine.
 
+Home network: commands naming a private/link-local/Tailscale address
+(10/8, 172.16/12, 192.168/16, 169.254/16, 100.64/10, fc00::/7, fe80::/10) or a
+LAN hostname (.local, .lan, .home, .home.arpa, .internal, .ts.net), and LAN
+discovery/share tools (nmap, dns-sd, smbutil, upnpc …), are denied. Loopback
+is fine. Operator exceptions: ~/.aos/config/lan-allow (IPs, CIDRs or hosts).
+
 Allowed rm roots: ~/.aos, ~/vault, ~/project, the temp dirs and
 anything in AOS_GUARD_EXTRA_RM_ROOTS (colon-separated). The roots themselves
 are protected; only paths strictly inside them may be removed recursively.
@@ -65,6 +71,7 @@ OPERATOR_ONLY = [
     HOME / ".aos" / "config" / "claude-features.json",
     HOME / ".aos" / "config" / "always-on",
     HOME / ".aos" / "config" / "bridge-permission-mode",
+    HOME / ".aos" / "config" / "lan-allow",
 ]
 READ_ONLY_CMDS = {"cat", "head", "tail", "less", "more", "grep", "rg", "wc", "ls", "stat",
                   "file", "diff", "jq", "bat", "test", "["}
@@ -96,6 +103,21 @@ INLINE_CODE = {"python", "python3", "node", "perl", "ruby", "osascript", "php"}
 GIT_WRITE = {"commit", "checkout", "reset", "apply", "am", "merge", "pull", "rebase", "stash",
              "clean", "restore", "switch", "cherry-pick", "revert", "rm", "mv", "add", "init",
              "clone", "fetch", "submodule", "worktree", "update-index", "config"}
+
+# Home/office network: agents may not reach other devices on the LAN or the
+# tailnet (router admin, NAS, printers, smart-home, other computers). Loopback
+# (the AOS services) stays allowed. Exceptions: one host / IP / CIDR per line
+# in ~/.aos/config/lan-allow (operator-only).
+LAN_ALLOW_FILE = HOME / ".aos" / "config" / "lan-allow"
+PRIVATE_NETS = [
+    "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",   # RFC 1918
+    "169.254.0.0/16",                                   # link-local
+    "100.64.0.0/10",                                    # CGNAT / Tailscale
+    "fc00::/7", "fe80::/10",                            # IPv6 unique-local, link-local
+]
+LAN_SUFFIXES = (".local", ".lan", ".home", ".home.arpa", ".internal", ".ts.net")
+LAN_SCANNERS = {"nmap", "masscan", "arp-scan", "netdiscover", "dns-sd", "smbutil", "mount_smbfs",
+                "mount_afp", "mount_nfs", "upnpc"}
 
 SHELLS = {"sh", "bash", "zsh", "dash", "ksh", "fish"}
 DOWNLOADERS = {"curl", "wget"}
@@ -293,6 +315,8 @@ def _check_words(words: list[str], cwd: Path, depth: int) -> tuple[str, str] | N
                                                           w.endswith("/release-manager") for w in words[:2]):
         if any(w in ("--apply", "--continue", "create", "activate", "convert") for w in words):
             return ("ask", "Applying an update is the operator's call.")
+    if name in LAN_SCANNERS:
+        return ("deny", f"`{name}` (local-network discovery or file shares) is blocked for agents.")
     if name == "crontab" and any(a != "-l" for a in words[1:]):
         return ("deny", "Changing the crontab is blocked for agents (it would run code outside "
                         "Claude). Scheduled jobs belong in config/crons.yaml, changed by the operator.")
@@ -358,6 +382,50 @@ def _read_only(command: str) -> bool:
     return True
 
 
+def _lan_allowed() -> tuple[list, set]:
+    import ipaddress
+    nets, names = [], set()
+    try:
+        lines = LAN_ALLOW_FILE.read_text().splitlines()
+    except OSError:
+        return nets, names
+    for line in lines:
+        item = line.split("#", 1)[0].strip().lower()
+        if not item:
+            continue
+        try:
+            nets.append(ipaddress.ip_network(item, strict=False))
+        except ValueError:
+            names.add(item)
+    return nets, names
+
+
+def _lan_target(command: str) -> str | None:
+    """First private-network address or LAN hostname named in the command."""
+    import ipaddress
+    private = [ipaddress.ip_network(n) for n in PRIVATE_NETS]
+    allow_nets, allow_names = _lan_allowed()
+    # Not preceded by `=`/`~`/`^`-version contexts (pkg==10.1.2.3, v10.0.0.1).
+    candidates = re.findall(r"(?<![\w.=~^<>])(\d{1,3}(?:\.\d{1,3}){3})(?![\w.]*\d)", command)
+    candidates += re.findall(r"\[?([0-9a-fA-F]{1,4}(?::[0-9a-fA-F]{0,4}){2,7})\]?", command)
+    for c in candidates:
+        try:
+            ip = ipaddress.ip_address(c.split("%")[0])
+        except ValueError:
+            continue
+        if ip.is_loopback:
+            continue
+        if any(ip in n for n in private) and not any(ip in n for n in allow_nets):
+            return str(ip)
+    suffixes = "|".join(re.escape(s) for s in sorted(LAN_SUFFIXES, key=len, reverse=True))
+    for host in re.findall(rf"(?<![\w.-])([A-Za-z0-9][\w-]*(?:\.[\w-]+)*?(?:{suffixes}))(?![\w-]|\.\w)\.?",
+                           command, flags=re.I):
+        h = host.lower()
+        if h not in allow_names:
+            return h
+    return None
+
+
 def check_command(command: str, cwd: Path | None = None, depth: int = 0) -> tuple[str, str] | None:
     cwd = cwd or Path.cwd()
     expanded = command.replace("${HOME}", str(HOME)).replace("$HOME", str(HOME))
@@ -368,6 +436,10 @@ def check_command(command: str, cwd: Path | None = None, depth: int = 0) -> tupl
     for f in OPERATOR_ONLY:
         if str(f) in expanded and not _read_only(command):
             return ("deny", f"{f} is operator-only; agents may read it but not change it.")
+    lan = _lan_target(command)
+    if lan:
+        return ("deny", f"Reaching other devices on the local network ({lan}) is blocked for "
+                        f"agents. The operator can allow a specific host in {LAN_ALLOW_FILE}.")
     # Download piped straight into a shell, process substitution or $( ).
     if re.search(r"\b(curl|wget)\b[^|;&]*\|\s*(sudo\s+)?(\S*/)?(sh|bash|zsh|dash|ksh|python3?|perl|ruby|osascript)\b", command):
         return ("deny", "Piping a download into an interpreter is blocked.")

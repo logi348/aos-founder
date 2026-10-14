@@ -70,6 +70,7 @@ OPERATOR_ONLY_FILES = [
     "~/.aos/config/claude-features.json",
     "~/.aos/config/always-on",
     "~/.aos/config/bridge-permission-mode",
+    "~/.aos/config/lan-allow",
 ]
 
 DENY = (

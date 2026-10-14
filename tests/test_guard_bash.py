@@ -173,3 +173,45 @@ def test_agents_may_check_for_updates_but_not_apply_them():
                 "bash ~/aos/core/bin/crons/check-update --apply",
                 "~/aos/core/bin/crons/check-update --apply --allow-downgrade"]:
         assert decision(cmd) == "ask", cmd
+
+
+# ── Home network: agents may not reach other devices ─────────────────────────
+
+
+def test_lan_devices_blocked():
+    for cmd in ["curl http://192.168.1.1/", "ping -c1 10.0.0.5", "ssh admin@192.168.0.2",
+                "curl -s http://172.20.3.4:8080/api", "curl http://100.101.102.103:4100/info",
+                "curl 'http://[fe80::1]/'", "curl http://printer.local:631/",
+                "wget http://nas.lan/share", "curl https://my-laptop.tail1234.ts.net",
+                "python3 -c \"import urllib.request;urllib.request.urlopen('http://192.168.1.10')\"",
+                "nmap -sn 192.168.1.0/24", "dns-sd -B _smb._tcp", "smbutil view //guest@nas",
+                "open smb://10.0.0.2/share"]:
+        assert decision(cmd) == "deny", cmd
+
+
+def test_loopback_internet_and_lookalikes_allowed():
+    for cmd in ["curl -s http://127.0.0.1:4098/health", "curl http://localhost:7602/health",
+                "curl -s https://api.github.com/repos/x/y", "pip install foo==10.1.2.3",
+                "git tag v10.0.0.1", "echo 3.14", "sw_vers", "ifconfig en0",
+                "dig example.com", "curl https://8.8.8.8"]:
+        assert decision(cmd) is None, cmd
+
+
+def test_operator_lan_allowlist(tmp_path, monkeypatch):
+    f = tmp_path / "lan-allow"
+    f.write_text("# printer\n192.168.1.50\nnas.local\n10.9.0.0/16\n")
+    monkeypatch.setattr(guard, "LAN_ALLOW_FILE", f)
+    assert decision("curl http://192.168.1.50:631/") is None
+    assert decision("curl http://nas.local/") is None
+    assert decision("curl http://10.9.4.4/") is None
+    assert decision("curl http://192.168.1.51/") == "deny"
+
+
+def test_lan_allowlist_is_operator_only():
+    assert decision("echo 192.168.1.1 >> ~/.aos/config/lan-allow") == "deny"
+
+
+def test_lan_block_ignores_file_names():
+    for cmd in ["cat ~/.claude/settings.local.json", "cp .env.local /tmp/x", "ls config.internal.yaml",
+                "python3 -m pip show home.lan.tools", "grep -r localhost ~/project/app"]:
+        assert decision(cmd) is None, cmd

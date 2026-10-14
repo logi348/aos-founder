@@ -113,6 +113,11 @@ signature check, and updated Claude Code unpinned at 04:15.
   - writes to operator-only files;
   - **any write into `~/aos`, `~/.claude`, `~/.claude.json`, LaunchAgents/Daemons or shell startup files.** That covers redirects, cp/mv/tee/ln/chmod, `sed -i`, git write commands, `cd` then write, and inline Python that writes there. Running and reading code in `~/aos` is fine;
   - crontab edits, `launchctl submit`, and loading any plist other than an existing `com.aos.*` one;
+  - **other devices on your network:**
+    - any command naming a private, link-local or Tailscale address (`192.168.x`, `10.x`, `172.16–31.x`, `169.254.x`, `100.64–127.x`, IPv6 ULA/link-local) or a LAN hostname (`.local`, `.lan`, `.home`, `.home.arpa`, `.internal`, `.ts.net`);
+    - discovery and file-share tools (`nmap`, `dns-sd`, `smbutil`, `upnpc`, …).
+    - `localhost` stays allowed.
+    - To let agents reach one device (say a printer), add its IP, CIDR or hostname to `~/.aos/config/lan-allow`. Only you can edit that file.
   - writes into `~/.aos/config` and applying updates get "ask".
 
   Hooks run in every mode, including `cld-unsafe`.
@@ -331,6 +336,10 @@ run. Instead:
   to `origin/main`.**
 - **Phone approval is unverified against your Claude Code version** (§6b).
   The fallback mode file is there if it misbehaves.
+- **Shared home network.** Until the Mac mini is on a guest network or VLAN:
+  - On the router, turn off UPnP, change the default admin password and turn off WPS.
+  - On the Mac, turn on the firewall with stealth mode, and turn off AirPlay Receiver and the other sharing services.
+  - The guard's LAN block is text matching: a script an agent writes and runs could still reach the network. The sandbox's domain allowlist is what actually closes that, so turn it on early.
 - **Prompt injection through messaging.** Anything that reads email, iMessage
   or web content into a Claude session can try to steer it. The allowlist,
   the trust level 0 default and phone approvals limit the blast radius. They
