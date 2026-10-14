@@ -6,18 +6,53 @@ is one commit on the `hardening` branch (`git log cda5054..hardening`);
 `cda5054` is the untouched upstream code. See SECURITY-AUDIT.md for the full
 inventory and UPSTREAM.md for pulling in upstream changes.
 
-## Before you install
+## Pre-install checklist (Mac mini)
 
-1. **Merge `hardening` into the fork's `main` and push.** The installer
-   clones `main`, and a reconcile check resets `~/aos` to `origin/main`
-   (`runtime_protection.py`). Never keep local commits in `~/aos`; merge into
-   the fork instead.
-2. The repo is private. On the Mac mini: `gh auth login`, `gh auth setup-git`,
-   then `gh repo clone logi348/aos-hardened ~/aos && bash ~/aos/install.sh`.
-   Add flags for anything you want (all off by default): `--always-on`,
-   `--with-superwhisper`, `--with-obsidian`, `--with-theming`, `--with-ytdlp-pot`.
-3. After onboarding, run `aos telegram-pair` yourself, then
-   `approval-smoke-test` (see §6b).
+These are setup choices, not code, and they matter as much as the code.
+
+1. **Two macOS accounts.** Create an admin account for installs and system
+   changes, and a **standard (non-admin) account that AOS runs in**. Log in
+   as the standard user for day-to-day running. Even if an agent got past
+   every guardrail, it can't change the system. Install steps that need
+   admin rights ask for the admin password.
+2. **Read-only GitHub access on the Mac.** If the Mac's GitHub login could
+   push, an agent could push code to `main` and the next update would deploy
+   it, which would bypass your review. On github.com, create a fine-grained
+   personal access token: repository `logi348/aos-hardened` only,
+   **Contents: Read-only**, expiry of your choice. On the Mac:
+   `gh auth login --with-token < token.txt && gh auth setup-git`, then delete
+   `token.txt`. Also turn on 2FA on your GitHub account and branch protection
+   on `main` (require a pull request).
+3. **Remote access.**
+   - Tailscale access rules so only your own devices can reach the Mac.
+   - SSH with keys only (`PasswordAuthentication no`), or Tailscale SSH.
+   - No port forwarding on your router.
+   - Leave the optional mesh feature off.
+4. **Keep personal accounts off the machine.** Use the dedicated email.
+   Don't sync personal iCloud data to it, and don't add your password
+   manager or a browser profile with your logins. Your personal Telegram
+   stays on your phone.
+5. **FileVault on.** Accept that after a power cut you unlock it once, or add
+   a small UPS so that's rare.
+6. **Install.** Install from the fork (now on `main`):
+   `gh repo clone logi348/aos-hardened ~/aos && bash ~/aos/install.sh --always-on`.
+   - `--always-on` keeps the Mac awake and restarts it after a power cut. It
+     doesn't touch the screen lock.
+   - Other flags are off by default: `--with-superwhisper`, `--with-obsidian`,
+     `--with-theming`, `--with-ytdlp-pot`.
+   - A reconcile check resets `~/aos` to the fork's `main` every 30 minutes,
+     so never keep changes in `~/aos`. Change the fork instead.
+7. **First week:**
+   - Run `aos telegram-pair` and `approval-smoke-test` (§6b).
+   - Run the real tests (§10).
+   - Watch `~/.aos/logs/approval-mcp.log` and `~/.aos/logs/bridge.log`.
+   - Optionally try `aos claude-features enable sandbox` (§2).
+   - Raise individual agents to 3 only once the trust log shows they've
+     earned it.
+8. **Backups.** Turn on Time Machine. Keep `~/vault` in its own private git
+   repo.
+9. **GitHub setting for the weekly upstream PR.** Settings → Actions →
+   General → "Allow GitHub Actions to create and approve pull requests".
 
 ---
 
@@ -40,29 +75,53 @@ inventory and UPSTREAM.md for pulling in upstream changes.
 **Why.** Upstream pulled and executed new code at 04:00 every day with no
 signature check, and updated Claude Code unpinned at 04:15.
 
-**Re-enable.** Set `enabled: true` on either cron in `config/crons.yaml`;
-remove `DISABLE_AUTOUPDATER` from `~/.claude/settings.json` `env`.
+**Applying updates with your approval:**
+- **Weekly upstream PR.** `.github/workflows/upstream-sync.yaml` opens a PR
+  when `AOS-Agent/aos` has new commits. It includes a risk report and test
+  results on the merged tree, and never merges anything itself. You review
+  and merge. Details are in UPSTREAM.md.
+- **Telegram offer.** `check-update` (every 2 h) messages you once per new
+  fork version, with **Apply update** / **Later** buttons. Upstream only
+  wrote a state file. The button works only for your account and only if
+  that exact version is still pending. `aos update` in a terminal does the
+  same.
+- **Agents.** Agents can check for updates; applying (`aos update`,
+  `check-update --apply`, `aos channel <x>`) is an "ask".
+
+**Re-enable automatic updates.** Set `enabled: true` on either cron in
+`config/crons.yaml`; remove `DISABLE_AUTOUPDATER` from `~/.claude/settings.json` `env`.
 
 ## 2. Agent permissions
 
 **What changed**
 - `cld` runs without `--dangerously-skip-permissions`. `cld-unsafe` keeps the flag and prints a warning first.
 - `core/infra/lib/claude_permissions.py` is the single permission set. `install.sh` applies it, and the `settings_config` reconcile check enforces it (upstream's check re-added blanket `Bash`/`Read`/`Edit`/`Write` allows on every pass).
-  - **allow:** `Bash`, `Glob`, `Grep`, `WebSearch`, `WebFetch`, `Agent`, `Task`, `TodoWrite`, `Skill`; `Read(…/**)` and `Edit(…/**)` for `~/aos`, `~/.aos`, `~/vault`, `~/project`, `/tmp`. Claude Code applies Edit rules to Write too.
+  - **allow:** `Bash`, `Glob`, `Grep`, `WebSearch`, `WebFetch`, `Agent`, `Task`, `TodoWrite`, `Skill`; `Read(…/**)` for `~/aos`, `~/.aos`, `~/vault`, `~/project`, `/tmp`; `Edit(…/**)` for `~/.aos`, `~/vault`, `~/project`, `/tmp`. Claude Code applies Edit rules to Write too.
+  - **ask:** `Edit(~/.aos/config/**)`: comms allowlist, account trust, operator profile, converse defaults.
   - **deny:**
     - Read/Edit of `~/.ssh`, `~/Library/Keychains`, `~/Library/Cookies` and the Safari, Chrome, Chromium, Brave, Edge, Arc and Firefox profile folders;
     - `sudo`, `security`, `curl|sh`, `curl|bash`, `wget|sh`, `wget|bash`;
     - `rm -rf` of `/`, `~` or `$HOME`;
-    - Edit of the operator-only files (§5).
+    - Edit of the operator-only files (§5);
+    - **self-modification:** Edit of `~/aos` (the running framework: agent and skill instructions, hooks, the guard, this module, `crons.yaml`), LaunchAgents/Daemons and shell startup files.
 - `core/hooks/guard_bash.py`, a PreToolUse hook on Bash, registered by install and reconcile. Permission rules match command text and are easy to get around, so the guard parses each command instead. It blocks:
   - `sudo` in any spelling;
   - the `security` CLI (`agent-secret` still works);
   - downloads piped or substituted into a shell or interpreter;
   - recursive `rm` of anything outside the AOS dirs and temp dirs (unresolvable targets like `"$DIR"` get "ask");
   - any mention of the secret folders above;
-  - writes to operator-only files.
+  - writes to operator-only files;
+  - **any write into `~/aos`, `~/.claude`, `~/.claude.json`, LaunchAgents/Daemons or shell startup files.** That covers redirects, cp/mv/tee/ln/chmod, `sed -i`, git write commands, `cd` then write, and inline Python that writes there. Running and reading code in `~/aos` is fine;
+  - crontab edits, `launchctl submit`, and loading any plist other than an existing `com.aos.*` one;
+  - writes into `~/.aos/config` and applying updates get "ask".
 
   Hooks run in every mode, including `cld-unsafe`.
+- **Agents can't give themselves more.** Their instructions, the guard, the permission set, the job schedule and anything that starts at login are off-limits. Framework changes go `~/project/aos` → the fork → your merge → update.
+- **30-minute repair.** The `settings_config`, `claude_defaults` and `runtime_protection` reconcile checks now repair on the 30-minute periodic run, not only on deploy. Anything that slips past the rules (say, a script run from `/tmp`) is undone within half an hour: permissions, the guard hook and the feature flags are restored, and `~/aos` is reset to the fork's `main`.
+- **Opt-in macOS sandbox.** `aos claude-features enable sandbox` turns on Claude Code's sandbox for shell commands. macOS itself enforces it, so even a script an agent writes and runs can't write to `~/aos`, `~/.aos/config` or LaunchAgents, or read SSH keys, keychains or browser data.
+  - Network is limited to the domains AOS uses.
+  - `aos`, `agent-secret`, `launchctl`, `brew`, `gh`, `open`, `tailscale` and git network commands run outside it, as Claude Code documents.
+  - It's off until you've tried it on the Mac mini, because Keychain and Homebrew behaviour inside it is undocumented. If shell commands start failing, `aos claude-features disable sandbox`.
 - The trust dialog is pre-accepted for `~/aos` only, not your home directory.
 - `remoteControlAtStartup` and `claudeInChromeDefaultEnabled` default to off. Upstream's undocumented `"chrome": true` key is no longer written.
 - Every other place that bypassed permissions:
@@ -74,7 +133,7 @@ remove `DISABLE_AUTOUPDATER` from `~/.claude/settings.json` `env`.
   | `core/engine/comms/envoy/runner.py` | bypass + `--allowedTools ""` (which restricted nothing) | `dontAsk --tools ""`: no tools at all |
   | `core/engine/comms/sentinel/spawner.py` | bypass | `dontAsk` + its tool list |
   | `core/engine/comms/converse/turn.py` | bypass | `dontAsk` + each profile's list; the "none" profile gets `--tools ""` |
-  | `core/services/bridge/persistent_session.py`, `session_manager.py` ×2 | `bypassPermissions`, cwd `~` | phone approval (§6b), cwd `~/aos` |
+  | `core/services/bridge/persistent_session.py`, `session_manager.py` ×2 | `bypassPermissions`, cwd `~` | phone approval (§6b), cwd `~/.aos/work` |
 
 **What `dontAsk` means for crons.** A tool call outside the job's list is
 refused immediately instead of waiting for a prompt nobody answers. Each job
@@ -111,7 +170,12 @@ it prints. Turn on Screen Sharing in System Settings → General → Sharing.
 
 ## 5. Trust
 
-- Level 0 (SHADOW) is the default in the `operator.yaml` scaffold and in `config/defaults/trust.yaml` (`defaults.agent_level`/`comms_level: 0`). `trust-review` treats an agent without a level as 0. Onboarding offers Shadow first.
+- **Defaults:**
+  - **Agents: level 2 (SEMI-AUTO).** They act when confident and ask otherwise. Financial commitments, contacting new people, deleting production data and changing goals always escalate.
+  - **Messaging other people: level 0.** Texts and emails to contacts are drafted, never sent on their own.
+  - Set in `config/defaults/trust.yaml` (`defaults.agent_level: 2`, `comms_level: 0`) and the `operator.yaml` scaffold.
+  - Chief's instructions say an agent or capability with no entry uses these defaults. Upstream left that undefined, and at level 0 Chief would not hand work to agents at all.
+  - Onboarding offers Copilot (2) as the default.
 - **Finding: upstream did not enforce human approval in code.**
   - `requires_human_approval: true` was never read.
   - `trust-review promote`, the comms graduation `runner.py confirm … accept` and `converse create --trust 3` applied immediately, and any agent with Bash could run them or edit `trust.yaml`.
@@ -123,7 +187,8 @@ it prints. Turn on Screen Sharing in System Settings → General → Sharing.
   - Lowering trust is never gated.
 - Converse sessions still default to trust 2 (`config/defaults/converse.yaml`, semi-auto with review) — unchanged.
 
-**Raise trust.** In your own Terminal: `aos trust promote <agent> [capability] --to N`.
+**Change trust.** In your own Terminal: `aos trust promote <agent> [capability] --to N`
+(asks you to confirm) or `aos trust demote …` (never gated).
 
 ## 6. Telegram
 
@@ -160,6 +225,7 @@ bot last". Tests: `tests/test_telegram_pair.py`.
   anything malformed, and logs argument *names* to `~/.aos/logs/approval-mcp.log`.
   Run `approval-smoke-test` once on the Mac mini: it asks Claude to write
   `~/Desktop/aos-approval-test.txt`, and your phone should get a prompt.
+- Bridge sessions start in `~/.aos/work`.
 - **Fallback.** Write `dontAsk` (refuse instead of asking) or `bypass`
   (upstream behaviour) to `~/.aos/config/bridge-permission-mode`, then
   `aos deploy bridge`.
@@ -227,11 +293,12 @@ machine, and installing them needs the network, so the full suite could not
 run. Instead:
 - Every test file was run with a fixture-light pytest stand-in on the stdlib Python 3.14. The identical harness was run on the untouched upstream commit for comparison.
   - **Upstream:** 519 passed, 57 failed, 680 skipped.
-  - **This fork:** 570 passed, 58 failed, 685 skipped.
-  - 72 files couldn't import in both runs (yaml/rapidfuzz).
+  - **This fork:** 583 passed, 58 failed, 685 skipped.
+  - About 72 files couldn't import in either run (yaml/rapidfuzz).
 - The 57 failures are the same tests in both runs: missing dependencies or fixtures the stand-in lacks.
 - The one extra is `test_human_gate.py::test_trust_review_promote_refused_without_terminal`, which needs PyYAML. The same check passed by hand: `trust-review promote` exits 3 without a terminal.
-- New tests written and passing here: the guard, permission set, claude-features, human gate, telegram-pair, bridge API auth, approvals, converse command shape and the reconcile checks.
+- New tests written and passing here: the guard (including the self-modification and update cases), permission set, claude-features (including the sandbox), human gate, telegram-pair, bridge API auth, approvals, the Apply-update button, converse command shape and the reconcile checks.
+- GitHub's CI (`.github/workflows/ci.yaml`) runs the full suite with real dependencies on every push to `main`.
 - New or changed tests that need the real environment: bridge auth gate, comms scope/send, migration 136, validate, project layer, people-intel/hygiene.
 - **Run the real suite once on the Mac mini:**
   ```bash
@@ -241,15 +308,14 @@ run. Instead:
 
 ## Known remaining risks
 
-- **Bash is still broadly allowed.** Rules can't confine shell commands to
-  directories. The guard and deny rules stop the obvious and accidental cases,
-  not a determined attacker who controls Claude's input (prompt injection
-  from a web page, email or message). Claude Code's macOS sandbox
-  (`sandbox.enabled`, `sandbox.filesystem.denyRead`, `sandbox.network.allowedDomains`)
-  is the real wall, but it may break keychain access through `agent-secret`.
-  Try it in `~/.claude/settings.json` once things work.
-- **No signature verification on updates.** `aos update` trusts whatever is
-  on the fork's `main`: use 2FA and branch protection, and review merges
+- **Bash is still broadly allowed.** Until you enable the sandbox,
+  confinement is text matching (the guard) plus the 30-minute repair. That
+  stops accidents and casual prompt injection, not a determined attacker
+  who controls Claude's input. The real wall is the opt-in sandbox (§2) plus
+  the non-admin account (checklist).
+- **No signature verification on updates.** `aos update` and the Apply
+  button trust whatever is on the fork's `main`. Use a read-only token on
+  the Mac, 2FA and branch protection on GitHub, and review the sync PRs
   (UPSTREAM.md).
 - **Secrets.** Any process running as you can read every `aos.*` Keychain
   item (no ACLs). `agent-secret set NAME VALUE` puts the value briefly in
