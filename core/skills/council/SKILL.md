@@ -91,9 +91,9 @@ council show <id>               # specific one
 council close                   # adjourn the current council
 ```
 
-## Auto-Dispatch (for Chief)
+## Auto-Dispatch (for Skye)
 
-When Chief encounters a high-stakes decision, **it does not ask the operator to run `council convene`** — it dispatches the council itself, in the background, and the operator reads the synthesis memo when ready. The operator is not the orchestrator of the council; the council is Chief's tool for serving them.
+When Skye encounters a high-stakes decision, **it does not ask the operator to run `council convene`** — it dispatches the council itself, in the background, and the operator reads the synthesis memo when ready. The operator is not the orchestrator of the council; the council is Skye's tool for serving them.
 
 **Triggers that MUST auto-dispatch a council:**
 
@@ -123,7 +123,7 @@ Returns immediately. Reply to the operator with: *"Convening council on <topic>.
 
 **Persistent councils for initiatives.** Tie the council to the initiative in the seed: `council background "<topic>" --seed "Initiative: <slug>. Context: <key locked decisions>. Question: <topic>"`. The chat.jsonl persists — resume across sessions with `council show <id>`.
 
-**Operator interjection on a verdict:** `council say "@architect, the dissent on X is real — re-examine"` (or reply to a Telegram synthesis with `@council <message>`). Treat the interjection as a new seed and re-run — the operator doesn't run the protocol; Chief does.
+**Operator interjection on a verdict:** `council say "@architect, the dissent on X is real — re-examine"` (or reply to a Telegram synthesis with `@council <message>`). Treat the interjection as a new seed and re-run — the operator doesn't run the protocol; Skye does.
 
 **When NOT to council:** simple lookups, single-action requests, decisions already made, operator said "just do it", or high-trust catalog agent with clear scope. If in doubt on a multi-session architectural choice: convene — ~2 minutes wall-clock for a multi-lens stress-test on a decision otherwise made alone.
 

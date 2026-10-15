@@ -34,7 +34,7 @@ def synthesize(council_id: str, topic: str, personas: list[str], chat: Chat) -> 
 
     persona_str = ", ".join(personas)
 
-    synthesis_prompt = f"""You are the Coordinator (Chief) writing a synthesis memo for the operator after a council adjourned. Personas in this council: {persona_str}.
+    synthesis_prompt = f"""You are the Coordinator (Skye) writing a synthesis memo for the operator after a council adjourned. Personas in this council: {persona_str}.
 
 TOPIC: {topic}
 

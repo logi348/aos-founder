@@ -53,7 +53,7 @@ def sandbox(tmp_path):
     (home / ".aos" / "config").mkdir(parents=True)
     (home / ".local" / "bin").mkdir(parents=True)
     (home / "aos").symlink_to(REPO)
-    (home / ".aos" / "config" / "operator.yaml").write_text("agent_name: chief\n")
+    (home / ".aos" / "config" / "operator.yaml").write_text("agent_name: skye\n")
 
     stub_dir = tmp_path / "stubbin"
     stub_dir.mkdir()
@@ -87,7 +87,7 @@ class TestPlainCldUnchanged:
 
     def test_argv_is_exactly_the_pre_existing_flags(self, sandbox):
         result = _run(CLD, [], sandbox["env"])
-        assert 'ARGV=["--agent", "chief"]' in result.stdout
+        assert 'ARGV=["--agent", "skye"]' in result.stdout
 
     def test_extra_arguments_pass_through_untouched(self, sandbox):
         result = _run(CLD, ["do something", "--resume"], sandbox["env"])
@@ -124,7 +124,7 @@ class TestSymlinkInvokedProfile:
         cld2.symlink_to(CLD)
 
         result = _run(cld2, [], sandbox["env"])
-        assert 'ARGV=["--agent", "chief"]' in result.stdout
+        assert 'ARGV=["--agent", "skye"]' in result.stdout
 
     def test_cld2_with_no_profile_dir_exits_2_with_fix_line(self, sandbox, tmp_path):
         cld2 = tmp_path / "cld2"
@@ -187,12 +187,12 @@ class TestUnsafeLauncher:
         env = dict(sandbox["env"])
         env.pop("AOS_CLD_UNSAFE", None)
         result = _run(CLD, ["--resume"], env)
-        assert 'ARGV=["--agent", "chief", "--resume"]' in result.stdout
+        assert 'ARGV=["--agent", "skye", "--resume"]' in result.stdout
 
     def test_unsafe_adds_flag_and_warns(self, sandbox):
         result = _run(CLD_UNSAFE, ["do it"], sandbox["env"])
         assert result.returncode == 0, result.stderr
-        assert 'ARGV=["--dangerously-skip-permissions", "--agent", "chief", "do it"]' in result.stdout
+        assert 'ARGV=["--dangerously-skip-permissions", "--agent", "skye", "do it"]' in result.stdout
         assert "permission checks are OFF" in result.stderr
 
     def test_unsafe_supports_profiles(self, sandbox):

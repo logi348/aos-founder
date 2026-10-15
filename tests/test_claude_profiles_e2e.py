@@ -138,7 +138,7 @@ def test_claude_profiles_release_smoke(tmp_path, monkeypatch):
     )
     assert launch.returncode == 0, launch.stderr
     assert f"CLAUDE_CONFIG_DIR={profile_dir}" in launch.stdout
-    assert 'ARGV=["--agent", "chief"]' in launch.stdout
+    assert 'ARGV=["--agent", "skye"]' in launch.stdout
 
     # ── 3. lane failover — a real usage-limit hit fails over to cld2 ──────
     (home / ".aos" / "config" / "claude-lanes.yaml").write_text("lanes: [default, cld2]\n")

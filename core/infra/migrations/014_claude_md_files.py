@@ -81,7 +81,7 @@ This machine runs AOS. Every session operates within this context.
 
 | Agent | Role |
 |-------|------|
-| **Chief** | Orchestrator. Receives all requests. Delegates or acts directly. |
+| **Skye** | Orchestrator. Receives all requests. Delegates or acts directly. |
 | **Steward** | System health, self-correction, maintenance. |
 | **Advisor** | Analysis, knowledge curation, work planning, reviews. |
 

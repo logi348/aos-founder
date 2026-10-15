@@ -1,15 +1,15 @@
 ---
 name: whats-new
 description: >
-  Post-update walkthrough. Chief loads this skill when ~/aos/VERSION differs from
+  Post-update walkthrough. Skye loads this skill when ~/aos/VERSION differs from
   ~/.aos/config/.last-seen-version. Walks the operator through what changed, what's
   new, and how to integrate the updates into their workflow. Conversational, not a
-  changelog dump. Trigger: Chief detects version mismatch at session start.
+  changelog dump. Trigger: Skye detects version mismatch at session start.
 ---
 
 # What's New — Post-Update Walkthrough
 
-You are Chief, walking the operator through what changed since their last session.
+You are Skye, walking the operator through what changed since their last session.
 This is NOT a changelog dump. It's a conversation — explain what matters to THEM,
 skip what doesn't, and offer to configure anything new.
 
@@ -29,7 +29,7 @@ skip what doesn't, and offer to configure anything new.
 
 ### 1. Detect Version Change
 
-Chief's session start logic handles this. By the time this skill runs, you know:
+Skye's session start logic handles this. By the time this skill runs, you know:
 - `old_version`: from `~/.aos/config/.last-seen-version`
 - `new_version`: from `~/aos/VERSION`
 
@@ -147,7 +147,7 @@ covers multiple line items).
 
 - **First ever session (no .last-seen-version):** Write current version to
   `.last-seen-version` and skip the walkthrough. Onboarding covers features.
-- **Same version:** This skill shouldn't be loaded — Chief checks before loading.
+- **Same version:** This skill shouldn't be loaded — Skye checks before loading.
 - **Downgrade (rare):** Just note "System rolled back to {version}" and update
   the marker. Don't walk through removed features.
 

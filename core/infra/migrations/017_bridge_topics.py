@@ -3,7 +3,7 @@ Migration 017: Bootstrap Bridge v2 forum topic infrastructure.
 
 Creates ~/.aos/config/bridge-topics.yaml with:
 1. forum_group_id from projects.yaml
-2. Existing project topic IDs (nuchay, chief, etc.)
+2. Existing project topic IDs (nuchay, skye, etc.)
 3. System topic slots (daily, alerts, work, knowledge, system)
 4. Creates the 'daily' topic via Telegram API (always-on topic)
 

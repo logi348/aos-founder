@@ -105,7 +105,7 @@ python3 ~/aos/core/engine/work/cli.py json
 > Find the task by searching if they give a title instead of an ID. Run `cli.py done`.
 
 **"What should I work on?"**
-> If initiatives are active, Chief handles this natively — it reads the pre-computed briefing from injected context and routes. No skill load needed.
+> If initiatives are active, Skye handles this natively — it reads the pre-computed briefing from injected context and routes. No skill load needed.
 > Otherwise: Run `cli.py list --status todo,active`. Consider priority, energy level, and due dates. Suggest the top 1-3.
 
 **Quick capture / "Remind me to..."**
@@ -131,7 +131,7 @@ When `operator.yaml → initiatives.enabled: true`:
 
 ### Full Pipeline Protocol
 
-**Whenever an initiative is being shaped, planned, gate-checked, or an execution decision arises (routing by status, deviation rules, session boundaries), read `references/initiative-pipeline.md` in this skill's directory first.** It is the single source of truth for the pipeline — chief.md only routes here.
+**Whenever an initiative is being shaped, planned, gate-checked, or an execution decision arises (routing by status, deviation rules, session boundaries), read `references/initiative-pipeline.md` in this skill's directory first.** It is the single source of truth for the pipeline — skye.md only routes here.
 
 ### Source Reference Display
 When showing task details (`work show`), if the task has a `source_ref` field, display it:

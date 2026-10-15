@@ -1,6 +1,6 @@
 """Mesh Identity — agent addressing on the mesh.
 
-Agents are addressed as: agent@node (e.g., chief@alex, advisor@khalid).
+Agents are addressed as: agent@node (e.g., skye@alex, advisor@khalid).
 Nodes are addressed by name (e.g., alex, khalid).
 
 This module handles parsing, validation, and resolution of mesh addresses.

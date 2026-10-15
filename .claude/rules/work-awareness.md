@@ -10,7 +10,7 @@ You have access to a work tracking system with project-scoped IDs, fuzzy resolut
 
 ## Task IDs
 
-Tasks use project-scoped IDs: `aos#3`, `chief#1`, `t#1` (unassigned). Subtasks use dot notation: `aos#3.1`, `aos#3.2`.
+Tasks use project-scoped IDs: `aos#3`, `skye#1`, `t#1` (unassigned). Subtasks use dot notation: `aos#3.1`, `aos#3.2`.
 
 You can resolve tasks by:
 - Exact ID: `work done aos#3`

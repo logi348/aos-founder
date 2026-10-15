@@ -250,7 +250,7 @@ def _global_sections(role: str) -> dict:
 
 | Agent | Role |
 |-------|------|
-| **Chief** | Orchestrator. Receives all requests. Delegates or acts directly. |
+| **Skye** | Orchestrator. Receives all requests. Delegates or acts directly. |
 | **Steward** | System health, self-correction, maintenance. |
 | **Advisor** | Analysis, knowledge curation, work planning, reviews. |
 

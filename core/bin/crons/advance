@@ -9,11 +9,11 @@ again unattended (the work-runner was deleted in v0.7.7). This nightly pass:
   1. Gathers what is open, read-only: active/todo tasks with their latest
      handoff, inbox items, active initiatives, recent quick captures, and
      the previous report (so it doesn't redo work or re-ask questions).
-  2. Runs Chief headlessly with --permission-mode dontAsk (anything not
+  2. Runs Skye headlessly with --permission-mode dontAsk (anything not
      pre-approved is refused, nothing waits on a prompt), the normal
      settings.json rules, the Bash guard, and an extra deny list for
      anything outward-facing or irreversible.
-  3. Chief picks up to MAX_ITEMS items and takes the next *reversible* step
+  3. Skye picks up to MAX_ITEMS items and takes the next *reversible* step
      on each: research, critique, a plan, a draft, a prototype on a git
      branch under ~/project. Outputs go to ~/vault/advance/<date>/.
      Progress is recorded on the task (work activity/handoff).
@@ -237,7 +237,7 @@ Previous report ({ctx.get("previous", {}).get("date", "none")}):
 
 def build_command() -> list[str]:
     return [
-        CLAUDE_BIN, "--print", "--agent", "chief",
+        CLAUDE_BIN, "--print", "--agent", "skye",
         "--permission-mode", "dontAsk",
         # No --tools: a renamed built-in would make every run fail. dontAsk
         # already refuses anything not pre-approved here or in settings.json.

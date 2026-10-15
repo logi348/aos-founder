@@ -18,12 +18,12 @@ AOS is a configured Claude Code harness. Claude Code is the runtime.
 
 ## Agent Installation
 
-System agent source: `core/agents/` (chief.md, steward.md, advisor.md)
+System agent source: `core/agents/` (skye.md, steward.md, advisor.md)
 Catalog templates: `templates/agents/` (engineer.md, developer.md, etc.)
 Active agents: `~/.claude/agents/` (installed during setup)
 
 Install mechanism:
-- **System agents** (chief, steward, advisor): **symlinked** from `core/agents/` so they auto-update with the OS.
+- **System agents** (skye, steward, advisor): **symlinked** from `core/agents/` so they auto-update with the OS.
 - **Catalog agents** (engineer, developer, etc.): **copied** from `templates/agents/` so user customizations survive updates.
   Catalog agents track their source via frontmatter: `_source: catalog/engineer@1.0`
 
@@ -32,7 +32,7 @@ Install mechanism:
 Skill source: `~/aos/core/skills/` (development).
 Active skills: `~/.claude/skills/` (installed globally, available in every session).
 
-Installed globally (not project-scoped) because agents are global — Chief needs
+Installed globally (not project-scoped) because agents are global — Skye needs
 skills regardless of which directory the session is in.
 
 | Skill | Trigger | What |

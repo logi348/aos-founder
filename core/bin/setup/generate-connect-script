@@ -39,10 +39,10 @@ AGENT_NAME=$("$AOS_PY" -c "
 import yaml
 try:
     with open('$HOME/.aos/config/operator.yaml') as f:
-        print(yaml.safe_load(f).get('agent_name') or 'chief')
+        print(yaml.safe_load(f).get('agent_name') or 'skye')
 except Exception:
-    print('chief')
-" 2>/dev/null || echo chief)
+    print('skye')
+" 2>/dev/null || echo skye)
 
 mkdir -p "$(dirname "$OUT")"
 

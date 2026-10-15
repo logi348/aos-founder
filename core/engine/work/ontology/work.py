@@ -662,7 +662,7 @@ class WorkAdapter(Adapter):
         return re.sub(r'[-_]v\d+$', '', base)
 
     def _next_scoped_id(self, prefix: str) -> str:
-        """Generate next project-scoped ID: aos#1, aos#2, chief#1, t#1, etc."""
+        """Generate next project-scoped ID: aos#1, aos#2, skye#1, t#1, etc."""
         pattern = f"{prefix}#%"
         rows = self._conn.execute(
             "SELECT id FROM tasks WHERE id LIKE ?", (pattern,)

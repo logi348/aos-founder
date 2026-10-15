@@ -134,7 +134,7 @@ def test_running_aos_code_is_fine():
 def test_writing_aos_runtime_denied():
     for cmd in ["echo '  evil: {}' >> ~/aos/config/crons.yaml",
                 "sed -i '' 's/enabled: false/enabled: true/' ~/aos/config/crons.yaml",
-                "cp /tmp/x.py ~/aos/core/hooks/guard_bash.py", "tee ~/aos/core/agents/chief.md < /tmp/a",
+                "cp /tmp/x.py ~/aos/core/hooks/guard_bash.py", "tee ~/aos/core/agents/skye.md < /tmp/a",
                 "cd ~/aos && echo hi > CLAUDE.md", "cd ~/aos/core && rm -f hooks/guard_bash.py",
                 "git -C ~/aos checkout -- .", "cd ~/aos && git pull",
                 "python3 -c \"open('" + str(HOME) + "/aos/core/x.py','w').write('')\"",

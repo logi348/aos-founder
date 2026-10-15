@@ -695,7 +695,7 @@ def cmd_handoff(args):
 
 
 def cmd_dispatch(args):
-    """Generate a dispatch prompt for a task (for Chief to inject into agent prompts)."""
+    """Generate a dispatch prompt for a task (for Skye to inject into agent prompts)."""
     if not args:
         print("Usage: dispatch <task_id or search>")
         sys.exit(1)

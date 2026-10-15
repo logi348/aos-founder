@@ -36,7 +36,7 @@ import time
 from pathlib import Path
 
 import bridge_permissions
-import chief_brief
+import skye_brief
 from bridge_events import bridge_event
 
 logger = logging.getLogger("aos.bridge.persistent_session")
@@ -69,10 +69,10 @@ def _get_default_agent() -> str:
         import yaml
         op_file = Path.home() / ".aos" / "config" / "operator.yaml"
         if op_file.exists():
-            return (yaml.safe_load(op_file.read_text()) or {}).get("agent_name", "chief")
+            return (yaml.safe_load(op_file.read_text()) or {}).get("agent_name", "skye")
     except Exception:
         pass
-    return "chief"
+    return "skye"
 
 
 def _spawn_env() -> tuple[str, dict]:
@@ -151,7 +151,7 @@ class PersistentSession:
                 "your next message continues the conversation. Don't ask for confirmation on "
                 "routine tasks. If you need to delegate, use the Agent tool with subagent_type: "
                 "steward (system health), advisor (analysis), or other installed agents. "
-                + bridge_permissions.PROMPT_NOTE + chief_brief.TEXT + ambient,
+                + bridge_permissions.PROMPT_NOTE + skye_brief.TEXT + ambient,
             ]
 
             if resume_session_id:

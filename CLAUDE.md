@@ -70,7 +70,7 @@ core/infra/reconcile/
 ~/aos/                       SYSTEM CODE (this repo)
 ├── core/
 │   ├── services/              Bridge, crawler, mesh, transcriber, whatsmeow
-│   ├── agents/                chief.md, steward.md, advisor.md
+│   ├── agents/                skye.md, steward.md, advisor.md
 │   ├── work/                  Work engine + hooks (inject_context, session_close)
 │   ├── infra/reconcile/       Invariant checks (runs every update)
 │   ├── infra/migrations/      Numbered one-shot migrations

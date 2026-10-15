@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import bridge_permissions
-import chief_brief
+import skye_brief
 from bridge_events import bridge_event
 
 logger = logging.getLogger("aos.bridge.session_manager")
@@ -107,16 +107,16 @@ def cancel_stream(user_key: str) -> bool:
 
 
 def _get_default_agent() -> str:
-    """Read operator's configured agent name (default: chief)."""
+    """Read operator's configured agent name (default: skye)."""
     try:
         import yaml
         op_file = Path.home() / ".aos" / "config" / "operator.yaml"
         if op_file.exists():
             op = yaml.safe_load(op_file.read_text()) or {}
-            return op.get("agent_name", "chief")
+            return op.get("agent_name", "skye")
     except Exception:
         pass
-    return "chief"
+    return "skye"
 
 
 # ── Event types ──────────────────────────────────────────────
@@ -530,9 +530,9 @@ async def stream_claude(
             f"[Attached media — use the Read tool to view these files]\n{img_lines}"
         )
 
-    # Build command — lightweight Chief identity without full --agent harness.
-    # --agent chief triggers CLAUDE.md chain + hooks + MCP on EVERY message
-    # (each is a new process). This condensed prompt gives Chief's personality
+    # Build command — lightweight Skye identity without full --agent harness.
+    # --agent skye triggers CLAUDE.md chain + hooks + MCP on EVERY message
+    # (each is a new process). This condensed prompt gives Skye's personality
     # without the startup overhead.
     cmd = [
         "claude",
@@ -549,7 +549,7 @@ async def stream_claude(
         str(max_budget_usd),
     ]
 
-    # Chief identity — lightweight prompt for default conversations.
+    # Skye identity — lightweight prompt for default conversations.
     # Reads operator name from config for personalization.
     if not agent_name:
         default_agent = _get_default_agent()
@@ -584,7 +584,7 @@ async def stream_claude(
             "When the operator references a person or topic from a past conversation, recall "
             "it with `comms-recall search \"<topic>\"` or `comms-recall person \"<name>\"` "
             "rather than asking them to re-explain. "
-            + bridge_permissions.PROMPT_NOTE + chief_brief.TEXT + _ambient,
+            + bridge_permissions.PROMPT_NOTE + skye_brief.TEXT + _ambient,
         ])
 
     # Session resumption (not for agent dispatches — they get fresh context)

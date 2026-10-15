@@ -1665,7 +1665,7 @@ _ACTOR_KINDS = ("operator", "agent", "cron", "import", "unknown")
 
 
 def _actor_name(raw: str | None) -> str:
-    """``"agent:chief"`` → ``"chief"``. The kind lives in its own field."""
+    """``"agent:skye"`` → ``"skye"``. The kind lives in its own field."""
     name = (raw or "").strip()
     if ":" in name:
         head, _, tail = name.partition(":")

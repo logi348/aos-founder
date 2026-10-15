@@ -2,7 +2,7 @@
 core/hooks/trust_log_dispatch.py — automatic trust-log entries for catalog
 dispatch (aos#236.4).
 
-chief.md says every catalog dispatch must be logged
+skye.md says every catalog dispatch must be logged
 (`trust-log record <agent> <capability> <result>`), but the audit
 (2026-09-13) found only 5 rows had ever been written, stale 54 days —
 the mandate depended on the dispatching agent remembering to run the CLI
@@ -10,7 +10,7 @@ by hand every single time, and it doesn't happen.
 
 This is a PostToolUse hook: when the tool is `Agent` and its `subagent_type`
 is a catalog agent (any ~/.claude/agents/*.md whose frontmatter `name:` is
-not chief/steward/advisor/onboard — those four are system roles, not
+not skye/steward/advisor/onboard — those four are system roles, not
 catalog dispatches), it appends a `record ... executed` row automatically,
 via the real `trust-log` CLI (core/bin/cli/trust-log) so the log format and
 scoring stay in one place. Follows core/hooks/mention_context.py's contract:
@@ -38,7 +38,7 @@ def _load_hook_fresh():
     return mod
 
 
-CHIEF_MD = '---\nname: chief\ndescription: "orchestrator"\ntools: "*"\n---\n\nChief.\n'
+SKYE_MD = '---\nname: skye\ndescription: "orchestrator"\ntools: "*"\n---\n\nChief.\n'
 STEWARD_MD = '---\nname: steward\ndescription: "health"\nmodel: haiku\n---\n\nSteward.\n'
 ADVISOR_MD = '---\nname: advisor\ndescription: "analysis"\nmodel: sonnet\n---\n\nAdvisor.\n'
 ONBOARD_MD = '---\nname: onboard\ndescription: "setup"\nrole: Onboarding\n---\n\nOnboard.\n'
@@ -54,7 +54,7 @@ SENTINEL_MD = (
 def _make_agents_dir(root: Path) -> Path:
     agents_dir = root / ".claude" / "agents"
     agents_dir.mkdir(parents=True)
-    (agents_dir / "chief.md").write_text(CHIEF_MD)
+    (agents_dir / "skye.md").write_text(SKYE_MD)
     (agents_dir / "steward.md").write_text(STEWARD_MD)
     (agents_dir / "advisor.md").write_text(ADVISOR_MD)
     (agents_dir / "onboard.md").write_text(ONBOARD_MD)
@@ -135,7 +135,7 @@ def test_dispatch_to_a_core_agent_is_not_logged(tmp_path, monkeypatch):
     hook_input = {
         "session_id": "sess-chief-1",
         "tool_name": "Agent",
-        "tool_input": {"subagent_type": "chief", "description": "internal dispatch"},
+        "tool_input": {"subagent_type": "skye", "description": "internal dispatch"},
         "tool_response": {"ok": True},
     }
     _run_hook(mod, hook_input)

@@ -2,7 +2,7 @@
 
 **Status:** Draft
 **Created:** 2026-03-28
-**Author:** Alex + Chief
+**Author:** Alex + Skye
 
 ## Overview
 
@@ -135,18 +135,18 @@ Node not heard from in 3 minutes → marked offline.
 3. Steward publishes event to local eventd: "service.bridge.crashed"
 4. Mesh service watches eventd for error events
 5. Mesh service forwards to admin node: POST /fleet/error
-6. Admin's Chief/Steward receives notification
+6. Admin's Skye/Steward receives notification
 7. (Future) Admin's Steward can push fix back to Ahmed's node
 ```
 
 ### Layer 2: Agent Protocol
 
-**Agent identity:** `{agent}@{node}` — e.g., `chief@alex`, `advisor@khalid`
+**Agent identity:** `{agent}@{node}` — e.g., `skye@alex`, `advisor@khalid`
 
 **Message format:**
 ```json
 {
-  "from": "chief@alex",
+  "from": "skye@alex",
   "to": "advisor@khalid",
   "type": "query",
   "payload": {
@@ -198,10 +198,10 @@ sharing:
 
 **Task delegation:**
 ```
-Your Chief → POST /message to khalid:4100
+Your Skye → POST /message to khalid:4100
 {
-  "from": "chief@alex",
-  "to": "chief@khalid",
+  "from": "skye@alex",
+  "to": "skye@khalid",
   "type": "delegate",
   "payload": {
     "task": "Research Arabic morphological analyzers",
@@ -211,7 +211,7 @@ Your Chief → POST /message to khalid:4100
   }
 }
 
-Khalid's Chief can accept or decline.
+Khalid's Skye can accept or decline.
 If accepted, results come back as a "result" message.
 ```
 
@@ -322,7 +322,7 @@ aos mesh feed
 │   │
 │   ├── mesh/                       # Shared mesh libraries
 │   │   ├── __init__.py
-│   │   ├── identity.py             # Agent identity (chief@alex)
+│   │   ├── identity.py             # Agent identity (skye@alex)
 │   │   ├── protocol.py             # Message format, types
 │   │   ├── federation.py           # Cross-node QMD search
 │   │   ├── sharing.py              # Privacy boundary enforcement
@@ -404,7 +404,7 @@ aos mesh feed
 - Agent-to-agent messaging
 - Federated QMD search
 - Collection-based sharing boundaries
-- **Milestone:** Your Chief queries Khalid's shared knowledge
+- **Milestone:** Your Skye queries Khalid's shared knowledge
 
 ### Phase 5: Social Layer
 - Agent activity feed

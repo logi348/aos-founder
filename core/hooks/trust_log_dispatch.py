@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """PostToolUse hook — automatic trust-log entries for catalog dispatch.
 
-chief.md's dispatch mandate says every catalog dispatch gets logged:
+skye.md's dispatch mandate says every catalog dispatch gets logged:
 `trust-log record <agent> <capability> <result> --action "..."`. Depending
 on the dispatching agent to remember to run that CLI by hand never worked —
 the dangling-wires audit (2026-09-13) found 5 rows had ever been written,
 stale 54 days. This hook makes it automatic: whenever the `Agent` tool is
 used to dispatch a CATALOG agent (anything under ~/.claude/agents/*.md whose
-frontmatter `name:` is not chief/steward/advisor/onboard — those four are
+frontmatter `name:` is not skye/steward/advisor/onboard — those four are
 system roles, not specialist dispatches), it writes an `executed` row via
 the real trust-log CLI, so log format and scoring stay in one place
 (core/bin/cli/trust-log).
@@ -31,9 +31,9 @@ from pathlib import Path
 AGENTS_DIR = Path.home() / ".claude" / "agents"
 
 # The four system roles — dispatched internally, not "catalog dispatch" in
-# the chief.md sense. Comparison is case-insensitive (frontmatter is
+# the skye.md sense. Comparison is case-insensitive (frontmatter is
 # lowercase; subagent_type as typed by callers may not always match case).
-CORE_AGENTS = {"chief", "steward", "advisor", "onboard"}
+CORE_AGENTS = {"skye", "steward", "advisor", "onboard"}
 
 # core/bin/cli/trust-log, resolved relative to this file so it works whether
 # this hook runs from ~/aos (symlinked release) or a dev worktree — never a

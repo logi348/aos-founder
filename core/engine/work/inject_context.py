@@ -64,7 +64,7 @@ def _safe_exit(context: str = ""):
 
 
 def _check_onboarding():
-    """If fresh install, tell Chief to run onboarding."""
+    """If fresh install, tell Skye to run onboarding."""
     onboarding_file = Path.home() / ".aos" / "config" / "onboarding.yaml"
     if not onboarding_file.exists():
         return "**ONBOARDING REQUIRED**: This is a fresh install. You MUST load the onboard skill (`~/.claude/skills/onboard/SKILL.md`) and run the onboarding flow NOW before doing anything else. Read the skill file and follow its protocol."
@@ -822,7 +822,7 @@ def main():
     except Exception:
         pass
 
-    # --- Suggested focus (the 10x piece — Chief never gathers, it reads) ---
+    # --- Suggested focus (the 10x piece — Skye never gathers, it reads) ---
     suggestions = []
     # 1. Handoff tasks = resume what was in progress
     if handoff_tasks:
@@ -842,7 +842,7 @@ def main():
         pass
     # 5. Initiative next action (from digest)
     for init_title in initiative_ids:
-        # The digest is already in lines — Chief can read it
+        # The digest is already in lines — Skye can read it
         pass
 
     if suggestions:

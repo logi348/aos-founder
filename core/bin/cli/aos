@@ -374,7 +374,7 @@ SYNCMCP
         fi
 
         # Check agent symlinks
-        for agent in chief steward advisor; do
+        for agent in skye steward advisor; do
             link="$HOME/.claude/agents/${agent}.md"
             if [ -L "$link" ]; then
                 echo "  ✓ Agent $agent symlinked"
@@ -882,8 +882,8 @@ print('\n'.join(deps))
 import yaml
 from pathlib import Path
 d = yaml.safe_load(Path.home().joinpath('.aos/config/operator.yaml').read_text()) or {}
-print(d.get('agent_name', 'chief'))
-" 2>/dev/null || echo "chief")
+print(d.get('agent_name', 'skye'))
+" 2>/dev/null || echo "skye")
             echo "Current agent name: $current"
             exit 1
         fi
@@ -895,22 +895,22 @@ print(d.get('agent_name', 'chief'))
         fi
 
         agents_dir="$HOME/.claude/agents"
-        chief_source="$AOS_DIR/core/agents/chief.md"
+        chief_source="$AOS_DIR/core/agents/skye.md"
 
         # Read current name
         old_name=$("$AOS_PY" -c "
 import yaml
 from pathlib import Path
 d = yaml.safe_load(Path.home().joinpath('.aos/config/operator.yaml').read_text()) or {}
-print(d.get('agent_name', 'chief'))
-" 2>/dev/null || echo "chief")
+print(d.get('agent_name', 'skye'))
+" 2>/dev/null || echo "skye")
 
         # Create new symlink
         ln -sf "$chief_source" "$agents_dir/${new_name}.md"
         echo "  Created agent: $agents_dir/${new_name}.md"
 
-        # Remove old symlink if it was a custom name (don't remove chief.md)
-        if [[ "$old_name" != "chief" ]] && [[ "$old_name" != "$new_name" ]]; then
+        # Remove old symlink if it was a custom name (don't remove skye.md)
+        if [[ "$old_name" != "skye" ]] && [[ "$old_name" != "$new_name" ]]; then
             rm -f "$agents_dir/${old_name}.md" 2>/dev/null
             echo "  Removed old: $agents_dir/${old_name}.md"
         fi
@@ -1039,7 +1039,7 @@ for f in sorted(MIGRATION_DIR.glob('[0-9][0-9][0-9]_*.py')):
 print()
 print('Symlinks:')
 agents_dir = Path.home() / '.claude' / 'agents'
-for agent in ['chief.md', 'steward.md', 'advisor.md']:
+for agent in ['skye.md', 'steward.md', 'advisor.md']:
     link = agents_dir / agent
     source = AOS_DIR / 'core' / 'agents' / agent
     if link.is_symlink() and link.resolve() == source.resolve():

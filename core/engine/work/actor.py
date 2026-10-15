@@ -26,7 +26,7 @@ mutation flows through. Nothing new is invented here:
   cheap list query can show attribution without joining history.
 
 The actor string format matches the vocabulary already in the DB and in
-``core/engine/work/ontology/activity.py``: ``operator``, ``agent:chief``,
+``core/engine/work/ontology/activity.py``: ``operator``, ``agent:skye``,
 ``system:work``, ``cron:nightly-review``, ``import:islah``, ``unknown``.
 
 All writes here are best-effort: failing to record a signature must never lose
@@ -97,7 +97,7 @@ ATTRIBUTION_FIX_AT = "2026-07-26T16:11:00"
 def is_suspect_operator_row(actor_str: str, actor_type: str, timestamp: str) -> bool:
     """True when an `operator` attribution predates the fix and can't be trusted.
 
-    A pre-cutoff *named* actor (`agent:chief`) is still trustworthy — only the
+    A pre-cutoff *named* actor (`agent:skye`) is still trustworthy — only the
     silently-defaulted value is suspect.
     """
     return (
@@ -156,8 +156,8 @@ def _parse_spec(spec: str, *, session_id: str | None = None) -> Actor | None:
 
     Accepted forms:
       ``operator``            → the human, by hand
-      ``chief`` / ``advisor`` → an agent by name (bare names are agents)
-      ``agent:chief``         → explicit kind:name
+      ``skye`` / ``advisor`` → an agent by name (bare names are agents)
+      ``agent:skye``         → explicit kind:name
       ``system:work``         → the system acting on its own (a cascade)
       ``cron:nightly-review`` → a scheduled job
       ``import:islah``        → a bulk import
@@ -338,17 +338,17 @@ def _display_name(actor: Actor) -> str:
         name = name.split(":", 1)[1]
     if name == "unidentified":
         return "An unidentified agent"
-    # agent — "chief" → "Chief", "session-close" → "Session-close"
+    # agent — "skye" → "Skye", "session-close" → "Session-close"
     return name[:1].upper() + name[1:]
 
 
 def display_name(actor: Actor) -> str:
-    """Just the who, no verb: 'You' / 'Chief' / 'Someone'."""
+    """Just the who, no verb: 'You' / 'Skye' / 'Someone'."""
     return _display_name(actor)
 
 
 def describe(actor: Actor, verb: str, subject: str) -> str:
-    """Plain English: 'Chief completed "Draft the constitution"'.
+    """Plain English: 'Skye completed "Draft the constitution"'.
 
     Operator actor renders as 'You'. Unknown renders as 'Someone'.
     """

@@ -7,7 +7,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import advance_report  # noqa: E402
-import chief_brief  # noqa: E402
+import skye_brief  # noqa: E402
 
 
 def _write(tmp_path, monkeypatch, generated, **report):
@@ -48,8 +48,8 @@ def test_failed_run_is_reported_and_text_is_escaped(tmp_path, monkeypatch):
     assert "usage limit" in text
 
 
-def test_chief_brief_routes_to_skills_and_keeps_ideas_moving():
-    t = chief_brief.TEXT
+def test_skye_brief_routes_to_skills_and_keeps_ideas_moving():
+    t = skye_brief.TEXT
     for skill in ("ramble", "capture", "council", "step-by-step", "recall", "verification-before-completion"):
         assert skill in t
     assert "overnight" in t and "work/cli.py" in t

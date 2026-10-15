@@ -230,24 +230,24 @@ fi
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 2b. CONTEXT BUDGET — always-loaded context must stay lean
 #
-# chief.md rides in the system prompt of EVERY session; rules load into
+# skye.md rides in the system prompt of EVERY session; rules load into
 # every session's memory; skill descriptions load at startup. Protocols
 # belong in skills (loaded on demand), reference docs in docs/reference/
 # (QMD-indexed). This gate makes the context diet structural: the next
-# feature that fattens Chief fails here and puts its protocol in a skill.
+# feature that fattens Skye fails here and puts its protocol in a skill.
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 echo ""
 echo "Context Budget"
 echo "──────────────"
 
-# chief.md is the always-loaded system prompt — hard cap 6KB
+# skye.md is the always-loaded system prompt — hard cap 6KB
 CHIEF_CAP=6000
-chief_size=$(wc -c < "$DEV/core/agents/chief.md" 2>/dev/null | tr -d ' ')
+chief_size=$(wc -c < "$DEV/core/agents/skye.md" 2>/dev/null | tr -d ' ')
 chief_size=${chief_size:-0}
 if [[ "$chief_size" -gt "$CHIEF_CAP" ]]; then
-    fail "chief.md is ${chief_size}B (cap ${CHIEF_CAP}B) — move protocol text into the skill that owns it; chief.md routes, it doesn't recite"
+    fail "skye.md is ${chief_size}B (cap ${CHIEF_CAP}B) — move protocol text into the skill that owns it; skye.md routes, it doesn't recite"
 else
-    pass "chief.md within budget (${chief_size}B / ${CHIEF_CAP}B)"
+    pass "skye.md within budget (${chief_size}B / ${CHIEF_CAP}B)"
 fi
 
 # Rules load into every session. Per-file cap 4KB (a rule states behavior or

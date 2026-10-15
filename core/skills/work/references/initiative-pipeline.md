@@ -1,6 +1,6 @@
 # Initiative Pipeline — Full Protocol
 
-Loaded on demand by the `work` skill (and Chief) whenever an initiative is being shaped, planned, gated, or executed. This is the single source of truth for the pipeline — chief.md only routes here.
+Loaded on demand by the `work` skill (and Skye) whenever an initiative is being shaped, planned, gated, or executed. This is the single source of truth for the pipeline — skye.md only routes here.
 
 
 Gate: only active when `operator.yaml → initiatives.enabled: true`. Skip entirely if absent.

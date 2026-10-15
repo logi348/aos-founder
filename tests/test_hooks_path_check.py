@@ -2,7 +2,7 @@
 core/infra/reconcile/checks/hooks.py — PostToolUse trust-log-dispatch wiring
 (aos#236.4).
 
-chief.md's catalog-dispatch mandate has no enforcement today, which is why
+skye.md's catalog-dispatch mandate has no enforcement today, which is why
 the dangling-wires audit found only 5 trust-log rows ever written. The
 PostToolUse hook (core/hooks/trust_log_dispatch.py) makes the write
 automatic; this reconcile check is what makes SURE that hook stays

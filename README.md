@@ -70,7 +70,7 @@ markdown with frontmatter. Most things are files.
 ```
 INTERFACE ──── Telegram  ·  cmux + CLI  ·  Mobile
      |
-AGENTS ─────── Chief  ·  Steward  ·  Advisor  ·  Catalog  ·  Councils
+AGENTS ─────── Skye  ·  Steward  ·  Advisor  ·  Catalog  ·  Councils
      |
 WORK ────────── Initiatives  ·  Projects  ·  Tasks  ·  Inbox  ·  Reviews
      |
@@ -99,7 +99,7 @@ Three tiers. Start with the system agents, activate from the catalog, or write y
 
 | Agent | Role | Model |
 |:------|:-----|:------|
-| **Chief** | Orchestrator. Receives all requests, delegates or acts directly. | opus |
+| **Skye** | Orchestrator. Receives all requests, delegates or acts directly. | opus |
 | **Steward** | Health monitoring, self-correction, drift detection. | haiku |
 | **Advisor** | Analysis, knowledge curation, work planning, reviews. | sonnet |
 
@@ -308,7 +308,7 @@ self-test, and a typed confirmation. Machines update themselves at 4am.
 
 ```bash
 aos start              # Open cmux with Claude Code ready
-cld                    # Talk to Chief in the current terminal
+cld                    # Talk to Skye in the current terminal
 aos snapshot           # What this system actually consists of (--json)
 aos status             # Migration version + pending
 aos self-test          # Verify the installation

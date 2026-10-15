@@ -6,7 +6,7 @@ migrations — see core/infra/reconcile/checks/hooks.py and
 core/infra/migrations/130_trust_log_dispatch_hook.py, which cover existing
 installs). This locks in that the automatic trust-log-dispatch PostToolUse
 hook is part of that fresh-install bootstrap too, not just the drift-repair
-paths — so a brand new machine gets chief.md's catalog-dispatch mandate
+paths — so a brand new machine gets skye.md's catalog-dispatch mandate
 enforced from the first session, matching how SessionStart/SessionEnd are
 already handled here.
 """

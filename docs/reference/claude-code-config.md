@@ -19,7 +19,7 @@ These have been tested and confirmed working:
 |---------|-----|------|----------|
 | Chrome on by default | `"claudeInChromeDefaultEnabled"` | `~/.claude.json` | docs, 2026-10 |
 | Remote Control all sessions | `"remoteControlAtStartup"` | `~/.claude/settings.json` (docs); upstream AOS also wrote `~/.claude.json` | docs, 2026-10 |
-| Default agent | `"agent": "chief"` | `~/.claude/settings.json` | confirmed |
+| Default agent | `"agent": "skye"` | `~/.claude/settings.json` | confirmed |
 | Claude Code auto-update off | `"env": {"DISABLE_AUTOUPDATER": "1"}` | `~/.claude/settings.json` | docs, 2026-10 |
 
 ## AOS Defaults (hardened fork)

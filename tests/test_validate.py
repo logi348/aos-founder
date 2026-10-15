@@ -102,7 +102,7 @@ def test_reference_operator_yaml_shape_has_no_unknown_key_warnings(tmp_path):
         "schedule": {"blocks": [], "weekends": {"active_after": "08:00"}},
         "daily_loop": {"morning_briefing": "06:00", "evening_checkin": "21:00"},
         "trust": {"default_level": 1, "escalation": "always"},
-        "agent_name": "chief",
+        "agent_name": "skye",
         "initiatives": {"enabled": True, "max_active": 3},
         "nickname": "Boss",
         "notifications": {"learning_tips": True, "morning_briefing": True},

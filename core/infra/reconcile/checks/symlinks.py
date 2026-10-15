@@ -1,7 +1,7 @@
 """
 Invariant: System agents, skills, and rules are symlinked from the framework.
 
-Agents: ~/.claude/agents/chief.md → ~/aos/core/agents/chief.md
+Agents: ~/.claude/agents/skye.md → ~/aos/core/agents/skye.md
 Skills: ~/.claude/skills/recall/  → ~/aos/core/skills/recall/
 Rules:  ~/.claude/rules/work-awareness.md → ~/aos/.claude/rules/work-awareness.md
 

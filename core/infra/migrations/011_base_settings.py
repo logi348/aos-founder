@@ -2,7 +2,7 @@
 Migration 011: Bootstrap Claude Code settings with AOS defaults.
 
 A fresh install needs:
-- agent: chief (so Chief is the default agent)
+- agent: skye (so Skye is the default agent)
 - env vars for agent teams
 - PostCompact hook (re-inject work context after compaction)
 
@@ -21,7 +21,7 @@ SETTINGS_FILE = Path.home() / ".claude" / "settings.json"
 
 # Base config that AOS needs
 BASE_CONFIG = {
-    "agent": "chief",
+    "agent": "skye",
     "env": {
         "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1",
         "CLAUDE_CODE_TEAMMATE_MODE": "in-process",
@@ -57,7 +57,7 @@ def _save_settings(data: dict):
 def check() -> bool:
     """Applied if agent is set and env vars exist."""
     settings = _get_settings()
-    if settings.get("agent") != "chief":
+    if settings.get("agent") != "skye":
         return False
     env = settings.get("env", {})
     if "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS" not in env:
@@ -77,7 +77,7 @@ def up() -> bool:
     # Set agent if not already set
     if "agent" not in settings:
         settings["agent"] = BASE_CONFIG["agent"]
-        print("       Set default agent: chief")
+        print("       Set default agent: skye")
     else:
         print(f"       Agent already set: {settings['agent']}")
 

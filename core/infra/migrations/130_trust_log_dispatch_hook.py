@@ -2,12 +2,12 @@
 Migration 130: Register the automatic trust-log-dispatch PostToolUse hook
 (aos#236.4).
 
-chief.md's catalog-dispatch mandate ("log every catalog dispatch") had no
+skye.md's catalog-dispatch mandate ("log every catalog dispatch") had no
 enforcement — the dangling-wires audit (2026-09-13) found 5 trust-log rows
 had ever been written, stale 54 days. core/hooks/trust_log_dispatch.py makes
 the write automatic: a PostToolUse hook, scoped to the Agent tool via
 `matcher`, that writes a `record ... executed` row whenever a catalog agent
-(anything in ~/.claude/agents/*.md that isn't chief/steward/advisor/onboard)
+(anything in ~/.claude/agents/*.md that isn't skye/steward/advisor/onboard)
 is dispatched.
 
 Atomic-migration rule: the hook file ships in the framework, but the

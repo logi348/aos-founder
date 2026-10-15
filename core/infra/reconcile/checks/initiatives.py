@@ -95,7 +95,7 @@ class BridgeTopicsCheck(ReconcileCheck):
         That is the exact condition mirrored here: a route can be otherwise
         fully configured and still never load, with no signal to the
         operator. Returns (yaml_path, name) pairs, e.g.
-        ("projects.chief.telegram.forum_topic_id", "chief").
+        ("projects.myapp.telegram.forum_topic_id", "myapp").
         """
         if not self.PROJECTS_YAML.exists():
             return []

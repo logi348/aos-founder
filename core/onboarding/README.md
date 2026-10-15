@@ -6,7 +6,7 @@ parts.
 
 ## Trigger
 
-Chief loads the skill when `~/.aos/config/onboarding.yaml` is **missing**.
+Skye loads the skill when `~/.aos/config/onboarding.yaml` is **missing**.
 
 The installer also drives it directly: `aos start` passes an explicit onboarding
 prompt to Claude Code when that file is absent, and `install.sh` ends by

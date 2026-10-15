@@ -479,7 +479,7 @@ def _project_prefix(project_id: str | None) -> str:
     """Derive short prefix from project ID.
 
     aos   -> aos
-    chief -> chief
+    skye -> skye
     None  -> t  (unaffiliated)
     """
     if not project_id:

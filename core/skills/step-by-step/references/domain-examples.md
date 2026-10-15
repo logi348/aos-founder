@@ -106,7 +106,7 @@ Backward check after Part 5: `curl http://127.0.0.1:8880/health :: 200` (the loa
 
 ## App development
 
-**Task:** "Add push notifications to the Chief iOS app"
+**Task:** "Add push notifications to the Skye iOS app"
 
 ```
 ## Scope: Push Notifications
@@ -119,7 +119,7 @@ Backward check after Part 5: `curl http://127.0.0.1:8880/health :: 200` (the loa
 
 Part 1 criteria:
 ```
---set '$ grep -c aps-environment Chief/Chief.entitlements :: 1'
+--set '$ grep -c aps-environment Skye/Skye.entitlements :: 1'
 --set '$ agent-secret get APNS_KEY_ID | wc -c | xargs test 0 -lt'
 --set '$ curl -s -o /dev/null -w "%{http_code}" --http2 https://api.sandbox.push.apple.com/3/device/TEST :: 400'
 ```

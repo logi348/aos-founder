@@ -1,8 +1,8 @@
 """Compact operating brief for Telegram-driven Claude sessions (hardened fork).
 
-Bridge sessions skip the full Chief agent file to stay fast (`--agent chief`
+Bridge sessions skip the full Skye agent file to stay fast (`--agent skye`
 reloads CLAUDE.md, hooks and MCP on every message), so upstream's Telegram
-Chief never saw Chief's skill-routing table. This is the short version,
+Skye never saw Skye's skill-routing table. This is the short version,
 appended to the bridge's system prompt (persistent_session.py,
 session_manager.py). Keep it short: it is sent with every session start.
 """

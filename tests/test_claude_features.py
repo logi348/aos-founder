@@ -43,7 +43,7 @@ def test_defaults_are_off():
 def test_reconcile_turns_upstream_always_on_off(tmp_path, monkeypatch):
     _home(tmp_path, monkeypatch,
           claude_json={"remoteControlAtStartup": True, "claudeInChromeDefaultEnabled": True, "projects": {}},
-          settings={"agent": "chief", "chrome": True, "remoteControlAtStartup": True})
+          settings={"agent": "skye", "chrome": True, "remoteControlAtStartup": True})
     check = ClaudeDefaultsCheck()
     assert check.check() is False
     check.fix()
@@ -52,7 +52,7 @@ def test_reconcile_turns_upstream_always_on_off(tmp_path, monkeypatch):
     assert _cj(tmp_path)["projects"] == {}
     assert "chrome" not in _st(tmp_path)
     assert _st(tmp_path)["remoteControlAtStartup"] is False
-    assert _st(tmp_path)["agent"] == "chief"
+    assert _st(tmp_path)["agent"] == "skye"
     assert ClaudeDefaultsCheck().check() is True
 
 
@@ -104,7 +104,7 @@ def test_missing_settings_json_is_not_created(tmp_path, monkeypatch):
 
 
 def test_sandbox_profile_applies_and_removes(tmp_path, monkeypatch):
-    _home(tmp_path, monkeypatch, claude_json={}, settings={"agent": "chief"})
+    _home(tmp_path, monkeypatch, claude_json={}, settings={"agent": "skye"})
     assert cf.DEFAULTS["sandbox"] is False
     cf.save({"remote-control": False, "chrome": False, "sandbox": True})
     cf.apply()

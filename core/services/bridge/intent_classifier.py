@@ -98,7 +98,7 @@ INTENTS = {
     },
     "done_task": {
         "patterns": [
-            # Project-scoped IDs: aos#3, chief#1, t#5
+            # Project-scoped IDs: aos#3, skye#1, t#5
             "re:mark \\w+#\\d+(\\.\\d+)? done",
             "re:done:? \\w+#\\d+(\\.\\d+)?",
             "re:complete \\w+#\\d+(\\.\\d+)?",
@@ -496,7 +496,7 @@ def handle_done_task(text: str) -> str:
     """Mark a task done in the v2 work engine."""
     text_lower = text.lower().strip()
 
-    # Try project-scoped IDs first: aos#3, chief#1.2, t#5
+    # Try project-scoped IDs first: aos#3, skye#1.2, t#5
     match = re.search(r"\b(\w+#\d+(?:\.\d+)?)\b", text_lower)
     if match:
         task_id = match.group(1)

@@ -65,7 +65,7 @@ class Actor:
     """Who did a thing. Never invent one — ``unknown`` is the honest answer."""
 
     kind: str = "unknown"          # operator | agent | cron | import | unknown
-    name: str = "unknown"          # "operator" | "chief" | "advisor" | ...
+    name: str = "unknown"          # "operator" | "skye" | "advisor" | ...
     session_id: str | None = None
     at: str = ""                   # ISO8601
 

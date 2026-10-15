@@ -17,7 +17,7 @@ reads this instead, so the introduction is correct by construction.
 Consumers:
   - the `onboard` skill    — introduces the system that is actually installed
   - the `whats-new` skill  — diffs two snapshots across an update
-  - Chief                  — answering "what can you do"
+  - Skye                  — answering "what can you do"
   - the operator           — `aos snapshot`
 
 Usage:
@@ -124,7 +124,7 @@ def machine() -> dict:
         # `role` decides the install handoff and the developer-skills split.
         "role": operator.get("role", "operator"),
         "operator": operator.get("name"),
-        "agent_name": operator.get("agent_name", "chief"),
+        "agent_name": operator.get("agent_name", "skye"),
         "onboarded": (USER_DIR / "config" / "onboarding.yaml").exists(),
     }
 

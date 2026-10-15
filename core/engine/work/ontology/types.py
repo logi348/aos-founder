@@ -456,7 +456,7 @@ class Session:
 
 @dataclass
 class Agent:
-    id: str  # e.g. "marketing", "accounting", "chief"
+    id: str  # e.g. "marketing", "accounting", "skye"
     name: str
     domain: str = ""
     description: str = ""
@@ -473,7 +473,7 @@ class Agent:
     schedule: dict[str, str] = field(default_factory=dict)  # e.g. {"daily": "check performance"}
 
     # State
-    is_system: bool = False  # chief, steward, advisor
+    is_system: bool = False  # skye, steward, advisor
     is_active: bool = True
     last_active: datetime | None = None
 
@@ -828,7 +828,7 @@ class Operator:
     name: str
     timezone: str = "America/Chicago"
     language: str = "en"
-    agent_name: str = "chief"
+    agent_name: str = "skye"
     trust_default: TrustLevel = TrustLevel.SURFACE
 
     # Schedule

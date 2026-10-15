@@ -741,7 +741,7 @@ def add_task(title: str, priority: int = 3, project: str = None,
     bug stage is given and no explicit status, the coarse board status is derived
     from the stage via the pipeline definition so board queries stay cheap.
 
-    ``actor`` is an optional actor spec ("chief", "operator", "cron:nightly").
+    ``actor`` is an optional actor spec ("skye", "operator", "cron:nightly").
     It is resolved through actor.resolve_actor and recorded as ``created_by``.
     """
     from core.engine.work.pipelines import bug_stage_to_status, is_bug_stage

@@ -26,7 +26,7 @@ profile from SQL. Projects get the same treatment.
 
 ## Narrative: the one non-deterministic field
 
-`brief.narrative` is the only prose an agent writes. Chief/Advisor writes it at
+`brief.narrative` is the only prose an agent writes. Skye/Advisor writes it at
 session close (or on demand) and it is **cached** in the brief store with the
 `narrative_written_at` timestamp and the git SHA / task-state hash it described.
 
@@ -145,7 +145,7 @@ state changes.
 @dataclass
 class Actor:
     kind: str        # operator | agent | cron | import | unknown
-    name: str        # "operator" | "chief" | "advisor" | "engineer" | "session-close"
+    name: str        # "operator" | "skye" | "advisor" | "engineer" | "session-close"
     session_id: str | None
     at: str          # ISO8601
 ```
@@ -155,7 +155,7 @@ class Actor:
 Add to the task record (all optional, backward compatible):
 
 ```yaml
-completed_by:  {kind: agent, name: chief, session_id: abc123, at: "..."}
+completed_by:  {kind: agent, name: skye, session_id: abc123, at: "..."}
 started_by:    {kind: operator, name: operator, at: "..."}
 created_by:    {kind: agent, name: advisor, session_id: abc123, at: "..."}
 audit:                                  # append-only, capped at 20 entries
@@ -179,7 +179,7 @@ as "unattributed" rather than guessing.
 
 Timeline rows read as plain English with the actor named:
 
-- `Chief completed "Draft the constitution" — 2h ago`
+- `Skye completed "Draft the constitution" — 2h ago`
 - `You marked "Part 2: The claim spine" done — yesterday`
 - `Advisor created 13 subtasks — Jul 25`
 
@@ -377,7 +377,7 @@ def record_change(task_id: str, change: str, actor: Actor) -> None: ...
 def actor_to_dict(a: Actor) -> dict: ...
 def actor_from_dict(d: dict | None) -> Actor | None: ...
 def describe(actor: Actor, verb: str, subject: str) -> str:
-    """Plain English: 'Chief completed "Draft the constitution"'.
+    """Plain English: 'Skye completed "Draft the constitution"'.
     Operator actor renders as 'You'. Unknown renders as 'Someone'."""
 ```
 

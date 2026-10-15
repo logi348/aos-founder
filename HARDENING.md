@@ -182,7 +182,7 @@ it prints. Turn on Screen Sharing in System Settings → General → Sharing.
   - **Agents: level 2 (SEMI-AUTO).** They act when confident and ask otherwise. Financial commitments, contacting new people, deleting production data and changing goals always escalate.
   - **Messaging other people: level 0.** Texts and emails to contacts are drafted, never sent on their own.
   - Set in `config/defaults/trust.yaml` (`defaults.agent_level: 2`, `comms_level: 0`) and the `operator.yaml` scaffold.
-  - Chief's instructions say an agent or capability with no entry uses these defaults. Upstream left that undefined, and at level 0 Chief would not hand work to agents at all.
+  - Skye's instructions say an agent or capability with no entry uses these defaults. Upstream left that undefined, and at level 0 Skye would not hand work to agents at all.
   - Onboarding offers Copilot (2) as the default.
 - **Finding: upstream did not enforce human approval in code.**
   - `requires_human_approval: true` was never read.
@@ -279,14 +279,13 @@ See SECURITY-AUDIT.md. No code changes in that commit.
 - The Arabic Whisper priming prompt is a neutral Arabic phrase.
 
 **Removed features:**
-- **Prayer times:** `morning-context`'s daily call to `api.aladhan.com`, which sent your city; `AOS_PRAYER_METHOD`; the `prayer_times` output; the `prayer` operator.yaml key; the related test fixtures.
-- **Hijri dates:** the `hijri_date` note frontmatter, the `hijri-converter` dependency (pyproject + uv.lock, hand-edited offline: run `uv lock --check` once online), the CI import check and migration 096's import list.
-- **The upstream author's personal Adhan/SuperWhisper LaunchAgent labels** in `config/modules.yaml`.
+- **A daily schedule lookup** in `morning-context`: its call to a third-party API that sent your city every morning, its env var, output key and `operator.yaml` key, and the related test fixtures.
+- **An alternate calendar date** in daily/weekly note frontmatter, with its calendar-converter dependency (pyproject + uv.lock, hand-edited offline: run `uv lock --check` once online), the CI import check and migration 096's import list.
+- **The upstream author's personal LaunchAgent labels** in `config/modules.yaml`.
 
 **Kept, because they are functional:**
 - name-transliteration tables;
 - the recogniser for *inbound* phrases;
-- "religious" group-category keywords;
 - Arabic-script handling;
 - migration 137's old repo path;
 - the `am.hish.*` bundle IDs used by cleanup migrations;
@@ -339,16 +338,16 @@ run. Instead:
 
 AOS should be effortless to use during the day and keep ideas moving at night.
 
-- **Telegram conversations get a compact Chief brief.**
-  (`core/services/bridge/chief_brief.py`)
-  - Upstream's Telegram sessions skipped Chief's agent file, and with it the
+- **Telegram conversations get a compact Skye brief.**
+  (`core/services/bridge/skye_brief.py`)
+  - Upstream's Telegram sessions skipped Skye's agent file, and with it the
     skill routing. Now they get the essentials:
     - infer intent, and never ask you to fill in structure;
     - use the right skill (ramble, capture, the initiative pipeline,
       council, step-by-step, recall, verification-before-completion);
     - make sure every idea lands in the work system so it can be advanced.
 - **Overnight advance pass.** (`core/bin/crons/advance`, 02:30)
-  - Chief runs headless in `dontAsk` mode under the normal rules and the
+  - Skye runs headless in `dontAsk` mode under the normal rules and the
     guard, with an extra deny list for anything outward-facing.
   - It picks up to 3 open items (tasks, inbox, initiatives, quick captures)
     and takes the next *reversible* step on each: research, critique, a plan,

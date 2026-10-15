@@ -1378,7 +1378,7 @@ run_bootstrap() {
         op_tz=$(readlink /etc/localtime 2>/dev/null | sed 's|.*/zoneinfo/||' || echo "UTC")
         cat > "$operator_yaml" << OPERATOR
 # Operator Profile
-# Chief reads this at session start to personalize behavior.
+# Skye reads this at session start to personalize behavior.
 # This file is user data — never committed to the system repo.
 
 name: ${op_name:-Operator}
@@ -1390,7 +1390,7 @@ communication:
   questions: one-at-a-time # never batch questions
   language: en             # primary language
 
-# Schedule blocks (Chief respects these, won't interrupt)
+# Schedule blocks (Skye respects these, won't interrupt)
 schedule:
   blocks: []
   # Example:
@@ -1430,7 +1430,7 @@ OPERATOR
         _info "Creating Claude Code settings..."
         cat > "$settings_file" << 'SETTINGS'
 {
-  "agent": "chief",
+  "agent": "skye",
   "permissions": {
     "allow": [],
     "deny": []
@@ -1446,7 +1446,7 @@ OPERATOR
 SETTINGS
         _ok "settings.json created"
     else
-        # Patch existing settings.json — ensure agent=chief and teams env vars
+        # Patch existing settings.json — ensure agent=skye and teams env vars
         python3 -c "
 import json
 from pathlib import Path
@@ -1454,7 +1454,7 @@ p = Path.home() / '.claude' / 'settings.json'
 s = json.loads(p.read_text())
 changed = False
 if not s.get('agent'):
-    s['agent'] = 'chief'
+    s['agent'] = 'skye'
     changed = True
 if 'env' not in s:
     s['env'] = {}
@@ -1584,7 +1584,7 @@ HOOK
     touch "$AOS_DIR/.no-auto-commit"
     _ok "Runtime protection installed"
 
-    # Sync agents (system agents: chief, steward, advisor)
+    # Sync agents (system agents: skye, steward, advisor)
     _step "Syncing agents..."
     echo ""
     bash "$AOS_DIR/core/bin/cli/aos" sync-agents 2>&1 | sed 's/^/  /'
@@ -2326,10 +2326,10 @@ else:
 
 changed = []
 
-# Default agent: Chief
+# Default agent: Skye
 if not s.get('agent'):
-    s['agent'] = 'chief'
-    changed.append('agent=chief')
+    s['agent'] = 'skye'
+    changed.append('agent=skye')
 
 # Agent teams env vars
 if 'env' not in s:
@@ -2405,7 +2405,7 @@ if settings_path.exists():
     with open(settings_path) as f:
         s = json.load(f)
     checks = []
-    if s.get('agent') == 'chief': checks.append('chief')
+    if s.get('agent') == 'skye': checks.append('skye')
     if 'CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS' in s.get('env', {}): checks.append('teams')
     hooks = s.get('hooks', {})
     for h in ['SessionStart', 'PostCompact', 'Stop', 'SessionEnd']:
@@ -2514,11 +2514,11 @@ sys.exit(0 if backend.DB_PATH.exists() and backend.DB_PATH.stat().st_size > 0 el
     _step "Claude Code settings"
     _check "settings.json exists" "[[ -f '$HOME/.claude/settings.json' ]]" critical
     if [[ -f "$HOME/.claude/settings.json" ]]; then
-        _check "Agent = Chief" "python3 -c \"
+        _check "Agent = Skye" "python3 -c \"
 import json
 with open('$HOME/.claude/settings.json') as f:
     s = json.load(f)
-assert s.get('agent') == 'chief'
+assert s.get('agent') == 'skye'
 \"" critical
         _check "Agent teams enabled" "python3 -c \"
 import json
@@ -2538,7 +2538,7 @@ assert s.get('hooks', {}).get('$hook_name')
 
     # ── Agents ─────────────────────────────────────────────────
     _step "Agents"
-    for agent in chief steward advisor; do
+    for agent in skye steward advisor; do
         _check "Agent $agent" "[[ -f '$HOME/.claude/agents/${agent}.md' ]]" critical
     done
     _check "Onboard agent" "[[ -f '$HOME/.claude/agents/onboard.md' ]]"
@@ -2754,7 +2754,7 @@ for name, job in (data.get('jobs') or {}).items():
     # Save scorecard to install log
     _log "SCORECARD: pass=$pass warn=$warn fail=$fail"
 
-    # Write structured report for Chief to read during onboarding
+    # Write structured report for Skye to read during onboarding
     local report_file="$HOME/.aos/config/install-report.yaml"
     {
         echo "install_date: '$(date -u +%Y-%m-%dT%H:%M:%SZ)'"

@@ -20,7 +20,7 @@ AOS_DIR = Path.home() / "aos"
 SOURCE_DIR = AOS_DIR / "core" / "agents"
 TARGET_DIR = Path.home() / ".claude" / "agents"
 
-SYSTEM_AGENTS = ["chief.md", "steward.md", "advisor.md"]
+SYSTEM_AGENTS = ["skye.md", "steward.md", "advisor.md"]
 
 
 def check() -> bool:

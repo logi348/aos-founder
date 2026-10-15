@@ -32,7 +32,7 @@ days:
     message: |
       SuperWhisper works everywhere on your Mac — not just in Claude Code. Hold the shortcut key in any app and speak.
 
-      And anytime you want to think out loud, just tell Chief "let me ramble" or "brain dump." It organizes your thoughts into tasks, ideas, and notes.
+      And anytime you want to think out loud, just tell Skye "let me ramble" or "brain dump." It organizes your thoughts into tasks, ideas, and notes.
 
   # ── Day 3: Work system + dashboard ──────────────────────
   - day: 3
@@ -52,21 +52,21 @@ days:
     message: |
       Two things to try today:
 
-      1. Paste any YouTube or social media link — Chief extracts the transcript and saves it to your vault.
+      1. Paste any YouTube or social media link — Skye extracts the transcript and saves it to your vault.
 
-      2. Tell Chief to build something: "build me a landing page for my tutoring business" — it generates real, polished code you can use immediately.
+      2. Tell Skye to build something: "build me a landing page for my tutoring business" — it generates real, polished code you can use immediately.
 
   # ── Day 5: Agents + delegation ──────────────────────────
   - day: 5
     time: evening
     message: |
-      Chief handles most things directly, but can delegate to specialists:
+      Skye handles most things directly, but can delegate to specialists:
 
       • Steward — system health ("is the bridge running?")
       • Advisor — analysis + reviews ("give me my weekly review")
       • Catalog agents — aos activate engineer, aos activate developer
 
-      Chief decides who handles what. You just ask.
+      Skye decides who handles what. You just ask.
 
   # ── Day 6: Context, memory, and how it all connects ─────
   - day: 6
@@ -78,7 +78,7 @@ days:
       Memory files = disk. Persists forever across sessions.
       Vault = your second brain. Searchable, indexed, permanent.
 
-      When Chief learns something important, it saves to memory automatically. You can also say "remember that I prefer X."
+      When Skye learns something important, it saves to memory automatically. You can also say "remember that I prefer X."
 
       12 automated jobs run 24/7 behind the scenes — session exports, vault indexing, pattern analysis. Type "aos status" to see them.
 
@@ -88,7 +88,7 @@ days:
     message: |
       One week. Try this:
 
-        "Chief, give me my weekly review"
+        "Skye, give me my weekly review"
 
       Advisor analyzes your sessions, tasks, and vault notes — what got done, what didn't, patterns noticed, and what to focus on next week.
 

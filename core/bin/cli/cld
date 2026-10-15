@@ -16,12 +16,12 @@
 # themselves (aos#244.2). Plain `cld`, with neither, is byte-for-byte what it
 # was before profiles existed: no CLAUDE_CONFIG_DIR is ever exported.
 
-# Read agent name from operator config (default: chief)
+# Read agent name from operator config (default: skye)
 
 # Always resolve Python through the AOS resolver — a python3 on PATH can be
 # present, correctly versioned, and unusable (Homebrew 3.14's pyexpat).
 AOS_PY="${AOS_PY:-$HOME/aos/core/bin/internal/aos-python}"
-AGENT_NAME="chief"
+AGENT_NAME="skye"
 if [[ -f "$HOME/.aos/config/operator.yaml" ]]; then
     custom=$("$AOS_PY" -c "
 import yaml

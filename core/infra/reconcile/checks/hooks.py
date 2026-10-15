@@ -55,7 +55,7 @@ class HooksPathCheck(ReconcileCheck):
             "async": True,
         },
         # aos#236.4: automatic trust-log entries for catalog dispatch —
-        # chief.md's "log every catalog dispatch" mandate had no enforcement
+        # skye.md's "log every catalog dispatch" mandate had no enforcement
         # (5 rows ever written). matcher scopes this to the Agent tool only,
         # so every other PostToolUse consumer is unaffected.
         "PostToolUse": {

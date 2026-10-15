@@ -2,7 +2,7 @@
 """
 AOS Report — file issues to GitHub with full context and notify developer.
 
-Called by Chief's report skill during conversations. NOT interactive.
+Called by Skye's report skill during conversations. NOT interactive.
 Takes structured JSON on stdin, files to GitHub, sends Telegram.
 
 Usage:

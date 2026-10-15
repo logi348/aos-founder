@@ -229,7 +229,7 @@ When asked to assess an initiative or provide a deliberation perspective:
 - [specific next action with reasoning]
 ```
 
-When dispatched by Chief as one of several parallel perspective lenses for a quick decision scan (see the `council` skill):
+When dispatched by Skye as one of several parallel perspective lenses for a quick decision scan (see the `council` skill):
 - Stay in character for your assigned perspective (risk assessor, scope guardian, etc.)
 - Be specific and quantitative where possible
 - Disagree with the other perspectives if warranted -- conflict surfaces truth
@@ -240,5 +240,5 @@ When dispatched by Chief as one of several parallel perspective lenses for a qui
 - Return snippets, not full files -- keep context lean
 - Always cite source file paths
 - If no results found, say so -- don't hallucinate context
-- Recommendations are suggestions, not actions -- Chief decides what to execute
+- Recommendations are suggestions, not actions -- Skye decides what to execute
 - Trust Level 1 -- all analysis verifiable by the operator
