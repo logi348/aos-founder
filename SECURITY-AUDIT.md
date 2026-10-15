@@ -24,7 +24,7 @@ where it matters.
 | H6 | Medium | `aos mesh init` writes Headscale on `0.0.0.0:8080` over plain HTTP, STUN on `0.0.0.0:3478`, and a reusable 30-day pre-auth key in plaintext (whose text claims "24 hours"). | **Unchanged** (optional mesh feature). |
 | H7 | Medium | Migration 080 once wrote `AOS_QAREEN_HOST=0.0.0.0`; 095 reverts it, but rolls back to the exposed plist if Qareen fails to restart. | **Moot on a fresh install** (Qareen is removed). 080 now fails on a machine below it because its template is gone; a fresh install isn't below it. |
 | H8 | Medium | WhatsApp bridge `127.0.0.1:7601`: no auth, `/send` accepts any Content-Type (CSRF from a web page), and the `/qr` page loads an unpinned CDN script. | **Fixed.** Host/Origin checks, no CORS, JSON-only POSTs; QR rendered on the server with a strict CSP. (Go code not compiled here; the modules aren't cached offline.) |
-| H9 | Medium | The transcriber's default backend is `cloud`: voice notes go to openrouter.ai. | **Unchanged.** Set `TRANSCRIBER_BACKEND=local` to keep audio on the Mac (see HARDENING.md). |
+| H9 | Medium | The transcriber's default backend is `cloud`: voice notes go to openrouter.ai. | **Fixed.** Default is now `local` (mlx-whisper on the Mac), loaded on demand and released when idle. `TRANSCRIBER_BACKEND=cloud` opts back in. |
 | H10 | Medium | Reconcile `fix()` runs `npm i -g dev-browser` (unpinned) and `git reset --hard origin/main` / `git clean -fd` in `~/aos`. | **Unchanged.** The reset now targets your fork. Never keep local commits in `~/aos`; merge into the fork's `main` instead. |
 | — | High | Telegram auth was per chat, not per user: every member of the forum group was authorized. Onboarding stored the chat of whoever last messaged the bot. | **Fixed.** Owner-only gate on every update; manual pairing with a one-time code and @username check. |
 | — | High | Every `claude` launched by `cld`, crons and the bridge used `--dangerously-skip-permissions` / `bypassPermissions`. settings.json allowed `Bash(*)`, `Read(*)`, `Write(*)`, `Edit(*)`, and reconcile re-added blanket allows. | **Fixed.** See HARDENING.md §2: scoped allows, deny rules, Bash guard hook, dontAsk for headless jobs, phone approval for the bridge, `cld-unsafe` only by explicit choice. |
@@ -113,7 +113,7 @@ Legend: **RT** = runtime (services/crons/CLIs). **INST** = install-time or migra
 | core/services/crawler/crawl_cli.py:50-51 | api.fxtwitter.com + arbitrary URLs (crawl4ai/Playwright) | crawl | RT |
 | core/engine/intelligence/ingest/fetcher.py:14,30; runner.py:44 | localhost:1200 (RSSHub) + feed URLs from `feeds.yaml` | feed ingest | RT (30m) |
 | apps/content-engine/platforms/youtube.py:57; base.py:20; ocr.py:152; transcribe.py:29,53 | YouTube/Instagram/TikTok/X via yt-dlp + youtube-transcript-api | content extraction | RT |
-| core/services/transcriber/cloud.py:37,221-229 | **openrouter.ai/api/v1/audio/transcriptions** | voice transcription (**default backend**) | RT |
+| core/services/transcriber/cloud.py:37,221-229 | **openrouter.ai/api/v1/audio/transcriptions** | voice transcription (opt-in in this fork; default is local) | RT |
 | core/services/transcriber/engine.py:29,127 | huggingface.co (mlx-community/whisper-large-v3-turbo) | model download when local backend | RT (first use) |
 | core/services/bridge/telegraph_publisher.py:72 (telegraph lib) | telegra.ph / api.telegra.ph | publish long-form | RT |
 | core/engine/work/intake/ascbuild.py:55,155,179 | api.appstoreconnect.apple.com + signed download URLs | ASC build intake | RT (cron) |

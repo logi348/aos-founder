@@ -76,6 +76,27 @@ _start_time: float = 0
 _requests_served: int = 0
 _model_ready: bool = False
 
+# Hardened fork: with the local backend the model is loaded on the first
+# voice note, not at startup, and the process exits after IDLE_EXIT_S without
+# a request once the model is loaded. launchd (KeepAlive) restarts it at once
+# without the model, so ~2 GB is held only while voice notes are coming in.
+# TRANSCRIBER_PRELOAD=1 restores load-at-startup; TRANSCRIBER_IDLE_EXIT_S=0
+# keeps the model resident.
+PRELOAD = os.environ.get("TRANSCRIBER_PRELOAD", "0") == "1" or engine.BACKEND != "local"
+IDLE_EXIT_S = int(os.environ.get("TRANSCRIBER_IDLE_EXIT_S", "900") or 0)
+_last_used: float = 0.0
+_in_flight: int = 0
+
+
+async def _idle_watchdog():
+    import signal
+    while True:
+        await asyncio.sleep(60)
+        if engine.should_exit_idle(time.monotonic(), _last_used, _in_flight, engine.model_loaded(), IDLE_EXIT_S):
+            logger.info("Idle for %ss with the model loaded — restarting to free memory", IDLE_EXIT_S)
+            os.kill(os.getpid(), signal.SIGTERM)
+            return
+
 # ---------------------------------------------------------------------------
 # Lifespan
 # ---------------------------------------------------------------------------
@@ -95,17 +116,30 @@ async def lifespan(app: FastAPI):
     _start_time = time.monotonic()
     logger.info(f"Starting AOS Transcriber on {HOST}:{PORT}")
 
-    # Warm up in a thread so it doesn't block the event loop
-    loop = asyncio.get_event_loop()
-    try:
-        await loop.run_in_executor(None, engine.warmup)
+    if not PRELOAD:
+        # Local backend, load on demand: ready to accept requests right away.
         _model_ready = True
-        logger.info("Model ready. Accepting requests.")
-    except Exception as e:
-        logger.error(f"Model warm-up failed: {e}")
-        logger.error("Service will attempt lazy loading on first request.")
+        logger.info("Local backend: model loads on the first request "
+                    "(idle restart after %ss).", IDLE_EXIT_S)
+    else:
+        # Warm up in a thread so it doesn't block the event loop
+        loop = asyncio.get_event_loop()
+        try:
+            await loop.run_in_executor(None, engine.warmup)
+            _model_ready = True
+            logger.info("Model ready. Accepting requests.")
+        except Exception as e:
+            logger.error(f"Model warm-up failed: {e}")
+            logger.error("Service will attempt lazy loading on first request.")
+
+    # Only for load-on-demand: a preloaded model would just be reloaded after
+    # every idle restart.
+    watchdog = asyncio.create_task(_idle_watchdog()) if (not PRELOAD and IDLE_EXIT_S) else None
 
     yield
+
+    if watchdog:
+        watchdog.cancel()
 
     logger.info("Shutting down transcriber.")
 
@@ -119,6 +153,20 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+
+@app.middleware("http")
+async def _track_use(request, call_next):
+    """Count in-flight transcriptions and when the last one ended (idle watchdog)."""
+    global _in_flight, _last_used
+    if not request.url.path.startswith("/transcribe"):
+        return await call_next(request)
+    _in_flight += 1
+    try:
+        return await call_next(request)
+    finally:
+        _in_flight -= 1
+        _last_used = time.monotonic()
 
 
 @app.post("/transcribe", response_model=TranscribeResponse)

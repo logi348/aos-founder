@@ -130,6 +130,7 @@ signature check, and updated Claude Code unpinned at 04:15.
   - `aos`, `agent-secret`, `launchctl`, `brew`, `gh`, `open`, `tailscale` and git network commands run outside it, as Claude Code documents.
   - It's off until you've tried it on the Mac mini, because Keychain and Homebrew behaviour inside it is undocumented. If shell commands start failing, `aos claude-features disable sandbox`.
 - The trust dialog is pre-accepted for `~/aos` only, not your home directory.
+- settings.json `env` also carries `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` (no telemetry, error reporting or feedback traffic). Reconcile keeps it.
 - `remoteControlAtStartup` and `claudeInChromeDefaultEnabled` default to off. Upstream's undocumented `"chrome": true` key is no longer written.
 - Every other place that bypassed permissions:
 
@@ -313,6 +314,27 @@ run. Instead:
   ~/.aos/services/bridge/.venv/bin/python -m pytest core/services/bridge/tests -q
   ```
 
+## Voice notes stay on the Mac
+
+- **Transcription runs locally by default.** The transcriber
+  (`core/services/transcriber`) defaults to `TRANSCRIBER_BACKEND=local`
+  (mlx-whisper on the Mac) instead of upstream's OpenRouter cloud, so audio
+  never leaves the machine.
+- **On demand, released when idle.** Upstream moved to the cloud because the
+  local model, about 2 GB once loaded, crowded out a 16 GB Mac. Now:
+  - the model loads on the first voice note, not at startup;
+  - after 15 minutes with no voice notes, the service restarts itself (launchd
+    brings it straight back) without the model;
+  - so the memory is held only while you're actually sending voice notes;
+  - the first note after a quiet spell takes a few extra seconds.
+- **The first use downloads the model** from Hugging Face, once.
+- **Options:**
+  - `TRANSCRIBER_BACKEND=cloud` goes back to OpenRouter;
+  - `TRANSCRIBER_PRELOAD=1` loads the model at startup;
+  - `TRANSCRIBER_IDLE_EXIT_S=0` keeps it loaded.
+
+  Set these in the transcriber's LaunchAgent environment.
+
 ## Everyday use + overnight "advance"
 
 AOS should be effortless to use during the day and keep ideas moving at night.
@@ -357,9 +379,12 @@ AOS should be effortless to use during the day and keep ideas moving at night.
   item (no ACLs). `agent-secret set NAME VALUE` puts the value briefly in
   `ps`; use the prompt form. Google refresh tokens and an optional
   OpenRouter key live in 0600 files.
-- **Voice notes go to OpenRouter by default.** Set `TRANSCRIBER_BACKEND=local`
-  in the transcriber's LaunchAgent to keep audio on the Mac (needs the
-  mlx-whisper model download).
+- **Model requests still go to Anthropic.** Everything the agents read or
+  write in a session is sent to Anthropic for processing; that's how the model
+  runs. Check claude.ai → Settings → Privacy for whether your sessions may be
+  used for training. Claude Code's own telemetry and error reporting are off
+  (`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, enforced with the
+  permission set).
 - **Optional mesh feature.** meshd binds `0.0.0.0:4100` with no auth, and
   `aos mesh init` writes Headscale on `0.0.0.0` over HTTP plus a reusable
   30-day key in plaintext. Leave mesh off.

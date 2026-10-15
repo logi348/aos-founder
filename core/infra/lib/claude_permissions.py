@@ -95,6 +95,16 @@ LEGACY_ALLOW = ["Bash(*)", "Read(*)", "Write(*)", "Edit(*)", "Glob(*)", "Grep(*)
                 "Read", "Write", "Edit", "Edit ~/.claude/**", "Write ~/.claude/**",
                 "Edit(~/aos/**)"]  # pre-approved by this fork's first version
 
+# Environment for every Claude Code session (settings.json "env").
+#   DISABLE_AUTOUPDATER: Claude Code updates only when the operator runs them.
+#   CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: no usage telemetry, error
+#     reporting, feedback or auto-update traffic — only the model requests
+#     themselves go to Anthropic.
+REQUIRED_ENV = {
+    "DISABLE_AUTOUPDATER": "1",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+}
+
 GUARD_HOOK = {
     "event": "PreToolUse",
     "matcher": "Bash",
@@ -105,6 +115,9 @@ GUARD_HOOK = {
 def needs_update(settings: dict) -> bool:
     perms = settings.get("permissions") or {}
     allow, deny, ask = perms.get("allow") or [], perms.get("deny") or [], perms.get("ask") or []
+    env = settings.get("env") or {}
+    if any(env.get(k) != v for k, v in REQUIRED_ENV.items()):
+        return True
     return (any(r not in allow for r in ALLOW)
             or any(r not in deny for r in DENY)
             or any(r not in ask for r in ASK)
@@ -135,6 +148,11 @@ def apply(settings: dict) -> list[str]:
         if r not in ask:
             ask.append(r)
             changes.append(f"ask {r}")
+    env = settings.setdefault("env", {})
+    for k, v in REQUIRED_ENV.items():
+        if env.get(k) != v:
+            env[k] = v
+            changes.append(f"env {k}={v}")
     return changes
 
 

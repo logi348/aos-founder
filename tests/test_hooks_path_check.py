@@ -56,6 +56,7 @@ def _base_settings() -> dict:
             "deny": list(claude_permissions.DENY),
             "ask": list(claude_permissions.ASK),
         },
+        "env": dict(claude_permissions.REQUIRED_ENV),
     }
 
 
@@ -166,6 +167,20 @@ def test_agents_cannot_edit_their_own_framework_or_startup_items():
                  "Edit(~/.aos/config/trust.yaml)"):
         assert rule in p["deny"], rule
     assert "Edit(~/.aos/config/**)" in p["ask"]
+
+
+def test_telemetry_and_autoupdate_stay_off(tmp_path, monkeypatch):
+    s = _complete_settings()
+    s["env"] = {"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "0", "OTHER": "kept"}
+    p = tmp_path / "settings.json"
+    p.write_text(json.dumps(s))
+    monkeypatch.setattr(HooksPathCheck, "SETTINGS", p)
+    assert HooksPathCheck().check() is False
+    HooksPathCheck().fix()
+    env = json.loads(p.read_text())["env"]
+    assert env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] == "1"
+    assert env["DISABLE_AUTOUPDATER"] == "1"
+    assert env["OTHER"] == "kept"
 
 
 def test_periodic_run_repairs_settings():

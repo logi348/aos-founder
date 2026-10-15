@@ -29,13 +29,26 @@ logger = logging.getLogger(__name__)
 MODEL_REPO = "mlx-community/whisper-large-v3-turbo"
 _engine = None
 
-# Which path transcription takes. "cloud" sends the audio to OpenRouter and
-# holds no model in this process at all; "local" is the original mlx-whisper
-# path. Cloud is the default on this machine: a resident 809M-param model on
-# 16GB evicts everything else and the service kept being found dead. The local
-# path is untouched and still the fallback — set TRANSCRIBER_BACKEND=local to
-# force it (and once a Mac Studio is doing the work, flip the default back).
-BACKEND = os.environ.get("TRANSCRIBER_BACKEND", "cloud").strip().lower()
+# Which path transcription takes. "local" (hardened-fork default) runs
+# mlx-whisper on this Mac — audio never leaves the machine. "cloud" sends the
+# audio to OpenRouter (upstream's default; set TRANSCRIBER_BACKEND=cloud).
+# Upstream moved to cloud because a resident 809M-param model on a 16 GB Mac
+# crowded out everything else; main.py now loads the model only when a voice
+# note arrives and restarts the service after an idle spell to give the
+# memory back (TRANSCRIBER_IDLE_EXIT_S, default 900 s).
+BACKEND = os.environ.get("TRANSCRIBER_BACKEND", "local").strip().lower()
+
+
+def model_loaded() -> bool:
+    """True once the local model has been loaded into this process."""
+    return _engine is not None
+
+
+def should_exit_idle(now: float, last_used: float, in_flight: int, loaded: bool,
+                     idle_exit_s: int) -> bool:
+    """Idle-restart decision (main.py's watchdog): only with the model loaded,
+    nothing in flight, and no request for longer than idle_exit_s (0 = never)."""
+    return bool(idle_exit_s) and loaded and in_flight == 0 and (now - last_used) > idle_exit_s
 
 # Arabic Unicode range for detecting Arabic script in text
 _ARABIC_RE = re.compile(r'[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]')
