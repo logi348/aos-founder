@@ -182,6 +182,22 @@ by the user who runs AOS.
     aos claude-features disable sandbox
     ```
 
+21. **Make Tailscale one-way** (laptop → Mac mini only). On login.tailscale.com:
+    - **Access controls**: set the policy to
+      ```json
+      {
+        "tagOwners": { "tag:aos-mini": ["autogroup:admin"] },
+        "acls": [
+          { "action": "accept", "src": ["autogroup:member"], "dst": ["tag:aos-mini:22,5900"] }
+        ]
+      }
+      ```
+    - **Machines** → the Mac mini → ⋯ → **Edit ACL tags** → add `tag:aos-mini`.
+    - Your devices can then reach the Mac mini for SSH and Screen Sharing, but
+      nothing on the Mac mini (including an agent) can connect to your laptop or
+      phone. Check: from the laptop, SSH and Screen Sharing still work; on the
+      Mac mini, `tailscale ping <your-laptop>` fails.
+
 ## Ongoing
 
 - **Updates.**

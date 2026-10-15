@@ -215,3 +215,12 @@ def test_lan_block_ignores_file_names():
     for cmd in ["cat ~/.claude/settings.local.json", "cp .env.local /tmp/x", "ls config.internal.yaml",
                 "python3 -m pip show home.lan.tools", "grep -r localhost ~/project/app"]:
         assert decision(cmd) is None, cmd
+
+
+def test_tailscale_read_only_for_agents():
+    for cmd in ["tailscale status", "tailscale ip -4", "tailscale version", "tailscale netcheck"]:
+        assert decision(cmd) is None, cmd
+    for cmd in ["tailscale serve 4098", "tailscale funnel 4098", "tailscale file cp x.txt laptop:",
+                "tailscale up --ssh", "tailscale set --shields-up=false", "tailscale down",
+                "tailscale logout", "/Applications/Tailscale.app/Contents/MacOS/Tailscale funnel 80"]:
+        assert decision(cmd) == "deny", cmd

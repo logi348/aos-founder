@@ -120,6 +120,7 @@ signature check, and updated Claude Code unpinned at 04:15.
     - discovery and file-share tools (`nmap`, `dns-sd`, `smbutil`, `upnpc`, …).
     - `localhost` stays allowed.
     - To let agents reach one device (say a printer), add its IP, CIDR or hostname to `~/.aos/config/lan-allow`. Only you can edit that file.
+  - **Tailscale is read-only for agents:** `tailscale status`, `ip`, `version`, `netcheck`, `whois`, `ping` and `dns` are allowed. `serve`/`funnel` (publishing a port), `file` (sending files to your devices) and `up`/`set`/`down`/`logout` are blocked.
   - writes into `~/.aos/config` and applying updates get "ask".
 
   Hooks run in every mode, including `cld-unsafe`.

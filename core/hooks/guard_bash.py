@@ -315,6 +315,14 @@ def _check_words(words: list[str], cwd: Path, depth: int) -> tuple[str, str] | N
                                                           w.endswith("/release-manager") for w in words[:2]):
         if any(w in ("--apply", "--continue", "create", "activate", "convert") for w in words):
             return ("ask", "Applying an update is the operator's call.")
+    # Tailscale: agents may look, not change. `serve`/`funnel` can publish a
+    # port to the tailnet or the internet, `file` sends files to the
+    # operator's other devices, `up`/`set`/`down`/`logout` change the network.
+    if name.lower() == "tailscale":
+        sub = next((w for w in words[1:] if not w.startswith("-")), "")
+        if sub not in ("status", "ip", "version", "netcheck", "whois", "ping", "dns", ""):
+            return ("deny", f"`tailscale {sub}` is blocked for agents; only status/ip/version/netcheck "
+                            "are allowed. The operator changes Tailscale.")
     if name in LAN_SCANNERS:
         return ("deny", f"`{name}` (local-network discovery or file shares) is blocked for agents.")
     if name == "crontab" and any(a != "-l" for a in words[1:]):
