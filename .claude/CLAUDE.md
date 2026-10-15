@@ -23,7 +23,7 @@ Catalog templates: `templates/agents/` (engineer.md, developer.md, etc.)
 Active agents: `~/.claude/agents/` (installed during setup)
 
 Install mechanism:
-- **System agents** (skye, steward, advisor): **symlinked** from `core/agents/` so they auto-update with the OS.
+- **System agents** (skye, steward, advisor): **symlinked** from `core/agents/` so they update with the OS.
 - **Catalog agents** (engineer, developer, etc.): **copied** from `templates/agents/` so user customizations survive updates.
   Catalog agents track their source via frontmatter: `_source: catalog/engineer@1.0`
 

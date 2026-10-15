@@ -17,23 +17,40 @@
 > **AOS is in beta.** It's stable enough to run daily, and we're continuing to
 > improve features and fix issues as we go.
 
+> [!IMPORTANT]
+> **This is a hardened personal fork** of AOS, set up for a dedicated Mac mini.
+> Your assistant is **Skye**: you talk to it on Telegram (text or voice) or in
+> Terminal (`cld`). Agents run under permission rules with a Bash guard, ask on
+> your phone for anything outside them, and never change their own code or
+> settings. Overnight, Skye moves open ideas forward and reports in the
+> morning briefing. Voice notes are transcribed on the Mac, and updates happen
+> only when you approve them.
+>
+> - **[SETUP.md](SETUP.md)**: step-by-step install on the Mac mini (start here)
+> - **[HARDENING.md](HARDENING.md)**: every change from upstream, why, and how to re-enable
+> - **[SECURITY-AUDIT.md](SECURITY-AUDIT.md)**: network, ports, secrets, runtime code, plus what this fork added
+> - **[UPSTREAM.md](UPSTREAM.md)**: how upstream changes reach you (weekly PR, your approval)
+
 ---
 
 ## Quick Start
 
-This fork is a private repository, so clone it with an authenticated GitHub CLI
-(`gh auth login`, then `gh auth setup-git` so `aos update` can fetch later):
+Follow **[SETUP.md](SETUP.md)**: it covers the accounts, network settings and
+the read-only GitHub token to prepare first. The install itself, on the Mac
+mini as the `aos` user:
 
 ```bash
-gh repo clone logi348/aos-hardened ~/aos
-bash ~/aos/install.sh
+xcode-select --install
+git clone https://github.com/logi348/aos-hardened.git ~/aos   # password: your read-only token
+cd ~/aos && bash install.sh --always-on
 ```
 
 Idempotent — safe to re-run. Budget **20–30 minutes**: it provisions its own Python,
 builds service environments, and downloads local speech models.
 
-When it finishes it opens **cmux** and hands you to Skye, who walks you through
-setup: your profile, your tools, the agents, remote access, and a first task.
+When it finishes it opens **cmux** and Skye walks you through setup: your
+profile, your tools, Telegram, remote access, and a first task. Then Skye
+carries on as your everyday assistant.
 
 ---
 
@@ -165,7 +182,7 @@ Always-on processes via LaunchAgents. Survive reboots. Bound to loopback.
 | **Transcriber** | Local speech-to-text (mlx-whisper) | `:7602` |
 | **WhatsApp** (whatsmeow) | WhatsApp relay for the comms pipeline | `:7601` |
 
-Optional, opt-in: `mesh`, `work-runner`, `converse` (the Sentinel/Envoy runtime),
+Optional, opt-in: `mesh`, `converse` (the Sentinel/Envoy runtime),
 and the `crawler` MCP server. Each service declares itself in a manifest
 (`core/services/*/service.yaml`), and the installer, watchdog, and health
 checks all read that manifest rather than a hardcoded list.
@@ -246,25 +263,22 @@ Four boundaries. Never crossed.
 
 ## Install
 
-### Manual (recommended)
+See **[SETUP.md](SETUP.md)** for the full sequence. The short version:
 
 ```bash
-gh repo clone logi348/aos-hardened ~/aos
-cd ~/aos && bash install.sh
+git clone https://github.com/logi348/aos-hardened.git ~/aos   # password: a read-only GitHub token
+cd ~/aos && bash install.sh --always-on
 ```
 
-### One-liner
+Installer options (all off by default): `--always-on`, `--with-superwhisper`,
+`--with-obsidian`, `--with-theming`, `--with-ytdlp-pot`.
 
-`bootstrap.sh` downloads a tarball, which for a private repository needs a token
-(`GITHUB_TOKEN`, or a logged-in `gh`):
+`bootstrap.sh` can also fetch the private fork as a tarball when `GITHUB_TOKEN`
+is set, but the clone above is simpler on a fresh Mac.
 
-```bash
-gh auth login
-bash -c "$(gh api -H 'Accept: application/vnd.github.raw' repos/logi348/aos-hardened/contents/bootstrap.sh)"
-```
-
-Updates come only from this fork, and only when you ask (`aos update`); see
-UPSTREAM.md for pulling in upstream changes and HARDENING.md for what differs.
+Updates come only from this fork, and only when you approve them (the
+Telegram **Apply update** button, or `aos update`). See UPSTREAM.md for how
+upstream changes reach the fork and HARDENING.md for everything that differs.
 
 `bash install.sh --dry-run` walks the stages without touching the machine.
 
@@ -272,7 +286,7 @@ UPSTREAM.md for pulling in upstream changes and HARDENING.md for what differs.
 
 | Requirement | Notes |
 |:-----------|:------|
-| macOS 14+ | Apple Silicon or Intel |
+| macOS 14+ | Apple Silicon recommended (local voice transcription needs it) |
 | Internet | For initial setup |
 | [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | Active subscription — no API key needed |
 
@@ -300,7 +314,8 @@ aos promote            # move `stable` to the running release (guarded)
 ```
 
 Promotion requires a soak period, an ancestry check, a clean `ship-check`, a passing
-self-test, and a typed confirmation. Machines update themselves at 4am.
+self-test, and a typed confirmation. In this fork machines never update
+themselves: you approve each update (Telegram **Apply update** or `aos update`).
 
 ---
 
@@ -328,7 +343,7 @@ aos activate <agent>   # Activate a catalog agent
 | Loopback-only | Zero attack surface. Tailscale for remote. |
 | AOS owns its interpreter | `brew upgrade` used to move Python out from under a running install. |
 | No orchestration framework | Claude Code's subagents handle dispatch. Less complexity, same result. |
-| Symlink system, copy catalog | System agents auto-update with the OS. Catalog agents are copied so user edits survive. |
+| Symlink system, copy catalog | System agents update with the OS. Catalog agents are copied so user edits survive. |
 | Manifests over hardcoded lists | Services, skills, agents, and integrations declare themselves. A directory can be listed; a list drifts. |
 | Migrations ship with their consumers | A change that moves something the instance depends on carries its migration in the same commit. |
 

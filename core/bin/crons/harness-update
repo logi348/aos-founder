@@ -6,8 +6,10 @@
 # features, and APIs are available. If Claude Code falls behind, you can't
 # even select newer models from /model. This cron closes that gap.
 #
-# Runs daily at 04:15 (right after the AOS framework auto-update at 04:00),
-# so framework + harness stay roughly in lockstep.
+# Upstream ran this daily at 04:15. Hardened fork: the cron is disabled
+# (config/crons.yaml) and Claude Code's own auto-updater is off, so run this
+# by hand when you want to update Claude Code:
+#   bash ~/aos/core/bin/crons/harness-update
 #
 # What it does:
 #   1. Capture current @anthropic-ai/claude-code version (npm global)

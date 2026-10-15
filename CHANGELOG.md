@@ -1,6 +1,41 @@
 # AOS Changelog
 
-All notable changes to AOS. Release notes sent via Telegram after each 4am update.
+All notable changes to AOS. Release notes are sent via Telegram after each update you apply.
+
+## Hardened fork — logi348/aos-hardened
+
+This fork tracks upstream AOS (see UPSTREAM.md) with these changes on top. Full
+details, reasons and how to re-enable anything are in HARDENING.md, and the
+step-by-step install is in SETUP.md.
+
+- **Updates under your control:** the fork's own URLs; no 04:00 auto-update and
+  no harness auto-update; Claude Code's auto-updater is off; a weekly upstream-sync
+  PR with a risk report; a Telegram "Apply update" button.
+- **Agent permissions:**
+  - no permission bypass by default (`cld-unsafe` keeps it);
+  - scoped allow and deny rules plus a Bash guard hook;
+  - agents can't change their own code, settings, schedule or startup items;
+  - 30-minute repair;
+  - an opt-in macOS sandbox;
+  - other home-network devices blocked.
+- **macOS:** the screen lock is left alone; Screen Sharing is never enabled by
+  script; always-on power settings sit behind `--always-on`; auto-login is
+  informational only.
+- **Messaging and trust:** iMessage starts as an empty allowlist and fails
+  closed; agents default to trust 2 and messaging people to 0; raising trust
+  needs you at a terminal.
+- **Telegram:** owner-only bridge; manual pairing with a one-time code; phone
+  Allow/Deny approvals instead of bypass; the local APIs are locked against
+  web pages.
+- **Everyday use:** Skye is the one assistant for setup and daily use; an
+  overnight "advance" pass moves open ideas forward and reports in the morning
+  briefing.
+- **Privacy:** voice notes are transcribed on the Mac; Claude Code telemetry is
+  off.
+- **Installer:** extras are opt-in flags; no system-wide pip installs; no sudo
+  keep-alive loop.
+- **Neutral voice:** no religious or cultural flavoring; placeholder example
+  names.
 
 ## v0.7.17 — iPhone voice memos stay in the cloud — 2026-09-25
 

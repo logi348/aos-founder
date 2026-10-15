@@ -10,7 +10,7 @@ Clone onto a Mac Mini, run the installer, get an autonomous workstation.
 ~/project/aos/      DEV WORKSPACE — make changes here, push to ship
 ```
 
-- `~/aos/` auto-updates at 4am. Every user's machine runs this.
+- `~/aos/` updates only when the operator approves (Telegram **Apply update** or `aos update`), from this fork's `main`. Agents can't write to it.
 - `~/project/aos/` is your working copy. Branch, edit, test here.
 - Auto-commit is disabled on both (`.no-auto-commit`).
 
