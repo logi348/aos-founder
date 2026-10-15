@@ -38,10 +38,7 @@ from dataclasses import dataclass, field
 _TITLES: frozenset[str] = frozenset({
     "dr", "dr.", "doctor",
     "mr", "mr.", "mrs", "mrs.", "ms", "ms.",
-    "sir", "sh", "sh.",
-    "qari", "hafiz", "shaykh", "sheikh", "imam", "mufti",
-    "maulana", "moulana", "mawlana",
-    "ustadh", "ustaz", "ustad", "ustaad",
+    "sir",
     "prof", "prof.", "professor",
     "engr", "engr.",
 })
@@ -66,7 +63,7 @@ _RELATION_SUFFIXES: frozenset[str] = frozenset({
 # the word; we do NOT strip based on curated real place names (that would leak
 # operator-specific geography into the code).
 _NOISE_WORDS: frozenset[str] = frozenset({
-    "trip", "umrah", "hajj", "visit",
+    "trip", "visit",
     "work", "office", "home",
 })
 

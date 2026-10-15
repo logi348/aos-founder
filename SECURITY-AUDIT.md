@@ -29,7 +29,7 @@ where it matters.
 | — | High | Telegram auth was per chat, not per user: every member of the forum group was authorized. Onboarding stored the chat of whoever last messaged the bot. | **Fixed.** Owner-only gate on every update; manual pairing with a one-time code and @username check. |
 | — | High | Every `claude` launched by `cld`, crons and the bridge used `--dangerously-skip-permissions` / `bypassPermissions`. settings.json allowed `Bash(*)`, `Read(*)`, `Write(*)`, `Edit(*)`, and reconcile re-added blanket allows. | **Fixed.** See HARDENING.md §2: scoped allows, deny rules, Bash guard hook, dontAsk for headless jobs, phone approval for the bridge, `cld-unsafe` only by explicit choice. |
 | — | Medium | iMessage scope defaulted to `all` and failed open when comms.yaml was missing; people-intel read chat.db with no scope check. | **Fixed.** Empty allowlist by default, fail closed, people-intel goes through the gate. |
-| — | Medium | `morning-context` sent your city to api.aladhan.com daily. | **Removed** (item 9). |
+| — | Medium | `morning-context` sent your city to a third-party schedule API daily. | **Removed** (item 9). |
 
 Secondary notes from the same pass:
 - `core/bin/cli/mesh` (send) interpolates `$message` into `python3 -c`, so a `'` in a message is an injection. Optional feature; unchanged.
@@ -83,7 +83,7 @@ Legend: **RT** = runtime (services/crons/CLIs). **INST** = install-time or migra
 | core/bin/crons/watchdog:162,168 | 1.1.1.1, www.google.com | internet probe | RT (5m) |
 | core/bin/crons/watchdog:115,149 | 127.0.0.1:7600 + registry health URLs | job post / health | RT |
 | core/bin/crons/morning-context:37 | wttr.in | weather | RT (06:30) |
-| core/bin/crons/morning-context:75 | api.aladhan.com | prayer times (sends city) | RT (06:30) |
+| core/bin/crons/morning-context:75 | third-party schedule API (removed in this fork) | daily schedule lookup (sent city) | RT (06:30) |
 | core/bin/crons/feed-digest:23 → telegram | api.telegram.org | digest | RT |
 | core/bin/internal/scheduler:439-446,571-577 | user-configured (`crons.yaml` `ping:` / `~/.aos/config/healthchecks.yaml`) — healthchecks.io | success pings | RT |
 | core/infra/reconcile/checks/dev_browser.py:27 | npm registry | `npm i -g dev-browser` | RT (reconcile fix on deploy) |
@@ -173,7 +173,7 @@ Generic plist writers: core/infra/lib/launchers.py:144-176 (rewrites ProgramArgu
 | n8n (retired) | 5678 | `N8N_LISTEN_ADDRESS`, default `::` | 095:15-19,188-201 | historical 🚩 |
 | `tailscale serve` (opt-in) | tailnet 8443 HTTPS → 127.0.0.1:4096 | tailnet | 095:275-342 (only if `AOS_MIGRATION_MAY_CREATE_TAILSCALE_SERVE=1`) | opt-in |
 | listen (retired) | 7600 | — | config/services.d/listen.yaml | watchdog still POSTs to it (core/bin/crons/watchdog:115) |
-| Third-party, referenced only | 27124 (Obsidian REST, HTTPS self-signed), 1200 (RSSHub), 8081 (operator's Adhan dashboard) | not in this repo | config/capabilities.yaml:28; config/modules.yaml | — |
+| Third-party, referenced only | 27124 (Obsidian REST, HTTPS self-signed), 1200 (RSSHub), 8081 (upstream operator's own dashboard) | not in this repo | config/capabilities.yaml:28; config/modules.yaml | — |
 
 **Migrations 080 and 095:**
 - **080** (`080_remote_access_init.py`) rewrites `~/Library/LaunchAgents/com.aos.qareen.plist` from `config/launchagents/com.aos.qareen.plist.template`. Per the docstring at :14-21, that template set `AOS_QAREEN_HOST=0.0.0.0` (the "LAN/Tailscale bind"). It then bootout/bootstrap/kickstarts. `check()` (:84-98) only tests that the env key is *present*, not its value. Once rebound by Qareen's TunnelManager, the value could be 127.0.0.1. The template is no longer in the repo, so on a fresh install `up()` fails at :141-143 ("Plist template not found"). Because the runner stops on a failed migration, 080 would block every migration after it on a machine whose watermark is below 080. The Qareen code that read `AOS_QAREEN_HOST` is not in the tree.

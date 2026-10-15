@@ -25,8 +25,8 @@ from core.engine.people.hygiene import (
         ("KhaleeqUrRehman", "Khaleeq Ur Rehman"),
         ("MuhammadFurqanAli", "Muhammad Furqan Ali"),
         (
-            "SheikhAbdurRahmanIbnFaisalAlAskari",
-            "Sheikh Abdur Rahman Ibn Faisal Al Askari",
+            "MaryAnneElizabethVanDerBerg",
+            "Mary Anne Elizabeth Van Der Berg",
         ),
         # Dot-joined title
         ("Dr.JohnSmithJones", "Dr. John Smith Jones"),

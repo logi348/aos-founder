@@ -133,7 +133,7 @@ AWARENESS → INTEREST → CONSIDERATION → CONVERSION → RETENTION → ADVOCA
 
 ### Don't
 - Use a values label or certification as a gimmick without substance
-- Exploit cultural or religious imagery for sales
+- Exploit cultural imagery or beliefs for sales
 - Use manipulative tactics (exploitative imagery, false scarcity)
 - Copy mainstream beauty marketing language
 - Compromise brand voice for broader appeal

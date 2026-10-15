@@ -67,8 +67,7 @@ for _canon, _variants in PHONETIC_GROUPS.items():
 _TITLE_PATTERNS = re.compile(
     r"^(?:"
     r"mr\.?|mrs\.?|ms\.?|miss\.?|dr\.?|prof\.?|eng\.?|engr\.?"
-    r"|sheikh|shaikh|shaykh|ustadh|ustaz|maulana|mufti"
-    r"|haji|hajj|sayyid|syed|sir|lady|dame"
+    r"|sir|lady|dame"
     r"|abu|umm?|ibn|bin|bint"
     r")\s+",
     re.IGNORECASE,
@@ -202,7 +201,7 @@ def normalize_name(raw: str) -> tuple[str, str, str]:
     Processing steps:
       1. Strip emoji characters.
       2. Unicode NFC normalization.
-      3. Strip honorific/title prefixes (Mr., Dr., Sheikh, Abu, etc.).
+      3. Strip honorific/title prefixes (Mr., Dr., Prof., Abu, etc.).
       4. Collapse whitespace.
       5. Split into first / last.
       6. Title-case each part.
@@ -235,7 +234,7 @@ def normalize_name(raw: str) -> tuple[str, str, str]:
     name = " ".join(name.split())
 
     # Strip title prefixes (may need multiple passes for compound titles
-    # like "Dr. Sheikh")
+    # like "Dr. Prof.")
     for _ in range(3):
         stripped = _TITLE_PATTERNS.sub("", name).strip()
         if stripped == name:

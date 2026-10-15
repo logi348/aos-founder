@@ -51,7 +51,6 @@ _DEFAULT_GLOB = (
 )
 
 _GROUP_KEYWORDS: dict[str, list[str]] = {
-    "religious": ["masjid", "mosque", "quran", "islam", "halaqa"],
     "family": ["family", "cousin", "sibling", "parent"],
     "work": ["work", "team", "office", "project", "colleague"],
     "social": ["friend", "crew", "gang"],

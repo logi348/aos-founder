@@ -31,7 +31,7 @@ class EligibilityResult:
 ELIGIBLE_PATTERNS = {
     "confirmation": [
         r"(?i)(sounds good|confirmed?|that works|perfect|great|okay|ok)\??$",
-        r"(?i)^(yes|yeah|yep|yup|sure|absolutely|of course|inshallah|inshaAllah)",
+        r"(?i)^(yes|yeah|yep|yup|sure|absolutely|of course)",
         r"(?i)(can you confirm|are you free|does that work|sound good)\??",
     ],
     "scheduling": [
@@ -40,11 +40,11 @@ ELIGIBLE_PATTERNS = {
         r"(?i)(let('s| us) (do|meet|talk|catch up))",
     ],
     "greeting": [
-        r"(?i)^(assalam|salam|hi|hey|hello|good morning|good evening)",
+        r"(?i)^(hi|hey|hello|good morning|good evening)",
         r"(?i)^(how are you|how('s| is) it going|what('s| is) up)",
     ],
     "acknowledgment": [
-        r"(?i)^(thanks|thank you|jazak|barakAllah|shukran|appreciated)",
+        r"(?i)^(thanks|thank you|shukran|appreciated)",
         r"(?i)^(got it|noted|understood|will do|on it)",
     ],
 }

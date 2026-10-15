@@ -58,7 +58,6 @@ _DEFAULT_DB_PATH = (
 )
 
 _GROUP_KEYWORDS: dict[str, list[str]] = {
-    "religious": ["masjid", "mosque", "quran", "islam", "halaqa"],
     "family": ["family", "cousin", "sibling", "parent"],
     "work": ["work", "team", "office", "project"],
     "social": ["friend", "crew", "gang"],

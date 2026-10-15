@@ -219,7 +219,7 @@ For a premium look, generate a coherent asset set at build time:
 - **Icon prompt must say full-bleed** ("fill the entire square edge to edge, no
   border, no rounded corners") or the model draws an icon-of-an-icon.
 - Read `OPENROUTER_API_KEY` from Keychain; never hardcode.
-- **Authenticity for cultural or religious apps**: follow the community's
+- **Authenticity for culturally specific apps**: follow the community's
   imagery norms, and NEVER AI-generate non-Latin script or scripture (models
   mangle letterforms) — use real fonts and sourced text.
 

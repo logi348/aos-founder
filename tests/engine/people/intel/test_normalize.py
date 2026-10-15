@@ -166,11 +166,11 @@ def test_strip_leading_title_dr_with_period():
 
 
 def test_strip_leading_title_camelcase():
-    # "QariExampleName" → camel-split → "Qari Example Name" → strip "Qari" → "Example Name"
-    r = normalize_canonical_name("QariExampleName")
+    # "ProfExampleName" → camel-split → "Prof Example Name" → strip "Prof" → "Example Name"
+    r = normalize_canonical_name("ProfExampleName")
     assert "example name" in r.variants
     # Title alone should not be a variant
-    assert "qari" not in r.variants
+    assert "prof" not in r.variants
     # The concatenated form WITHOUT the title
     assert "examplename" in r.variants
 

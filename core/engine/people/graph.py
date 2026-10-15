@@ -37,8 +37,6 @@ _W_METADATA_SIM = 0.15
 # Minimum edge weight to include (filter noise)
 _MIN_EDGE_WEIGHT = 0.05
 
-# Keywords that signal religious community groups
-_RELIGIOUS_KEYWORDS = {"masjid", "quran", "islamic", "mosque", "halaqa", "deen", "sunnah", "hadith"}
 
 
 def _gen_id(prefix: str) -> str:
@@ -254,7 +252,7 @@ class GraphPipeline:
 
         Returns a list of community dicts with:
         - members: list of person_ids
-        - category: inferred category (family, work, religious, community, friends)
+        - category: inferred category (family, work, community, friends)
         - resolution: the Louvain resolution parameter used
         - size: number of members
         """
@@ -334,7 +332,7 @@ class GraphPipeline:
             if max_org_count > total * 0.5:
                 return "work"
 
-        # Check if community is derived from a religious WA group
+        # Check if community is derived from a shared WA group
         # Look at which groups these members share
         if len(members) >= 2:
             placeholders = ",".join("?" * len(members))
@@ -348,12 +346,6 @@ class GraphPipeline:
                 """,
                 members,
             ).fetchall()
-
-            for grp in shared_groups:
-                if grp["name"]:
-                    name_lower = grp["name"].lower()
-                    if any(kw in name_lower for kw in _RELIGIOUS_KEYWORDS):
-                        return "religious"
 
             # If derived from WA group at all
             if shared_groups:

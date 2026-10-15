@@ -158,7 +158,7 @@ class GroupSignal:
     # Co-membership with operator
     shared_with_operator: int = 0
     # Group keyword categories
-    group_categories: dict[str, int] = field(default_factory=dict)  # {religious, family, work, social}
+    group_categories: dict[str, int] = field(default_factory=dict)  # {family, work, social}
 
 
 @dataclass
