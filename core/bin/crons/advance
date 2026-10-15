@@ -1,0 +1,342 @@
+#!/usr/bin/env python3
+"""advance — move open ideas and work forward overnight, then report.
+
+Hardened fork. The operator talks to AOS through the day (Telegram, voice
+notes, cld); ideas and intentions land in the work system (tasks, inbox,
+initiatives) and the triage inbox. Upstream had nothing that picked them up
+again unattended (the work-runner was deleted in v0.7.7). This nightly pass:
+
+  1. Gathers what is open, read-only: active/todo tasks with their latest
+     handoff, inbox items, active initiatives, recent quick captures, and
+     the previous report (so it doesn't redo work or re-ask questions).
+  2. Runs Chief headlessly with --permission-mode dontAsk (anything not
+     pre-approved is refused, nothing waits on a prompt), the normal
+     settings.json rules, the Bash guard, and an extra deny list for
+     anything outward-facing or irreversible.
+  3. Chief picks up to MAX_ITEMS items and takes the next *reversible* step
+     on each: research, critique, a plan, a draft, a prototype on a git
+     branch under ~/project. Outputs go to ~/vault/advance/<date>/.
+     Progress is recorded on the task (work activity/handoff).
+  4. Writes the report to ~/.aos/work/advance/latest.json (+ a dated copy and
+     a readable note in ~/vault/advance/<date>/report.md). The morning
+     briefing shows it: what moved, what needs the operator, what was parked.
+
+Never, without the operator: messaging anyone, publishing, pushing,
+spending, deleting, closing tasks, or changing goals/settings.
+
+Disable: set `enabled: false` on `advance` in config/crons.yaml (via the
+fork). Manual run: `python3 ~/aos/core/bin/crons/advance [--dry-run]`.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shutil
+import sqlite3
+import subprocess
+import sys
+from datetime import date, datetime, timedelta
+from pathlib import Path
+
+HOME = Path.home()
+VAULT = HOME / "vault"
+WORK_DB = Path(os.environ.get("AOS_WORK_DB", str(HOME / ".aos" / "data" / "work.db")))
+STATE_DIR = HOME / ".aos" / "work" / "advance"
+OUT_ROOT = VAULT / "advance"
+
+MAX_ITEMS = 3
+MAX_TURNS = 80
+TIMEOUT_S = 45 * 60
+CLAUDE_BIN = shutil.which("claude") or "claude"
+
+# Tools pre-approved for the pass. dontAsk refuses anything else.
+TOOLS = "Read,Grep,Glob,Bash,Write,Edit,WebSearch,WebFetch,Agent,Task,Skill,TodoWrite"
+
+# Outward-facing or irreversible actions, refused for this pass on top of the
+# settings.json deny rules and the Bash guard. (Command-text rules: the prompt
+# rules and the guard are the other layers.)
+DISALLOWED = [
+    "Bash(*comms-send*)", "Bash(*aos-notify*)", "Bash(*envoy*)", "Bash(*converse create*)",
+    "Bash(*api.telegram.org*)", "Bash(*hooks.slack.com*)", "Bash(*sendgrid*)", "Bash(*sendmail*)",
+    "Bash(gh *)", "Bash(*git push*)", "Bash(*git reset --hard*)", "Bash(*git clean*)",
+    "Bash(*git branch -D*)", "Bash(*git checkout -- *)", "Bash(*git restore*)",
+    "Bash(osascript*)", "Bash(open *)", "Bash(*agent-secret get*)",
+    "Bash(npm publish*)", "Bash(vercel*)", "Bash(stripe*)", "Bash(aws *)",
+    "Bash(*cli.py done*)", "Bash(*cli.py cancel*)", "Bash(*work done*)", "Bash(*work cancel*)",
+    "Bash(aos update*)", "Bash(*claude-features*)", "Bash(*trust-review*)",
+]
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "infra" / "lib"))
+try:
+    import claude_lanes  # usage-limit failover across Claude profiles
+except Exception:  # noqa: BLE001
+    claude_lanes = None
+
+
+# ── 1. Gather (read-only) ───────────────────────────────────────────────────
+
+def _ro(db: Path):
+    if not db.exists():
+        return None
+    try:
+        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        return conn
+    except sqlite3.Error:
+        return None
+
+
+def gather_tasks(db: Path | None = None, limit: int = 40) -> list[dict]:
+    conn = _ro(Path(db) if db else WORK_DB)
+    if conn is None:
+        return []
+    now = datetime.now().isoformat(timespec="seconds")
+    try:
+        rows = conn.execute(
+            """
+            SELECT t.id, t.title, t.status, t.priority, t.project_id, t.description,
+                   t.due_at, t.tags, t.assignee_type,
+                   COALESCE(t.modified_at, t.created_at) AS touched,
+                   h.state AS h_state, h.next_step AS h_next, h.blockers AS h_blockers
+            FROM tasks t LEFT JOIN task_handoffs h ON h.task_id = t.id
+            WHERE t.status IN ('todo', 'active')
+              AND (t.snoozed_until IS NULL OR t.snoozed_until <= ?)
+            ORDER BY t.priority ASC, touched DESC
+            LIMIT ?
+            """, (now, limit)).fetchall()
+    except sqlite3.Error:
+        return []
+    finally:
+        conn.close()
+    out = []
+    for r in rows:
+        out.append({k: r[k] for k in r.keys() if r[k] not in (None, "")})
+        if "description" in out[-1]:
+            out[-1]["description"] = out[-1]["description"][:500]
+    return out
+
+
+def gather_inbox(db: Path | None = None, limit: int = 20) -> list[dict]:
+    conn = _ro(Path(db) if db else WORK_DB)
+    if conn is None:
+        return []
+    try:
+        rows = conn.execute("SELECT id, text, captured_at FROM inbox ORDER BY captured_at DESC LIMIT ?",
+                            (limit,)).fetchall()
+    except sqlite3.Error:
+        return []
+    finally:
+        conn.close()
+    return [{"id": r["id"], "text": r["text"][:400], "captured_at": r["captured_at"]} for r in rows]
+
+
+_FM = re.compile(r"\A---\s*\n(.*?)\n---", re.S)
+
+
+def gather_initiatives(vault: Path | None = None) -> list[dict]:
+    d = (vault or VAULT) / "knowledge" / "initiatives"
+    out = []
+    for p in sorted(d.glob("*.md")) if d.is_dir() else []:
+        m = _FM.match(p.read_text(errors="ignore"))
+        fm = {}
+        if m:
+            for line in m.group(1).splitlines():
+                if ":" in line and not line.startswith(" "):
+                    k, v = line.split(":", 1)
+                    fm[k.strip()] = v.strip().strip("'\"")
+        status = fm.get("status", "")
+        if status in ("done", "archived", "killed"):
+            continue
+        out.append({"path": str(p), "title": fm.get("title", p.stem), "status": status,
+                    "updated": fm.get("updated", "")})
+    return out
+
+
+def gather_captures(vault: Path | None = None, lines: int = 30) -> list[str]:
+    f = (vault or VAULT) / "knowledge" / "triage" / "inbox.md"
+    try:
+        text = f.read_text(errors="ignore").splitlines()
+    except OSError:
+        return []
+    return [ln for ln in text if ln.strip().startswith(("-", "*"))][-lines:]
+
+
+def load_previous(state_dir: Path | None = None) -> dict:
+    try:
+        return json.loads(((state_dir or STATE_DIR) / "latest.json").read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+# ── 2. Prompt ───────────────────────────────────────────────────────────────
+
+def build_prompt(ctx: dict, today: date, out_dir: Path, max_items: int = MAX_ITEMS) -> str:
+    return f"""You are running the overnight "advance" pass for the operator (date: {today.isoformat()}).
+Nobody is watching. Your job: move their open ideas and work forward while they sleep,
+then report. Be the right hand who quietly did useful work overnight.
+
+## Choose
+From the open items below, pick at most {max_items} where one more step now would
+help most. Prefer: things the operator recently talked about, items with a clear
+next step in their handoff, ideas that have sat untouched, and anything blocking
+other work. Skip items the previous report said need the operator and that haven't
+changed since — don't redo or re-ask. Skip anything you can't move without them.
+
+## Do the next REVERSIBLE step, for real
+Examples: research (web) and summarise findings with sources; poke holes in an idea
+(risks, costs, alternatives, what would have to be true); write a short plan with a
+clear first step; draft an email, page, post or doc (as a draft file only); build a
+small prototype or spike on a NEW git branch inside ~/project (commit there, never
+push, never merge, never touch main). Use the skills that fit (work, step-by-step,
+council for a genuinely high-stakes call, marketing, recall to find past context).
+
+Write every output under {out_dir}/ (create it), one file or folder per item,
+with a clear name. Record progress on each task you touched:
+  python3 ~/aos/core/engine/work/cli.py activity <task> --kind advance --body "<one line>" --actor agent:advance
+  python3 ~/aos/core/engine/work/cli.py handoff <task> --state "<where it stands>" --next "<next step>" --actor agent:advance
+For an inbox item or capture worth pursuing, you may create a task for it
+(cli.py add "<title>" --actor agent:advance).
+
+## Never (these wait for the operator)
+Message or email anyone; post or publish anything; git push or merge; spend money
+or sign up for anything; delete or overwrite the operator's files; mark tasks done
+or cancelled; change goals, trust, settings or the AOS system itself. If the right
+next step is one of these, prepare it and put it under needs_you.
+
+## Report
+End your reply with exactly one JSON object between the markers below, nothing after:
+<<<ADVANCE_REPORT
+{{"moved": [{{"item": "<title>", "did": "<one sentence>", "links": ["<path or url>"]}}],
+ "needs_you": [{{"item": "<title>", "ask": "<the decision or action, one sentence>"}}],
+ "parked": [{{"item": "<title>", "why": "<cold / blocked / unclear — one line>"}}]}}
+ADVANCE_REPORT>>>
+Keep each list short (moved ≤ {max_items}, needs_you ≤ 5, parked ≤ 3). If nothing was
+worth doing, say so with empty lists.
+
+## Open items
+Tasks (todo/active, with latest handoff):
+{json.dumps(ctx.get("tasks", []), indent=1, ensure_ascii=False)[:12000]}
+
+Inbox:
+{json.dumps(ctx.get("inbox", []), indent=1, ensure_ascii=False)[:4000]}
+
+Active initiatives (vault docs — read the ones you pick):
+{json.dumps(ctx.get("initiatives", []), indent=1, ensure_ascii=False)[:3000]}
+
+Recent quick captures (~/vault/knowledge/triage/inbox.md):
+{chr(10).join(ctx.get("captures", []))[:3000]}
+
+Previous report ({ctx.get("previous", {}).get("date", "none")}):
+{json.dumps({k: ctx.get("previous", {}).get(k, []) for k in ("moved", "needs_you", "parked")}, ensure_ascii=False)[:3000]}
+"""
+
+
+# ── 3. Dispatch ─────────────────────────────────────────────────────────────
+
+def build_command() -> list[str]:
+    return [
+        CLAUDE_BIN, "--print", "--agent", "chief",
+        "--permission-mode", "dontAsk",
+        # No --tools: a renamed built-in would make every run fail. dontAsk
+        # already refuses anything not pre-approved here or in settings.json.
+        "--allowedTools", TOOLS,
+        "--disallowedTools", *DISALLOWED,
+        "--max-turns", str(MAX_TURNS),
+    ]
+
+
+def dispatch(prompt: str, cwd: Path, timeout: int = TIMEOUT_S) -> str:
+    cmd = build_command()
+    if claude_lanes is not None:
+        proc = claude_lanes.run(cmd, stdin=prompt, timeout=timeout, cwd=str(cwd))
+    else:
+        proc = subprocess.run(cmd, input=prompt, capture_output=True, text=True,
+                              timeout=timeout, cwd=str(cwd))
+    if proc.returncode != 0:
+        raise RuntimeError(f"advance run failed rc={proc.returncode}: "
+                           f"{(proc.stderr or proc.stdout or '')[:400]}")
+    return proc.stdout
+
+
+# ── 4. Report ───────────────────────────────────────────────────────────────
+
+_REPORT = re.compile(r"<<<ADVANCE_REPORT\s*(\{.*\})\s*ADVANCE_REPORT>>>", re.S)
+
+
+def parse_report(text: str) -> dict:
+    m = _REPORT.search(text or "")
+    if not m:
+        return {"moved": [], "needs_you": [], "parked": [], "error": "no report block in output"}
+    try:
+        data = json.loads(m.group(1))
+    except json.JSONDecodeError as e:
+        return {"moved": [], "needs_you": [], "parked": [], "error": f"unreadable report: {e}"}
+    clean = {}
+    for key in ("moved", "needs_you", "parked"):
+        items = data.get(key) if isinstance(data.get(key), list) else []
+        clean[key] = [i for i in items if isinstance(i, dict) and i.get("item")][:6]
+    return clean
+
+
+def write_report(report: dict, today: date, out_dir: Path, state_dir: Path | None = None) -> Path:
+    state = state_dir or STATE_DIR
+    state.mkdir(parents=True, exist_ok=True)
+    report = {"date": today.isoformat(), "generated": datetime.now().isoformat(timespec="seconds"),
+              "outputs": str(out_dir), **report}
+    (state / f"{today.isoformat()}.json").write_text(json.dumps(report, indent=2, ensure_ascii=False))
+    (state / "latest.json").write_text(json.dumps(report, indent=2, ensure_ascii=False))
+    out_dir.mkdir(parents=True, exist_ok=True)
+    md = [f"---\ntype: advance-report\ndate: {today.isoformat()}\n---\n",
+          f"# Overnight — {today.isoformat()}\n"]
+    for key, title, field in (("moved", "What moved", "did"), ("needs_you", "Needs you", "ask"),
+                              ("parked", "Parked", "why")):
+        md.append(f"\n## {title}\n")
+        items = report.get(key) or []
+        if not items:
+            md.append("- (none)\n")
+        for i in items:
+            links = " ".join(f"[{Path(l).name or l}]({l})" for l in i.get("links", []) if isinstance(l, str))
+            md.append(f"- **{i['item']}** — {i.get(field, '')} {links}".rstrip() + "\n")
+    if report.get("error"):
+        md.append(f"\n> Report problem: {report['error']}\n")
+    (out_dir / "report.md").write_text("".join(md))
+    return state / "latest.json"
+
+
+# ── main ────────────────────────────────────────────────────────────────────
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--dry-run", action="store_true", help="print the prompt, run nothing")
+    ap.add_argument("--max-items", type=int, default=MAX_ITEMS)
+    args = ap.parse_args(argv)
+
+    today = date.today()
+    out_dir = OUT_ROOT / today.isoformat()
+    ctx = {"tasks": gather_tasks(), "inbox": gather_inbox(), "initiatives": gather_initiatives(),
+           "captures": gather_captures(), "previous": load_previous()}
+    if not any(ctx[k] for k in ("tasks", "inbox", "initiatives", "captures")):
+        print("advance: nothing open — skipping")
+        return 0
+    prompt = build_prompt(ctx, today, out_dir, args.max_items)
+    if args.dry_run:
+        print(prompt)
+        return 0
+
+    workdir = HOME / ".aos" / "work"
+    workdir.mkdir(parents=True, exist_ok=True)
+    try:
+        raw = dispatch(prompt, cwd=workdir)
+        report = parse_report(raw)
+    except Exception as e:  # noqa: BLE001 — the brief should say the run failed, not stay silent
+        report = {"moved": [], "needs_you": [], "parked": [], "error": str(e)[:300]}
+    path = write_report(report, today, out_dir)
+    print(f"advance: moved={len(report['moved'])} needs_you={len(report['needs_you'])} "
+          f"parked={len(report['parked'])} → {path}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

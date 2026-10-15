@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import bridge_permissions
+import chief_brief
 from bridge_events import bridge_event
 
 logger = logging.getLogger("aos.bridge.session_manager")
@@ -583,7 +584,7 @@ async def stream_claude(
             "When the operator references a person or topic from a past conversation, recall "
             "it with `comms-recall search \"<topic>\"` or `comms-recall person \"<name>\"` "
             "rather than asking them to re-explain. "
-            + bridge_permissions.PROMPT_NOTE + _ambient,
+            + bridge_permissions.PROMPT_NOTE + chief_brief.TEXT + _ambient,
         ])
 
     # Session resumption (not for agent dispatches — they get fresh context)

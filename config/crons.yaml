@@ -184,6 +184,18 @@ jobs:
     tier: 2
     description: Runs daily session-analysis (Mon-Sat) — the one step with no other owner
 
+  advance:
+    # Hardened fork: overnight "advance and report". Takes the next reversible
+    # step on up to 3 open ideas/tasks (research, critique, plans, drafts,
+    # prototypes on a branch) and reports in the morning briefing. Never
+    # messages anyone, publishes, pushes, spends, deletes or closes tasks.
+    # Turn off with `enabled: false`.
+    command: bash ~/aos/core/bin/internal/aos-python ~/aos/core/bin/crons/advance
+    at: "02:30"
+    timeout: 3000
+    tier: 2
+    description: Moves open ideas and tasks forward overnight; the morning brief reports what moved
+
   morning-context:
     command: python3 ~/aos/core/bin/crons/morning-context
     at: "06:30"

@@ -36,6 +36,7 @@ import time
 from pathlib import Path
 
 import bridge_permissions
+import chief_brief
 from bridge_events import bridge_event
 
 logger = logging.getLogger("aos.bridge.persistent_session")
@@ -150,7 +151,7 @@ class PersistentSession:
                 "your next message continues the conversation. Don't ask for confirmation on "
                 "routine tasks. If you need to delegate, use the Agent tool with subagent_type: "
                 "steward (system health), advisor (analysis), or other installed agents. "
-                + bridge_permissions.PROMPT_NOTE + ambient,
+                + bridge_permissions.PROMPT_NOTE + chief_brief.TEXT + ambient,
             ]
 
             if resume_session_id:

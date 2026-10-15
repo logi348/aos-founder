@@ -171,6 +171,10 @@ by the user who runs AOS.
      against HARDENING.md.
   3. Merge it.
   4. Tap **Apply update** in Telegram, or run `aos update`.
+- **Every morning,** the briefing includes "While you slept": what the
+  overnight pass moved forward, what needs your decision, and what it
+  parked. Reply on Telegram to revive or drop anything. Just talk to it
+  during the day; whatever you mention gets picked up overnight.
 - **After a power cut,** unlock FileVault as **aos**. AOS starts once that
   user is logged in.
 - **To change system settings,** log in as Admin. Re-running

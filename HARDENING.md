@@ -313,6 +313,35 @@ run. Instead:
   ~/.aos/services/bridge/.venv/bin/python -m pytest core/services/bridge/tests -q
   ```
 
+## Everyday use + overnight "advance"
+
+AOS should be effortless to use during the day and keep ideas moving at night.
+
+- **Telegram conversations get a compact Chief brief.**
+  (`core/services/bridge/chief_brief.py`)
+  - Upstream's Telegram sessions skipped Chief's agent file, and with it the
+    skill routing. Now they get the essentials:
+    - infer intent, and never ask you to fill in structure;
+    - use the right skill (ramble, capture, the initiative pipeline,
+      council, step-by-step, recall, verification-before-completion);
+    - make sure every idea lands in the work system so it can be advanced.
+- **Overnight advance pass.** (`core/bin/crons/advance`, 02:30)
+  - Chief runs headless in `dontAsk` mode under the normal rules and the
+    guard, with an extra deny list for anything outward-facing.
+  - It picks up to 3 open items (tasks, inbox, initiatives, quick captures)
+    and takes the next *reversible* step on each: research, critique, a plan,
+    a draft, or a prototype on a new git branch in `~/project`.
+  - Outputs go to `~/vault/advance/<date>/`. Progress is recorded on each
+    task's activity and handoff.
+  - It never messages anyone, publishes, pushes, spends, deletes, closes
+    tasks, or changes goals or settings. It prepares those and lists them
+    under "needs you".
+- **Morning briefing → "While you slept".** It lists what moved, what needs
+  you, and what was parked, with a link to the full report.
+- **To turn it off:** set `enabled: false` on `advance` in
+  `config/crons.yaml` (through the fork). To preview what it would see, run
+  `python3 ~/aos/core/bin/crons/advance --dry-run`.
+
 ## Known remaining risks
 
 - **Bash is still broadly allowed.** Until you enable the sandbox,

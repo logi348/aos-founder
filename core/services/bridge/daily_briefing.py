@@ -484,6 +484,13 @@ def _build_briefing() -> str:
             lines.append(f"  \u2022 {item}")
         lines.append("")
 
+    # WHILE YOU SLEPT — the overnight advance pass (core/bin/crons/advance)
+    try:
+        import advance_report
+        lines.extend(advance_report.briefing_lines(now))
+    except Exception as e:  # noqa: BLE001 — never let this block the briefing
+        logger.debug(f"Advance report unavailable: {e}")
+
     # ── Create today's daily note if missing ─────────────────────────
     today_date_str = now.strftime("%Y-%m-%d")
     today_note = VAULT / "daily" / f"{today_date_str}.md"
