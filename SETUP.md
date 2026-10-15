@@ -21,7 +21,7 @@ by the user who runs AOS.
    - GitHub → Settings → Developer settings → Fine-grained tokens → Generate.
    - Repository access: only `aos-hardened`. Permissions: **Contents →
      Read-only**. Expiry: one year. Set a calendar reminder to renew it.
-   - Copy it somewhere temporary. You paste it once, in step 10.
+   - Copy it somewhere temporary. You paste it once, in step 11.
 3. **Create the Telegram bot** (on your phone)
    - In Telegram, open @BotFather and send `/newbot`.
    - Pick a name, and a username ending in `bot`.
@@ -32,19 +32,29 @@ by the user who runs AOS.
    - Turn off WPS.
    - Update the firmware if an update is available.
 
+5. **Claude privacy setting**
+   - On claude.ai: Settings → Privacy. Decide whether your chats and coding
+     sessions may be used to improve Claude's models; that choice also
+     affects how long Anthropic keeps them.
+   - It matters because everything the agents read or write in a session is
+     sent to Anthropic for processing; that's how the model runs. It's an
+     account setting, so nothing on the Mac can change it.
+   - Claude Code's own telemetry and error reporting are already switched
+     off by the installer, and kept off.
+
 ## Reset and base macOS
 
-5. On the Mac mini:
+6. On the Mac mini:
    - Sign out of the Apple ID (this turns off Find My).
    - Then System Settings → General → Transfer or Reset → **Erase All Content
      and Settings**.
-6. **Setup Assistant**
+7. **Setup Assistant**
    - Create the first account, e.g. **"Admin"**. This stays your admin
      account.
    - Apple ID: skip, or use the new dedicated email. Never your personal one.
    - **Turn FileVault on.** Save the recovery key somewhere off the Mac.
    - Install any pending macOS updates.
-7. **Create the AOS account** (as Admin)
+8. **Create the AOS account** (as Admin)
    - System Settings → Users & Groups → Add User → e.g. **"aos"**, type
      **Administrator** for now.
    - Check that it can unlock FileVault. In Terminal as Admin:
@@ -52,7 +62,7 @@ by the user who runs AOS.
      sudo fdesetup list
      ```
      Both users should be listed.
-8. **Network and sharing** (still as Admin)
+9. **Network and sharing** (still as Admin)
    - Install Tailscale from tailscale.com or the App Store and sign in. In
      its settings, choose **Install CLI** so the AOS installer detects it and
      doesn't install a second copy.
@@ -68,12 +78,12 @@ by the user who runs AOS.
 
 ## Install AOS (logged in as "aos")
 
-9. Open Terminal and run:
+10. Open Terminal and run:
    ```bash
    xcode-select --install
    ```
    Click **Install** in the dialog and wait for it to finish.
-10. Clone the fork:
+11. Clone the fork:
     ```bash
     git clone https://github.com/logi348/aos-hardened.git ~/aos
     ```
@@ -81,7 +91,7 @@ by the user who runs AOS.
     - macOS stores the token in the Keychain, so later update checks use it
       silently.
     - Delete your temporary copy of the token.
-11. Run the installer:
+12. Run the installer:
     ```bash
     cd ~/aos && bash install.sh --always-on
     ```
@@ -90,7 +100,9 @@ by the user who runs AOS.
       settings. Allow 20–30 minutes.
     - At the end it opens cmux and Claude Code. **Sign in with your Claude
       account** in the browser.
-12. **Onboarding with Skye** starts automatically. It's the setup
+    - Nothing to configure for privacy: Claude Code's telemetry is off, and
+      voice notes are transcribed on the Mac, not in the cloud.
+13. **Onboarding with Skye** starts automatically. It's the setup
     conversation, and these are the parts to know about:
     - **Telegram:**
       1. Open a second Terminal window and run:
@@ -112,26 +124,32 @@ by the user who runs AOS.
 
 ## Verify (still as "aos")
 
-13. Health checks:
+14. Health checks:
     ```bash
     aos self-test
     ```
     ```bash
     launchctl list | grep com.aos
     ```
-14. Phone approvals:
+15. Phone approvals:
     ```bash
     ~/aos/core/bin/cli/approval-smoke-test
     ```
     Your phone should get an Allow/Deny prompt. Tap **Allow**, and it should
     say the file was created.
-15. Send your bot a message from your phone and check it answers. If you
+16. Send your bot a message from your phone and check it answers. If you
     have a second Telegram account, message the bot from it too: that
     message should be ignored.
+17. Send your bot a short **voice note**.
+    - The first one takes a minute or two: the Mac downloads the speech
+      model once.
+    - After that, a voice note is transcribed in a few seconds, or a few
+      more after a quiet spell, while the model loads again.
+    - The audio never leaves the Mac.
 
 ## Lock it down
 
-16. **SSH keys only** (do this the same day you enabled Remote Login)
+18. **SSH keys only** (do this the same day you enabled Remote Login)
     - From your laptop, set up a key and test it:
       ```bash
       ssh-copy-id aos@<mac-mini-tailscale-name>
@@ -145,12 +163,12 @@ by the user who runs AOS.
       printf 'PasswordAuthentication no\nKbdInteractiveAuthentication no\n' | sudo tee /etc/ssh/sshd_config.d/100-aos.conf
       ```
     - Turn Remote Login off and on again to apply it.
-17. **Remove admin from "aos"**
+19. **Remove admin from "aos"**
     - As Admin: Users & Groups → aos → turn off "Allow this user to
       administer this computer".
     - Restart the Mac, unlock FileVault **as aos**, and check that Telegram
       answers again.
-18. **Turn on the sandbox** after a day or two of normal use. Do it early
+20. **Turn on the sandbox** after a day or two of normal use. Do it early
     while the Mac shares your main network: it limits agents' shell commands
     to an allowlist of internet domains, so they can't reach your other
     devices.
@@ -175,6 +193,11 @@ by the user who runs AOS.
   overnight pass moved forward, what needs your decision, and what it
   parked. Reply on Telegram to revive or drop anything. Just talk to it
   during the day; whatever you mention gets picked up overnight.
+- **Voice notes are transcribed on the Mac.** The speech model loads when a
+  note arrives and is released after 15 quiet minutes, so it only uses
+  memory while you're sending notes. To use cloud transcription instead,
+  set `TRANSCRIBER_BACKEND=cloud` in the transcriber's LaunchAgent (see
+  HARDENING.md).
 - **After a power cut,** unlock FileVault as **aos**. AOS starts once that
   user is logged in.
 - **To change system settings,** log in as Admin. Re-running
