@@ -273,25 +273,43 @@ See SECURITY-AUDIT.md. No code changes in that commit.
 
 - The installer glyphs (byte-escaped) are removed and the closing line is "Setup complete."
 - Onboarding, morning prompts, the bridge's greeting reply and several skills use neutral greetings.
-- The onboarding persona is **Skye**.
+- **Skye is the one assistant, for setup and every day.**
+  - Upstream had a setup persona plus a separate main agent called "Chief".
+    Now the main agent itself is `skye` (`core/agents/skye.md`): the default
+    in `cld`, both Telegram session paths, the overnight advance run,
+    settings.json, the installer and its health checks, migrations 003/011,
+    and the `aos` CLI.
+  - Onboarding is Skye's one-time setup mode. It introduces the specialists
+    behind Skye and carries straight on into everyday use.
+  - The "rename your agent" question is gone. `aos rename-agent <name>` still
+    works if you ever want a different name.
 - Example names are now "Alex"; the upstream author's real email addresses in `account-resolve` are replaced.
 - Example data uses same-shape substitutions so tests keep their meaning.
 - The Arabic Whisper priming prompt is a neutral Arabic phrase.
 
+- **Faith references removed from contact and message handling:**
+  - title lists used to clean contact names keep only generic titles (Mr,
+    Dr, Prof, Sir…);
+  - the faith-specific group-category keywords and their "religious"
+    category are gone, so groups are sorted as family, work, community or
+    social;
+  - the inbound-message recogniser keeps only neutral greetings, yeses and
+    thanks.
+
 **Removed features:**
 - **A daily schedule lookup** in `morning-context`: its call to a third-party API that sent your city every morning, its env var, output key and `operator.yaml` key, and the related test fixtures.
-- **An alternate calendar date** in daily/weekly note frontmatter, with its calendar-converter dependency (pyproject + uv.lock, hand-edited offline: run `uv lock --check` once online), the CI import check and migration 096's import list.
+- **An alternate calendar date** in daily/weekly note frontmatter, with its calendar-converter dependency (pyproject + uv.lock, hand-edited offline; CI's lockfile check confirms it), the CI import check and migration 096's import list.
 - **The upstream author's personal LaunchAgent labels** in `config/modules.yaml`.
 
 **Kept, because they are functional:**
-- name-transliteration tables;
-- the recogniser for *inbound* phrases;
-- Arabic-script handling;
+- name-spelling variant tables for matching contacts (personal names, e.g. Abdullah / Abdallah);
+- Arabic-script handling (language support for names and transcription);
+- the generic `community_religious` label in the contact-category taxonomy (names no faith);
 - migration 137's old repo path;
 - the `am.hish.*` bundle IDs used by cleanup migrations;
 - the `islah` bug-intake subsystem name and the `nuchay` project name (both stored identifiers).
 
-`CHANGELOG.md` and `docs/releases/` are left as history; nothing shows them at runtime.
+`CHANGELOG.md` and `docs/releases/` stay as history (nothing shows them at runtime), reworded where they named the removed features. The upstream author's separate iOS app also called "Chief" (`chief-ios-app`) keeps its name; it is not the assistant.
 
 ## 10. Tests
 
