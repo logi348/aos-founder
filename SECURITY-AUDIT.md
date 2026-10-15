@@ -30,6 +30,34 @@ where it matters.
 | — | High | Every `claude` launched by `cld`, crons and the bridge used `--dangerously-skip-permissions` / `bypassPermissions`. settings.json allowed `Bash(*)`, `Read(*)`, `Write(*)`, `Edit(*)`, and reconcile re-added blanket allows. | **Fixed.** See HARDENING.md §2: scoped allows, deny rules, Bash guard hook, dontAsk for headless jobs, phone approval for the bridge, `cld-unsafe` only by explicit choice. |
 | — | Medium | iMessage scope defaulted to `all` and failed open when comms.yaml was missing; people-intel read chat.db with no scope check. | **Fixed.** Empty allowlist by default, fail closed, people-intel goes through the gate. |
 | — | Medium | `morning-context` sent your city to a third-party schedule API daily. | **Removed** (item 9). |
+| — | High | Agents could change their own code and settings: `~/aos` (agent/skill instructions, `crons.yaml`), `~/.claude/settings.json`, LaunchAgents, shell startup files and `crontab`. Repairs ran only on deploy. | **Fixed.** Edit-deny rules, Bash guard write-protection, and 30-minute repair of permissions, flags and `~/aos`. Opt-in OS sandbox for shell commands. |
+| — | Medium | Claude Code sent usage telemetry and error reports. | **Off.** `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, enforced by reconcile. Only model requests go to Anthropic. |
+| — | Medium | Agents could reach other devices on the local network (router, NAS, printers, file shares, UPnP). | **Reduced.** The Bash guard blocks commands naming private/link-local/Tailscale addresses, LAN hostnames and discovery/share tools; exceptions go in `~/.aos/config/lan-allow` (operator-only). The opt-in sandbox enforces a domain allowlist. |
+
+## Attack surface added by this fork
+
+New capabilities carry their own risk. What they are and what bounds them:
+
+| Addition | What it can do | Bounds |
+|---|---|---|
+| Overnight advance pass (`core/bin/crons/advance`, 02:30) | Headless Skye session with Bash, Read/Write/Edit, WebSearch/WebFetch and agents, working on open tasks unattended | `--permission-mode dontAsk` (nothing outside the allow list runs); settings.json deny rules; Bash guard; an extra `--disallowedTools` list (messaging, Telegram/Slack/SendGrid calls, `gh`, push/reset/clean, secrets, closing tasks, updates, trust); a 45-minute timeout; outputs only to `~/vault/advance/`, `~/project` branches and task notes. Turn off with `enabled: false`. |
+| Phone approval (`approval_mcp.py`, `POST /approval` on the bridge API) | Lets you allow a Telegram session's tool call from your phone | Endpoint requires the bridge API token. Buttons pass the owner-only gate. No answer, an error or a malformed request means deny. |
+| Telegram "Apply update" (`update_offer.py`, `check-update`) | Starts `check-update --apply` from a button | Owner-only gate; applies only the exact fork version offered. auto-update stays disabled. Agents' own `aos update` / `--apply` is "ask". |
+| Weekly upstream sync (`.github/workflows/upstream-sync.yaml`) | Runs upstream's tests on GitHub and opens a PR into your fork | Upstream code runs in a job with a read-only token and no saved credentials. The PR job runs only git/gh with a write token and never merges. Upstream changes to `.github/workflows` are refused for push and become an issue. |
+| `aos telegram-pair` | Calls `api.telegram.org` (getMe/getUpdates/sendMessage) once at setup | Refuses to run inside an agent session. Stores `TELEGRAM_CHAT_ID` / `TELEGRAM_USER_ID` in the Keychain only after you type a confirmation code. |
+| Local transcription | Downloads the speech model from `huggingface.co` once; runs on the Mac | Weights only, no code from that download. Audio never leaves the Mac; there is no fallback from local to cloud. |
+
+New secrets and where they live:
+- `~/.aos/services/bridge/api.token`: bridge API bearer token, mode 0600,
+  created on first start.
+- The read-only GitHub token for the fork: in the aos user's Keychain (git's
+  `osxkeychain` helper). An agent could read it with git's credential tools,
+  which is why it must be read-only.
+- `TELEGRAM_USER_ID`: Keychain, alongside the existing Telegram entries.
+
+The main agent's id is now `skye` (was `chief`). That's a naming change with
+no security impact; the trust-log hook's list of core agents was updated to
+match.
 
 Secondary notes from the same pass:
 - `core/bin/cli/mesh` (send) interpolates `$message` into `python3 -c`, so a `'` in a message is an injection. Optional feature; unchanged.
