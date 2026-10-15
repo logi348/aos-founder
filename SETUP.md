@@ -102,8 +102,10 @@ by the user who runs AOS.
       account** in the browser.
     - Nothing to configure for privacy: Claude Code's telemetry is off, and
       voice notes are transcribed on the Mac, not in the cloud.
-13. **Onboarding with Skye** starts automatically. It's the setup
-    conversation, and these are the parts to know about:
+13. **Onboarding with Skye** starts automatically. Skye is your assistant from
+    here on: the same Skye runs this setup conversation, then carries straight
+    on as the one you talk to every day, in Terminal (`cld`) and on Telegram.
+    These are the parts to know about:
     - **Telegram:**
       1. Open a second Terminal window and run:
          ```bash
@@ -189,6 +191,10 @@ by the user who runs AOS.
      against HARDENING.md.
   3. Merge it.
   4. Tap **Apply update** in Telegram, or run `aos update`.
+- **Talk to Skye** on Telegram (text or voice notes) or in Terminal with
+  `cld`. Skye handles things itself or hands them to its specialists behind
+  the scenes. `cld-unsafe` is the same without permission checks; use it
+  only when you're watching.
 - **Every morning,** the briefing includes "While you slept": what the
   overnight pass moved forward, what needs your decision, and what it
   parked. Reply on Telegram to revive or drop anything. Just talk to it
