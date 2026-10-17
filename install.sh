@@ -64,6 +64,12 @@ AOS_BRANCH="main"
 # ── Paths ────────────────────────────────────────────
 AOS_DIR="$HOME/aos"
 USER_DIR="$HOME/.aos"
+# Every python3 the installer runs goes through aos-python, which resolves the
+# AOS environment (~/.aos/python, with PyYAML and the rest of uv.lock) once
+# prereq_aos_env has written ~/.aos/config/python. Plain `python3` on a new Mac
+# is Homebrew's or Apple's: no PyYAML, so the migration runner died on
+# `import yaml` before migration 001 and the install reported five failures.
+AOS_PY="$AOS_DIR/core/bin/internal/aos-python"
 LOG_DIR="$USER_DIR/logs"
 INSTALL_LOG="$LOG_DIR/install.log"
 MACHINE_ID_FILE="$USER_DIR/.machine-id"
@@ -803,7 +809,7 @@ _configure_cmux_socket() {
     fi
 
     local status
-    if status=$(python3 -c "
+    if status=$("$AOS_PY" -c "
 import sys
 sys.path.insert(0, '$helper')
 from infra.cmux_config import ensure
@@ -1084,7 +1090,7 @@ prereq_tailscale() {
     # Tailscale — overlay network for remote access without port forwarding
     if command -v tailscale &>/dev/null; then
         local ts_status
-        ts_status=$(tailscale status --json 2>/dev/null | python3 -c "import json,sys; print(json.load(sys.stdin).get('BackendState',''))" 2>/dev/null || echo "unknown")
+        ts_status=$(tailscale status --json 2>/dev/null | "$AOS_PY" -c "import json,sys; print(json.load(sys.stdin).get('BackendState',''))" 2>/dev/null || echo "unknown")
         if [[ "$ts_status" == "Running" ]]; then
             _skip "Tailscale (connected)"
         else
@@ -1416,7 +1422,7 @@ OPERATOR
     # Run migrations
     _info "Running migrations..."
     echo ""
-    if python3 "$AOS_DIR/core/infra/migrations/runner.py" migrate 2>&1 | sed 's/^/    /'; then
+    if "$AOS_PY" "$AOS_DIR/core/infra/migrations/runner.py" migrate 2>&1 | sed 's/^/    /'; then
         _ok "Migrations complete"
     else
         _warn "Some migrations failed — system may need manual fixes"
@@ -1447,7 +1453,7 @@ SETTINGS
         _ok "settings.json created"
     else
         # Patch existing settings.json — ensure agent=skye and teams env vars
-        python3 -c "
+        "$AOS_PY" -c "
 import json
 from pathlib import Path
 p = Path.home() / '.claude' / 'settings.json'
@@ -1480,12 +1486,12 @@ else:
     # secrets, sudo, the keychain CLI, curl|sh, rm -rf of home). Applied to
     # whichever settings.json exists now (migrations usually created it);
     # the settings_config reconcile check keeps it that way.
-    python3 "$AOS_DIR/core/infra/lib/claude_permissions.py" apply "$settings_file" 2>/dev/null \
+    "$AOS_PY" "$AOS_DIR/core/infra/lib/claude_permissions.py" apply "$settings_file" 2>/dev/null \
         && _ok "Claude permissions (scoped allows + deny rules)" \
         || _warn "Claude permissions — run 'aos reconcile' after install"
 
     # Repair hooks — fix flat format ({"command": "..."}) to correct nested format ({"hooks": [{"type": "command", ...}]})
-    python3 -c "
+    "$AOS_PY" -c "
 import json
 from pathlib import Path
 
@@ -1524,14 +1530,14 @@ else:
 " 2>/dev/null
 
     # Wire hooks if missing — run migration 005 directly
-    if ! python3 -c "
+    if ! "$AOS_PY" -c "
 import json
 with open('$settings_file') as f:
     s = json.load(f)
 assert s.get('hooks', {}).get('SessionStart')
 " 2>/dev/null; then
         _info "Wiring work system hooks..."
-        python3 "$AOS_DIR/core/infra/migrations/005_wire_hooks.py" 2>/dev/null && _ok "Hooks wired" || _warn "Hooks — wire manually later"
+        "$AOS_PY" "$AOS_DIR/core/infra/migrations/005_wire_hooks.py" 2>/dev/null && _ok "Hooks wired" || _warn "Hooks — wire manually later"
     fi
 
     # MCP servers — register AOS services into Claude Code's config
@@ -1544,7 +1550,7 @@ assert s.get('hooks', {}).get('SessionStart')
     # Pre-accept the trust dialog for ~/aos only (hardened fork: never for the
     # home directory — a session started in ~ asks first). Remote Control and
     # Claude in Chrome are opt-in: `aos claude-features enable <feature>`.
-    python3 -c "
+    "$AOS_PY" -c "
 import json
 from pathlib import Path
 
@@ -1686,8 +1692,17 @@ deploy_services() {
     local services_dst="$USER_DIR/services"
 
     # Find best python for service venvs
+    # The pinned interpreter uv provisioned in prereq_python3 comes first. A
+    # Homebrew python3 can pass the version test and still be unusable: see
+    # core/bin/internal/aos-python — its pyexpat may link a newer expat than
+    # macOS ships, and then uv/pip refuse to install into a venv built on it,
+    # which left the bridge without yaml/httpx and the transcriber without
+    # mlx-whisper on a fresh install.
     local svc_python=""
-    for p in /opt/homebrew/bin/python3.13 /opt/homebrew/bin/python3 "$HOME/.local/bin/python3"; do
+    local pinned_py=""
+    pinned_py=$(uv python find "$(tr -d '[:space:]' < "$AOS_DIR/.python-version" 2>/dev/null)" 2>/dev/null || true)
+    for p in "$pinned_py" /opt/homebrew/bin/python3.13 /opt/homebrew/bin/python3 "$HOME/.local/bin/python3"; do
+        [[ -n "$p" ]] || continue
         if [[ -f "$p" ]]; then
             local pminor
             pminor=$("$p" --version 2>&1 | awk '{print $2}' | cut -d. -f2)
@@ -1738,8 +1753,14 @@ PY
                 _info "Service $name has Python 3.$venv_minor — rebuilding"
                 rm -rf "$dst/.venv"
                 needs_deploy=true
-            elif ! "$dst/.venv/bin/python" -c "import yaml" 2>/dev/null; then
-                _info "Service $name missing deps — reinstalling"
+            elif ! "$dst/.venv/bin/python" -c "import yaml" 2>/dev/null \
+                 || { [[ "$name" == transcriber && "$(uname -m)" == arm64 ]] \
+                      && ! "$dst/.venv/bin/python" -c "import mlx_whisper" 2>/dev/null; }; then
+                # Rebuild from scratch: a venv whose install failed was most
+                # likely built on an interpreter uv cannot install into, and
+                # reusing it would fail the same way.
+                _info "Service $name missing deps — rebuilding"
+                rm -rf "$dst/.venv"
                 needs_deploy=true
             else
                 _skip "Service $name"
@@ -1762,7 +1783,7 @@ PY
 
             # Install deps
             local deps
-            deps=$(python3 -c "
+            deps=$("$AOS_PY" -c "
 import re, sys
 toml_path = '$src_dir/pyproject.toml'
 try:
@@ -2019,7 +2040,7 @@ configure_desktop() {
     local wallpaper="$AOS_DIR/config/wallpaper-black.png"
     if [[ ! -f "$wallpaper" ]]; then
         # Generate a small black PNG using Python
-        python3 -c "
+        "$AOS_PY" -c "
 import struct, zlib
 def create_black_png(path, w=64, h=64):
     raw = b''
@@ -2282,7 +2303,7 @@ STATUSLINE
 
     # Wire statusline into settings.json if not already set
     local has_statusline
-    has_statusline=$(python3 -c "
+    has_statusline=$("$AOS_PY" -c "
 import json
 with open('$HOME/.claude/settings.json') as f:
     s = json.load(f)
@@ -2290,7 +2311,7 @@ print('yes' if 'statusLine' in s else 'no')
 " 2>/dev/null || echo "no")
 
     if [[ "$has_statusline" == "no" ]]; then
-        python3 -c "
+        "$AOS_PY" -c "
 import json
 with open('$HOME/.claude/settings.json') as f:
     s = json.load(f)
@@ -2311,7 +2332,7 @@ with open('$HOME/.claude/settings.json', 'w') as f:
     # Ensure all required settings.json keys exist (agent, env, hooks)
     # This is a backstop — migrations handle this too, but install.sh
     # should guarantee the minimum config for a working system.
-    python3 -c "
+    "$AOS_PY" -c "
 import json
 from pathlib import Path
 
@@ -2397,7 +2418,7 @@ else:
     local result=$?
     if [[ $result -eq 0 ]]; then
         local output
-        output=$(python3 -c "
+        output=$("$AOS_PY" -c "
 import json
 from pathlib import Path
 settings_path = Path.home() / '.claude' / 'settings.json'
@@ -2444,7 +2465,7 @@ run_final_checks() {
 run_discovery() {
     _step "Running discovery scan..."
     echo ""
-    python3 "$AOS_DIR/core/infra/migrations/runner.py" discover 2>&1 | sed 's/^/    /'
+    "$AOS_PY" "$AOS_DIR/core/infra/migrations/runner.py" discover 2>&1 | sed 's/^/    /'
     echo ""
 }
 
@@ -2514,20 +2535,20 @@ sys.exit(0 if backend.DB_PATH.exists() and backend.DB_PATH.stat().st_size > 0 el
     _step "Claude Code settings"
     _check "settings.json exists" "[[ -f '$HOME/.claude/settings.json' ]]" critical
     if [[ -f "$HOME/.claude/settings.json" ]]; then
-        _check "Agent = Skye" "python3 -c \"
+        _check "Agent = Skye" ""$AOS_PY" -c \"
 import json
 with open('$HOME/.claude/settings.json') as f:
     s = json.load(f)
 assert s.get('agent') == 'skye'
 \"" critical
-        _check "Agent teams enabled" "python3 -c \"
+        _check "Agent teams enabled" ""$AOS_PY" -c \"
 import json
 with open('$HOME/.claude/settings.json') as f:
     s = json.load(f)
 assert 'CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS' in s.get('env', {})
 \""
         for hook_name in SessionStart PostCompact Stop SessionEnd; do
-            _check "Hook: $hook_name" "python3 -c \"
+            _check "Hook: $hook_name" ""$AOS_PY" -c \"
 import json
 with open('$HOME/.claude/settings.json') as f:
     s = json.load(f)
@@ -2660,7 +2681,7 @@ PY
                 ((cron_errors++))
                 _log "CRON MISSING: $script_path (from: $cmd_line)"
             fi
-        done < <(python3 -c "
+        done < <("$AOS_PY" -c "
 import yaml
 with open('$AOS_DIR/config/crons.yaml') as f:
     data = yaml.safe_load(f)
@@ -2804,7 +2825,7 @@ print_handoff() {
     local machine_id
     machine_id=$(cat "$MACHINE_ID_FILE" 2>/dev/null || echo "unknown")
     local op_name
-    op_name=$(python3 -c "
+    op_name=$("$AOS_PY" -c "
 import yaml
 try:
     with open('$USER_DIR/config/operator.yaml') as f:
