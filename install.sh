@@ -2802,6 +2802,12 @@ for name, job in (data.get('jobs') or {}).items():
     if [[ "$fail" -gt 0 ]]; then
         _fail "$fail critical failure(s) — see $INSTALL_LOG"
         echo ""
+        # A critical failure means an earlier stage did not really finish
+        # (migrations, for one, only warn when they fail, so their stage was
+        # still stamped done). Drop the checkpoints so "run this again" redoes
+        # every stage — they are all idempotent — instead of re-running only
+        # these checks against the same broken state.
+        rm -f "$CHECKPOINT_FILE" 2>/dev/null
         # Non-zero return → the "Final checks" stage renders the failure panel
         # rather than proceeding to the handoff. The scorecard above and
         # install-report.yaml capture exactly what failed.

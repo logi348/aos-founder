@@ -45,3 +45,9 @@ def test_no_bare_python3_runs_aos_code():
 def test_service_venvs_prefer_pinned_interpreter():
     assert 'for p in "$pinned_py" ' in INSTALL_SH
     assert 'uv python find' in INSTALL_SH
+
+
+def test_critical_failure_clears_checkpoints():
+    # Otherwise a re-run skips the stages whose failure caused the checks to fail.
+    i = INSTALL_SH.index('_fail "$fail critical failure(s)')
+    assert 'rm -f "$CHECKPOINT_FILE"' in INSTALL_SH[i:i + 800]
