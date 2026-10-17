@@ -118,10 +118,21 @@ def _load_converse_db():
     converse_dir = core_dir / "engine" / "comms" / "converse"
     if not converse_dir.exists():
         return None
+    # Its siblings (models.py) are imported plainly, so the directory still
+    # goes on sys.path.
     if str(converse_dir) not in sys.path:
         sys.path.insert(0, str(converse_dir))
+    # Load db.py itself by path under a unique name. `import db` would return whichever
+    # db module an earlier migration in the same run imported — 060–068 load
+    # core/engine/people/db.py — and its connect() takes no arguments, so a
+    # fresh install failed here with a TypeError.
     try:
-        import db as converse_db  # type: ignore
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "aos_converse_db_migration_100", converse_dir / "db.py")
+        converse_db = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = converse_db
+        spec.loader.exec_module(converse_db)
     except Exception as e:
         print(f"  Could not import converse/db.py: {e}")
         return None

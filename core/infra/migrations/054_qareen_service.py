@@ -72,7 +72,14 @@ def _is_healthy() -> bool:
 
 
 def check() -> bool:
-    """Applied if qareen venv exists, plist is deployed, and health endpoint responds."""
+    """Applied if qareen venv exists, plist is deployed, and health endpoint responds.
+
+    Qareen left the framework in 108: on a machine with no core/qareen/ there
+    is nothing to install, and failing here stopped every later migration on
+    a fresh install. 108 cleans up any machine that did install it.
+    """
+    if not REQUIREMENTS.exists() or not TEMPLATE_PATH.exists():
+        return True
     if not QAREEN_VENV.exists():
         return False
     if not PLIST_PATH.exists():

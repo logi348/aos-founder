@@ -87,6 +87,11 @@ def _is_healthy() -> bool:
 def check() -> bool:
     """Applied if n8n data dir exists, binary available, plist deployed, and healthy.
 
+    n8n was retired by 109 and its plist template removed: with no template
+    there is nothing to install, so a fresh machine skips this rather than
+    failing (and stopping every later migration). This also keeps a fresh
+    install from running `npm install -g n8n` for a retired service.
+
     The health check aligns this with core/infra/reconcile/checks/n8n.py's
     check(), which is the real ongoing-health backstop (it re-kickstarts
     on drift after the migration has run once). Adding it here too is
@@ -94,6 +99,8 @@ def check() -> bool:
     gated by the version watermark, so it can't replace the reconcile
     check's repeated monitoring.
     """
+    if not TEMPLATE_PATH.exists():
+        return True
     if not N8N_DATA_DIR.exists():
         return False
     if not _has_n8n():

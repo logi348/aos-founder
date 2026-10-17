@@ -54,4 +54,6 @@ def up():
     config_path = _config_path()
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text(str(root) + "\n")
-    return f"seeded {config_path} from existing publish root"
+    # The runner treats any non-True return as failure, so report and succeed.
+    print(f"  seeded {config_path} from existing publish root")
+    return True

@@ -23,6 +23,7 @@ DESCRIPTION = "Deploy crawler service (crawl4ai + MCP) for web research"
 import shutil
 import socket
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -99,7 +100,10 @@ def up() -> bool:
     CRAWLER_VENV.parent.mkdir(parents=True, exist_ok=True)
     if not CRAWLER_PYTHON.exists():
         print("  Creating crawler venv...")
-        result = _run(["python3", "-m", "venv", str(CRAWLER_VENV)])
+        # The runner's own interpreter (the AOS environment, built on the
+        # uv-pinned Python), not whatever python3 is first on PATH: that can
+        # be Apple's 3.9 or a Homebrew build pip cannot install into.
+        result = _run([sys.executable, "-m", "venv", str(CRAWLER_VENV)])
         if result.returncode != 0:
             print(f"  ERROR: venv creation failed: {result.stderr}")
             return False

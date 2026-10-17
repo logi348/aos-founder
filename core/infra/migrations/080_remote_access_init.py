@@ -83,7 +83,14 @@ def _port_open(port: int, host: str = "127.0.0.1", timeout: float = 1.0) -> bool
 
 def check() -> bool:
     """Applied if the remote_access table exists AND the deployed Qareen
-    plist carries the AOS_QAREEN_HOST env var."""
+    plist carries the AOS_QAREEN_HOST env var.
+
+    Qareen was decommissioned by 108 and its template removed; nothing reads
+    remote_access since. Without the template there is nothing to do, and
+    failing here stopped every later migration on a fresh install.
+    """
+    if not TEMPLATE_PATH.exists():
+        return True
     if not DB_PATH.exists():
         return False
     conn = sqlite3.connect(str(DB_PATH))
