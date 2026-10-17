@@ -1203,8 +1203,15 @@ setup_repo() {
         has_upstream=$(git -C "$AOS_DIR" rev-parse --abbrev-ref '@{upstream}' 2>/dev/null || echo "")
         if [[ -n "$has_upstream" ]] && [[ "$current_branch" == "$AOS_BRANCH" ]] && git -C "$AOS_DIR" diff --quiet 2>/dev/null && git -C "$AOS_DIR" diff --cached --quiet 2>/dev/null; then
             _info "Pulling latest..."
-            git -C "$AOS_DIR" pull --ff-only 2>&1 | sed 's/^/    /' >> "$INSTALL_LOG"
-            _ok "Updated to latest"
+            # Never prompt: output goes to the log, so a credential prompt for
+            # a private repo was invisible and the install sat waiting on it.
+            # Without credentials, carry on with the checkout already here.
+            if GIT_TERMINAL_PROMPT=0 git -C "$AOS_DIR" pull --ff-only < /dev/null 2>&1 \
+                    | sed 's/^/    /' >> "$INSTALL_LOG"; [[ "${PIPESTATUS[0]}" -eq 0 ]]; then
+                _ok "Updated to latest"
+            else
+                _warn "Could not pull (private repo without saved credentials?) — continuing with the current checkout"
+            fi
         elif [[ -z "$has_upstream" ]]; then
             _info "No remote tracking — skipping pull"
         else
