@@ -54,7 +54,7 @@ else
     if vercel whoami &>/dev/null; then
         _ok "Signed in to Vercel"
     else
-        _warn "Sign-in didn't finish. Skye can try again any time."
+        _warn "Sign-in didn't finish. Your assistant can try again any time."
         ((errors++))
     fi
 fi
@@ -63,10 +63,10 @@ fi
 
 if command -v claude &>/dev/null; then
     if claude mcp get vercel &>/dev/null; then
-        _ok "Skye can reach Vercel"
+        _ok "Your assistant can reach Vercel"
     elif ! $IS_CHECK; then
         claude mcp add --scope user --transport http vercel https://mcp.vercel.com >/dev/null 2>&1 \
-            && _ok "Skye can reach Vercel (approve it once with /mcp)" \
+            && _ok "Your assistant can reach Vercel (approve it once with /mcp)" \
             || _warn "Couldn't register Vercel with Claude Code"
     else
         _warn "Vercel not registered with Claude Code"

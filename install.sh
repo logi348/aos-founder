@@ -2867,7 +2867,7 @@ except: print('Operator')
 
     if command -v cld &>/dev/null || command -v claude &>/dev/null; then
         if [[ "$onboarded" == false ]]; then
-            echo "  ${BOLD}Next:${RESET}  ${BRAND}${BOLD}aos start${RESET}  ${MUTED}— Skye will walk you through setup in cmux.${RESET}"
+            echo "  ${BOLD}Next:${RESET}  ${BRAND}${BOLD}aos start${RESET}  ${MUTED}— your assistant will walk you through setup in cmux.${RESET}"
         else
             echo "  ${BOLD}Start a session:${RESET}  ${BRAND}${BOLD}aos start${RESET}"
         fi

@@ -42,7 +42,7 @@ else
     if supabase projects list &>/dev/null; then
         _ok "Signed in to Supabase"
     else
-        _warn "Sign-in didn't finish. Skye can try again any time."
+        _warn "Sign-in didn't finish. Your assistant can try again any time."
         ((errors++))
     fi
 fi
@@ -51,10 +51,10 @@ fi
 
 if command -v claude &>/dev/null; then
     if claude mcp get supabase &>/dev/null; then
-        _ok "Skye can reach Supabase"
+        _ok "Your assistant can reach Supabase"
     elif ! $IS_CHECK; then
         claude mcp add --scope user --transport http supabase https://mcp.supabase.com/mcp >/dev/null 2>&1 \
-            && _ok "Skye can reach Supabase (approve it once with /mcp)" \
+            && _ok "Your assistant can reach Supabase (approve it once with /mcp)" \
             || _warn "Couldn't register Supabase with Claude Code"
     else
         _warn "Supabase not registered with Claude Code"

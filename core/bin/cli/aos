@@ -567,7 +567,7 @@ if errors:
         echo ""
         echo "  Opening cmux..."
         if [[ ! -f "$HOME/.aos/config/onboarding.yaml" ]]; then
-            echo "  Claude Code will start automatically — Skye will walk you through setup."
+            echo "  Claude Code will start automatically — your assistant will walk you through setup."
         else
             echo "  Claude Code will start automatically."
         fi
@@ -883,8 +883,8 @@ import yaml
 from pathlib import Path
 p = Path.home() / '.aos/config/operator.yaml'
 d = (yaml.safe_load(p.read_text()) if p.exists() else None) or {}
-print(d.get('agent_name') or 'Skye')
-" 2>/dev/null || echo "Skye")
+print(d.get('agent_name') or 'not named yet')
+" 2>/dev/null || echo "not named yet")
             echo "Usage: aos rename-agent <new name>"
             echo "Example: aos rename-agent Atlas"
             echo ""
