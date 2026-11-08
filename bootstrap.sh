@@ -19,9 +19,9 @@ set -euo pipefail
 
 REPO_TARBALL="https://codeload.github.com/logi348/aos-founder/tar.gz/refs/heads/main"
 
-# The fork is private, so the anonymous tarball URL above returns 404. With a
-# token (GITHUB_TOKEN, or `gh auth token` when gh is installed and logged in)
-# fetch through the authenticated API tarball endpoint instead.
+# The repository is public, so the anonymous tarball URL above works. A token
+# (GITHUB_TOKEN, or `gh auth token`) is still used when present, which avoids
+# GitHub rate limits on shared networks.
 CURL_AUTH=()
 _token="${GITHUB_TOKEN:-}"
 if [[ -z "$_token" ]] && command -v gh >/dev/null 2>&1; then
@@ -43,7 +43,7 @@ printf '\n  Bootstrapping AOS...\n\n'
 if ! curl -fsSL ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} "$REPO_TARBALL" | tar -xz -C "$STAGE" --strip-components=1; then
     printf '  Could not download AOS.\n' >&2
     printf '  Check your internet connection and run the command again.\n' >&2
-    printf '  The repository is private: set GITHUB_TOKEN (or log in with gh) first.\n\n' >&2
+    printf '  If it keeps failing, take a screenshot and send it to whoever gave you the link.\n\n' >&2
     exit 1
 fi
 

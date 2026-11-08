@@ -8,6 +8,7 @@
 
 <h1 align="center">AOS</h1>
 <p align="center"><strong>Agentic Operating System</strong></p>
+<p align="center"><strong>New here? 👉 <a href="START-HERE.md">START-HERE.md</a></strong></p>
 <p align="center">
   Turn a Mac into an autonomous workstation.<br/>
   AI agents manage your work, run tasks, compound knowledge, and improve over time.
@@ -18,31 +19,32 @@
 > improve features and fix issues as we go.
 
 > [!IMPORTANT]
-> **This is a hardened personal fork** of AOS, set up for a dedicated Mac mini.
-> Your assistant is **Skye**: you talk to it on Telegram (text or voice) or in
-> Terminal (`cld`). Agents run under permission rules with a Bash guard, ask on
-> your phone for anything outside them, and never change their own code or
-> settings. Overnight, Skye moves open ideas forward and reports in the
-> morning briefing. Voice notes are transcribed on the Mac, and updates happen
-> only when you approve them.
+> ## 👉 New here? Open **[START-HERE.md](START-HERE.md)**
+> Five plain-language steps, about 45 minutes, no technical knowledge needed.
 >
-> - **[SETUP.md](SETUP.md)**: step-by-step install on the Mac mini (start here)
-> - **[HARDENING.md](HARDENING.md)**: every change from upstream, why, and how to re-enable
-> - **[SECURITY-AUDIT.md](SECURITY-AUDIT.md)**: network, ports, secrets, runtime code, plus what this fork added
-> - **[UPSTREAM.md](UPSTREAM.md)**: how upstream changes reach you (weekly PR, your approval)
+> Your assistant is **Skye**: a thinking and building partner that remembers
+> your ideas, pushes back when it disagrees, and helps you test and build them.
+
+<details>
+<summary>For technical readers</summary>
+
+This is the **founder edition**, based on a hardened fork of AOS. Agents run
+under permission rules with a Bash guard, never change their own code or
+settings, and updates happen only when you approve them.
+
+- **[docs/SETUP-DEDICATED-MAC.md](docs/SETUP-DEDICATED-MAC.md)**: hardened install on a dedicated Mac mini
+- **[HARDENING.md](HARDENING.md)**: every change from upstream, why, and how to re-enable
+- **[SECURITY-AUDIT.md](SECURITY-AUDIT.md)**: network, ports, secrets, runtime code
+- **[UPSTREAM.md](UPSTREAM.md)**: how upstream changes reach this fork
+
+</details>
 
 ---
 
 ## Quick Start
 
-Follow **[SETUP.md](SETUP.md)**: it covers the accounts, network settings and
-the read-only GitHub token to prepare first. The install itself, on the Mac
-mini as the `aos` user:
-
 ```bash
-xcode-select --install
-git clone https://github.com/logi348/aos-founder.git ~/aos   # password: your read-only token
-cd ~/aos && bash install.sh --always-on
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/logi348/aos-founder/main/bootstrap.sh)"
 ```
 
 Idempotent — safe to re-run. Budget **20–30 minutes**: it provisions its own Python,
@@ -263,18 +265,22 @@ Four boundaries. Never crossed.
 
 ## Install
 
-See **[SETUP.md](SETUP.md)** for the full sequence. The short version:
+Non-technical? Use **[START-HERE.md](START-HERE.md)**. The short version:
 
 ```bash
-git clone https://github.com/logi348/aos-founder.git ~/aos   # password: a read-only GitHub token
-cd ~/aos && bash install.sh --always-on
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/logi348/aos-founder/main/bootstrap.sh)"
+```
+
+Or clone and run directly:
+
+```bash
+git clone https://github.com/logi348/aos-founder.git ~/aos
+cd ~/aos && bash install.sh
 ```
 
 Installer options (all off by default): `--always-on`, `--with-superwhisper`,
-`--with-obsidian`, `--with-theming`, `--with-ytdlp-pot`.
-
-`bootstrap.sh` can also fetch the private fork as a tarball when `GITHUB_TOKEN`
-is set, but the clone above is simpler on a fresh Mac.
+`--with-obsidian`, `--with-theming`, `--with-ytdlp-pot`. For a hardened,
+dedicated Mac mini, follow [docs/SETUP-DEDICATED-MAC.md](docs/SETUP-DEDICATED-MAC.md).
 
 Updates come only from this fork, and only when you approve them (the
 Telegram **Apply update** button, or `aos update`). See UPSTREAM.md for how
