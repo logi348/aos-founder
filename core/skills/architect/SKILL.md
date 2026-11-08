@@ -42,8 +42,8 @@ Current system agents and their domains:
 - **technician** (sonnet) — messaging infrastructure (Telegram, WhatsApp, iMessage, bridge)
 
 Project agents (one per project):
-- **nuchay** (sonnet) — Nuchay project work in ~/nuchay
-- **chief** (opus) — Chief iOS/macOS app in ~/chief-ios-app (XcodeBuildMCP, SwiftUI, TestFlight)
+
+- None yet. A project agent is created when a project outgrows the general agents.
 
 If the new capability fits within an existing agent's domain, **extend that agent** rather than creating something new. An agent's scope grows naturally until its tool permissions or model requirements diverge from its current setup.
 

@@ -16,7 +16,7 @@ Scope → brief → execute → verify → next, one part at a time. The operato
 
 ```
 SBS="python3 ~/.claude/skills/step-by-step/scripts/sbs.py"     # scope · trail · criteria · verify · log
-WORK="python3 ~/aos/core/engine/work/cli.py"                    # commands: references/tracking.md
+WORK="~/aos/core/bin/internal/aos-python ~/aos/core/engine/work/cli.py"                    # commands: references/tracking.md
 ```
 
 Decisions use `AskUserQuestion` — at most 4 options, 2–5-word labels, detail in the question. Yes/no goes in prose.

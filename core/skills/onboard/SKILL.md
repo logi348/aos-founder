@@ -120,9 +120,9 @@ Each was accurate the day it was written. Prose cannot track a filesystem.
 
 Create the onboarding project:
 ```bash
-python3 ~/aos/core/engine/work/cli.py add "Getting to know you" --project onboarding --priority 2
-python3 ~/aos/core/engine/work/cli.py add "Brain dump" --project onboarding --priority 2
-python3 ~/aos/core/engine/work/cli.py add "Your tools" --project onboarding --priority 2
+~/aos/core/bin/internal/aos-python ~/aos/core/engine/work/cli.py add "Getting to know you" --project onboarding --priority 2
+~/aos/core/bin/internal/aos-python ~/aos/core/engine/work/cli.py add "Brain dump" --project onboarding --priority 2
+~/aos/core/bin/internal/aos-python ~/aos/core/engine/work/cli.py add "Your tools" --project onboarding --priority 2
 ```
 
 None of this is shown to the operator.
@@ -133,7 +133,7 @@ None of this is shown to the operator.
 
 Phase key: `conversation`
 
-`python3 ~/aos/core/engine/work/cli.py start "getting to know you"`
+`~/aos/core/bin/internal/aos-python ~/aos/core/engine/work/cli.py start "getting to know you"`
 
 ### Opening
 
@@ -253,7 +253,7 @@ Configure quietly — don't ask a string of setup questions:
 - Language (detect, default English)
 
 **Projects** (via work CLI) — only if they named something concrete they're working on:
-- `python3 ~/aos/core/engine/work/cli.py add "{first task}" --project {project_name}`
+- `~/aos/core/bin/internal/aos-python ~/aos/core/engine/work/cli.py add "{first task}" --project {project_name}`
 
 **Daily note** — save what they said as their first daily note at
 `~/vault/log/YYYY-MM-DD.md`. Tell them in one line:
@@ -283,7 +283,7 @@ Name the folders from the snapshot's `vault.structure` — the ones actually on 
 machine — not from memory. Keep it to one or two sentences: "These are plain text
 notes. Today's note is in 'log'. Your brain dump will go in 'knowledge'."
 
-`python3 ~/aos/core/engine/work/cli.py done "getting to know you"`
+`~/aos/core/bin/internal/aos-python ~/aos/core/engine/work/cli.py done "getting to know you"`
 
 ---
 
@@ -291,7 +291,7 @@ notes. Today's note is in 'log'. Your brain dump will go in 'knowledge'."
 
 Phase key: `brain_dump`
 
-`python3 ~/aos/core/engine/work/cli.py start "brain dump"`
+`~/aos/core/bin/internal/aos-python ~/aos/core/engine/work/cli.py start "brain dump"`
 
 This is the heart of onboarding. The operator has years of knowledge in their head —
 an industry, people, problems they've watched up close. Get it out and saved, so
@@ -474,7 +474,7 @@ summary of you under knowledge → synthesis. I'll read it whenever we work on i
 
 You can add to it any time — just say 'let me brain dump'."
 
-`python3 ~/aos/core/engine/work/cli.py done "brain dump"`
+`~/aos/core/bin/internal/aos-python ~/aos/core/engine/work/cli.py done "brain dump"`
 
 ---
 
@@ -482,7 +482,7 @@ You can add to it any time — just say 'let me brain dump'."
 
 Phase key: `tools`
 
-`python3 ~/aos/core/engine/work/cli.py start "your tools"`
+`~/aos/core/bin/internal/aos-python ~/aos/core/engine/work/cli.py start "your tools"`
 
 Three tools to connect: GitHub, Vercel and Supabase — the kit for building an app. Everything else waits until they ask.
 
@@ -624,7 +624,7 @@ Add `vercel` and `supabase` to `integrations_connected` in the onboarding record
 the day you're ready to charge, in test mode first."
 
 
-`python3 ~/aos/core/engine/work/cli.py done "your tools"`
+`~/aos/core/bin/internal/aos-python ~/aos/core/engine/work/cli.py done "your tools"`
 
 ---
 

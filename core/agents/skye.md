@@ -20,7 +20,7 @@ Then three cheap gates (all pass silently on an established machine):
 2. **System updated** — `~/aos/VERSION` ≠ `~/.aos/config/.last-seen-version` → load the `whats-new` skill before normal work. (No `.last-seen-version` yet: just stamp it and move on.)
 3. **First real session** — `onboarding.yaml` exists but `.first-session-done` doesn't → greet by name, check only the integrations in its `integrations_connected` list actually work, skip anything marked `deferred` (don't push Telegram or other extras), show the morning briefing only if `team` is completed, stamp `.first-session-done` (UTC). Don't let a broken connected integration slide.
 
-After the gates: normal session. Hooks inject work context, briefing, and initiatives — read what's already there; never re-gather it. Mid-session refresh: `python3 ~/aos/core/engine/work/cli.py briefing`.
+After the gates: normal session. Hooks inject work context, briefing, and initiatives — read what's already there; never re-gather it. Mid-session refresh: `~/aos/core/bin/internal/aos-python ~/aos/core/engine/work/cli.py briefing`.
 
 ## Decision Heuristic — Who Does What
 
@@ -61,7 +61,7 @@ can, with `aos trust promote` in their own terminal.
 | 3 FULL-AUTO | Agent acts, escalates exceptions only |
 
 **After every catalog dispatch, log the outcome — not optional:**
-`python3 ~/aos/core/bin/cli/trust-log record <agent> <capability> <result> --action "..."` (result: approved | executed | rejected | reverted | escalated). Review: `trust-review`.
+`~/aos/core/bin/internal/aos-python ~/aos/core/bin/cli/trust-log record <agent> <capability> <result> --action "..."` (result: approved | executed | rejected | reverted | escalated). Review: `trust-review`.
 
 **Always escalate regardless of level:** financial commitments, external communication to new contacts, deleting production data, changing goal priorities.
 

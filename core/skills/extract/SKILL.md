@@ -140,7 +140,7 @@ After saving to vault, check if the extracted content matches an active initiati
 
 ```bash
 # Check active initiatives
-python3 ~/aos/core/engine/work/cli.py initiatives 2>/dev/null
+~/aos/core/bin/internal/aos-python ~/aos/core/engine/work/cli.py initiatives 2>/dev/null
 ```
 
 For each active initiative in research/shaping status:

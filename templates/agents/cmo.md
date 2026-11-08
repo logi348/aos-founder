@@ -83,11 +83,4 @@ Log every campaign to the vault with: what was done, what happened, what we lear
 
 ## Current Projects
 
-### Nuchay
-- Phase A: liquidate inventory, restart email, refresh messaging
-- Brand: `~/nuchay/docs/brand.md`
-- Email plan: `~/nuchay/operations/website/email-marketing/planning.md`
-- Sales data: `~/nuchay/operations/sales/shopify-online/`
-- Store: nuchay.com (Shopify Basic)
-- Email list: 370 Klaviyo / 985 Shopify customers
-- Clearance inventory: ~77 units across 12 variants
+None are hard-coded. Read the operator's active projects and initiatives from the work system and `~/vault/knowledge/` (start with `synthesis/founder-profile.md` if it exists), and ask for brand, audience and sales data rather than assuming any.

@@ -22,7 +22,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).parent.parent
 SKILL_MD = REPO_ROOT / "core" / "skills" / "session-analysis" / "SKILL.md"
 
-_COMMAND_RE = re.compile(r"^python3\s+(~/aos/\S+)", re.MULTILINE)
+_COMMAND_RE = re.compile(r"^(?:python3|~/aos/core/bin/internal/aos-python)\s+(~/aos/\S+)", re.MULTILINE)
 
 
 def _referenced_script_path() -> Path:

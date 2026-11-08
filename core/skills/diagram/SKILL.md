@@ -129,7 +129,6 @@ Use these when depicting specific AOS agents:
 - engineer: `#34d399`
 - ops: `#60a5fa`
 - technician: `#f43f5e`
-- nuchay: `#38bdf8`
 
 ## D2 Syntax Reference
 

@@ -50,8 +50,8 @@ You receive:
 
 Read these for context:
 - `~/.aos/config/operator.yaml` — who they are, what they do
-- Active tasks: `python3 ~/aos/core/engine/work/cli.py list`
-- Active projects: `python3 ~/aos/core/engine/work/cli.py projects`
+- Active tasks: `~/aos/core/bin/internal/aos-python ~/aos/core/engine/work/cli.py list`
+- Active projects: `~/aos/core/bin/internal/aos-python ~/aos/core/engine/work/cli.py projects`
 
 ## Processing
 
@@ -91,8 +91,8 @@ Read the full transcript. Identify:
 
 ```bash
 # Get current tasks and projects
-python3 ~/aos/core/engine/work/cli.py list 2>/dev/null
-python3 ~/aos/core/engine/work/cli.py projects 2>/dev/null
+~/aos/core/bin/internal/aos-python ~/aos/core/engine/work/cli.py list 2>/dev/null
+~/aos/core/bin/internal/aos-python ~/aos/core/engine/work/cli.py projects 2>/dev/null
 ```
 
 For each extracted task:
@@ -108,7 +108,7 @@ After each message (voice or text), show the running collection. Not a formal
 "Here's what I've got so far:
 
 **Tasks:**
-1. Call Ahmed about the shipment → *nuchay*
+1. Call Alex about the shipment → *acme*
 2. Review dashboard CSS before Friday → *aos*
 3. Set up the second Mac Mini for Holiday
 
@@ -130,7 +130,7 @@ They might respond with:
 - "Actually #2 is more of an idea" → reclassify it
 - "Make #1 high priority" → update it
 - "That reminds me..." → new topic, keep accumulating
-- "Let me talk about the nuchay project specifically" → go deep on that thread
+- "Let me talk about the acme project specifically" → go deep on that thread
 - "What do I have active right now?" → show their current tasks for context
 - "Done" or "That's it" → move to approval
 
@@ -152,7 +152,7 @@ AskUserQuestion:
 If "Approve all":
 ```bash
 # Create tasks
-python3 ~/aos/core/engine/work/cli.py add "{title}" --project {project} --priority {N}
+~/aos/core/bin/internal/aos-python ~/aos/core/engine/work/cli.py add "{title}" --project {project} --priority {N}
 # ... for each task
 ```
 

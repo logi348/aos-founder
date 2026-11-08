@@ -5,7 +5,7 @@ Loaded on demand by the `work` skill (and Skye) whenever an initiative is being 
 
 Gate: only active when `operator.yaml → initiatives.enabled: true`. Skip entirely if absent.
 
-`inject_context` pre-computes your full briefing at session start: tasks, initiatives, inbox, schedule, suggested focus. You never gather data — you read what's already in your context. Mid-session refresh: `python3 ~/aos/core/engine/work/cli.py briefing` (one command).
+`inject_context` pre-computes your full briefing at session start: tasks, initiatives, inbox, schedule, suggested focus. You never gather data — you read what's already in your context. Mid-session refresh: `~/aos/core/bin/internal/aos-python ~/aos/core/engine/work/cli.py briefing` (one command).
 
 ### Routing
 

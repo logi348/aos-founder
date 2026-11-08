@@ -56,10 +56,10 @@ Parts 2 and 3 share no edge — dispatch both to background agents in worktrees 
 
 ## Business strategy
 
-**Task:** "Build out the Nuchay launch plan for Q2"
+**Task:** "Build out the Acme launch plan for Q2"
 
 ```
-## Scope: Nuchay Q2 Launch
+## Scope: Acme Q2 Launch
 1. **Market positioning** (M) — segment, differentiators, pricing tiers
 2. **Channel strategy** (M) — where the segment already is
 3. **Content pipeline** (M) — cadence and owners · depends on 1, 2
@@ -69,8 +69,8 @@ Parts 2 and 3 share no edge — dispatch both to background agents in worktrees 
 
 Part 1 criteria — mostly manual gates, with the artefact check runnable:
 ```
---set '$ test -s ~/vault/knowledge/nuchay/positioning.md'
---set '$ grep -c "^## Tier" ~/vault/knowledge/nuchay/positioning.md :: 2'
+--set '$ test -s ~/vault/knowledge/acme/positioning.md'
+--set '$ grep -c "^## Tier" ~/vault/knowledge/acme/positioning.md :: 2'
 --set 'target segment named with demographics and the pain it pays to remove'
 --set 'three differentiators, one sentence each'
 ```

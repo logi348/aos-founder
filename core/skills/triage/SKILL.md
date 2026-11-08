@@ -149,7 +149,7 @@ never hardcode.** Missing config → graceful skip, not failure.
 | Release gate | `script/release`, `script/gate`, `docs/appstore/release-checklist.md` | SHIP integration |
 | Auditors | enumerate `~/.claude/agents/` for `*-auditor` / the `axiom:*` fleet | ROUTE |
 | Dev loop | `script/snap` (screenshot), `script/device` | freshness verification |
-| Task system | `python3 ~/aos/core/engine/work/cli.py`, project prefix (e.g. `dod#`) | ACT |
+| Task system | `~/aos/core/bin/internal/aos-python ~/aos/core/engine/work/cli.py`, project prefix (e.g. `dod#`) | ACT |
 | Other inboxes | work-CLI inbox, floating `t#`, project `scratchpad/` | GATHER (full dedup surface) |
 | Build constraint | "one build at a time" / WIP=1 (read AGENTS.md) | EXECUTE/SHIP |
 
@@ -257,7 +257,7 @@ item →
 ```
 
 **Mechanics:**
-- Promote NOW → `python3 ~/aos/core/engine/work/cli.py add "<title>" --project <p> --priority <N> --source-ref <spec-or-initiative>`
+- Promote NOW → `~/aos/core/bin/internal/aos-python ~/aos/core/engine/work/cli.py add "<title>" --project <p> --priority <N> --source-ref <spec-or-initiative>`
 - Fold → `Edit` the spec/initiative (append the item + date).
 - Reopen stale spec → flip its status / add a "REOPENED <date>: still not done — <evidence>" note.
 - Resolved contradiction → write a short decision to `docs/decisions/<date>-<slug>.md`.

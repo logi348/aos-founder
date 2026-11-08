@@ -70,7 +70,7 @@ tail -50 ~/.aos/logs/dashboard.log       # dashboard issues
 tail -50 ~/.aos/logs/crons/scheduler.log # cron job failures
 
 # 3. System context
-python3 ~/aos/core/bin/cli/aos-report --context
+~/aos/core/bin/internal/aos-python ~/aos/core/bin/cli/aos-report --context
 ```
 
 Then trace: error message → stack trace → source file → root cause.

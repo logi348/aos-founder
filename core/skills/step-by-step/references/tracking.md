@@ -3,7 +3,7 @@
 Read from `SKILL.md` when creating, closing, handing off, or resuming a step-by-step flow. Two tools, one state: the work system holds the tasks and their done-when criteria; `sbs` reads and writes them.
 
 ```
-WORK="python3 ~/aos/core/engine/work/cli.py"
+WORK="~/aos/core/bin/internal/aos-python ~/aos/core/engine/work/cli.py"
 SBS="python3 ~/.claude/skills/step-by-step/scripts/sbs.py"
 ```
 
