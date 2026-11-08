@@ -1,8 +1,8 @@
 # Start here
 
-This sets up your own thinking and building partner on your Mac. It starts out
-called **Skye**, and in the first minute you can give it any name you like.
-You'll paste one line, wait while it installs, and then Skye takes over and
+This sets up your own thinking and building partner on your Mac. It has no name
+yet: in the first minute, you choose what to call it.
+You'll paste one line, wait while it installs, and then your assistant takes over and
 talks you through the rest.
 
 **Time:** about 45 minutes. Most of it is waiting.
@@ -16,7 +16,7 @@ You need:
 - **A Mac** with an Apple chip (M1 or newer) and a recent macOS (14 Sonoma or
   newer). To check: Apple menu → **About This Mac**.
 - **A paid Claude plan** (Pro or Max) at [claude.ai](https://claude.ai).
-  Skye runs on Claude, and the free plan can't run it.
+  Your assistant runs on Claude, and the free plan can't run it.
 - **Your Mac's password**, the one you type to unlock it.
 - **A charger plugged in** and a steady internet connection.
 
@@ -68,7 +68,7 @@ come back to cmux.
 
 ## Step 5: Say hi
 
-Skye starts the conversation in cmux. From here you just talk, by typing in
+Your assistant starts the conversation in cmux. From here you just talk, by typing in
 plain words, the way you'd text a person. It will:
 
 - ask what you'd like to call it;
@@ -86,7 +86,7 @@ Skip anything you're unsure about. You can say "later" to any question.
 ## Every day after that
 
 Open the **cmux** app (it's in your Applications folder and Launchpad) and
-start typing. Skye remembers your notes, ideas and tasks between sessions.
+start typing. Your assistant remembers your notes, ideas and tasks between sessions.
 
 A few things you can say:
 
@@ -95,7 +95,7 @@ A few things you can say:
 - "What should I work on today?"
 - "Help me build a first version of this."
 
-Skye is set up to **disagree with you when it thinks you're wrong**, and to
+Your assistant is set up to **disagree with you when it thinks you're wrong**, and to
 push you to test ideas cheaply before building them. That's on purpose.
 
 ---

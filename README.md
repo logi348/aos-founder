@@ -22,7 +22,7 @@
 > ## 👉 New here? Open **[START-HERE.md](START-HERE.md)**
 > Five plain-language steps, about 45 minutes, no technical knowledge needed.
 >
-> Your assistant is **Skye**: a thinking and building partner that remembers
+> Your assistant (you choose its name) is a thinking and building partner that remembers
 > your ideas, pushes back when it disagrees, and helps you test and build them.
 
 <details>
