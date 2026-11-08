@@ -17,7 +17,7 @@
 
 set -euo pipefail
 
-REPO_TARBALL="https://codeload.github.com/logi348/aos-hardened/tar.gz/refs/heads/main"
+REPO_TARBALL="https://codeload.github.com/logi348/aos-founder/tar.gz/refs/heads/main"
 
 # The fork is private, so the anonymous tarball URL above returns 404. With a
 # token (GITHUB_TOKEN, or `gh auth token` when gh is installed and logged in)
@@ -28,7 +28,7 @@ if [[ -z "$_token" ]] && command -v gh >/dev/null 2>&1; then
     _token="$(gh auth token 2>/dev/null || true)"
 fi
 if [[ -n "$_token" ]]; then
-    REPO_TARBALL="https://api.github.com/repos/logi348/aos-hardened/tarball/main"
+    REPO_TARBALL="https://api.github.com/repos/logi348/aos-founder/tarball/main"
     CURL_AUTH=(-H "Authorization: Bearer $_token")
 fi
 

@@ -1,10 +1,10 @@
 """
-Migration 137: point instance git remotes at logi348/aos-hardened.
+Migration 137: point instance git remotes at logi348/aos-founder.
 
 Background
 ----------
 Upstream renamed its repository from `hishamalhadi/aos` to `AOS-Agent/aos`.
-This hardened fork lives at `logi348/aos-hardened` and its own references
+This hardened fork lives at `logi348/aos-founder` and its own references
 (`install.sh`, `bootstrap.sh`, `README.md`, `core/engine/work/backend.py`)
 point there. A remote still on the pre-rename path is redirected to the fork,
 never to upstream: updates come only from the fork (see UPSTREAM.md).
@@ -46,10 +46,10 @@ import re
 import subprocess
 from pathlib import Path
 
-DESCRIPTION = "Point instance git remotes at logi348/aos-hardened (repo renamed)"
+DESCRIPTION = "Point instance git remotes at logi348/aos-founder (repo renamed)"
 
 OLD_PATH = "hishamalhadi/aos"
-NEW_PATH = "logi348/aos-hardened"
+NEW_PATH = "logi348/aos-founder"
 
 # Matches the old path only as a whole repo path, so a remote that merely
 # contains the string (a directory named after it, say) is not rewritten.

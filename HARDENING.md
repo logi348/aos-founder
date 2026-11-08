@@ -1,6 +1,6 @@
 # Hardening notes
 
-This fork (`github.com/logi348/aos-hardened`) is AOS with the changes below,
+This fork (`github.com/logi348/aos-founder`) is AOS with the changes below,
 made for an unattended Mac mini reachable over Tailscale. Each numbered section
 is one commit on the `hardening` branch (`git log cda5054..hardening`);
 `cda5054` is the untouched upstream code. See SECURITY-AUDIT.md for the full
@@ -20,7 +20,7 @@ These are setup choices, not code, and they matter as much as the code.
 2. **Read-only GitHub access on the Mac.** If the Mac's GitHub login could
    push, an agent could push code to `main` and the next update would deploy
    it, which would bypass your review. On github.com, create a fine-grained
-   personal access token: repository `logi348/aos-hardened` only,
+   personal access token: repository `logi348/aos-founder` only,
    **Contents: Read-only**, expiry of your choice. On the Mac:
    `gh auth login --with-token < token.txt && gh auth setup-git`, then delete
    `token.txt`. Also turn on 2FA on your GitHub account and branch protection
@@ -37,7 +37,7 @@ These are setup choices, not code, and they matter as much as the code.
 5. **FileVault on.** Accept that after a power cut you unlock it once, or add
    a small UPS so that's rare.
 6. **Install.** Install from the fork (now on `main`):
-   `gh repo clone logi348/aos-hardened ~/aos && bash ~/aos/install.sh --always-on`.
+   `gh repo clone logi348/aos-founder ~/aos && bash ~/aos/install.sh --always-on`.
    - `--always-on` keeps the Mac awake and restarts it after a power cut. It
      doesn't touch the screen lock.
    - Other flags are off by default: `--with-superwhisper`, `--with-obsidian`,

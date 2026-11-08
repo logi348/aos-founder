@@ -159,9 +159,9 @@ _STUB_GH_TEMPLATE = textwrap.dedent("""\
 
     argv = sys.argv[1:]
     if argv[:2] == ["issue", "create"]:
-        print("https://github.com/logi348/aos-hardened/issues/99999")
+        print("https://github.com/logi348/aos-founder/issues/99999")
     elif argv[:2] == ["issue", "comment"]:
-        print("https://github.com/logi348/aos-hardened/issues/99999#issuecomment-1")
+        print("https://github.com/logi348/aos-founder/issues/99999#issuecomment-1")
     elif argv[:2] == ["issue", "list"]:
         print("[]")
     sys.exit(0)

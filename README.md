@@ -41,7 +41,7 @@ mini as the `aos` user:
 
 ```bash
 xcode-select --install
-git clone https://github.com/logi348/aos-hardened.git ~/aos   # password: your read-only token
+git clone https://github.com/logi348/aos-founder.git ~/aos   # password: your read-only token
 cd ~/aos && bash install.sh --always-on
 ```
 
@@ -266,7 +266,7 @@ Four boundaries. Never crossed.
 See **[SETUP.md](SETUP.md)** for the full sequence. The short version:
 
 ```bash
-git clone https://github.com/logi348/aos-hardened.git ~/aos   # password: a read-only GitHub token
+git clone https://github.com/logi348/aos-founder.git ~/aos   # password: a read-only GitHub token
 cd ~/aos && bash install.sh --always-on
 ```
 

@@ -44,7 +44,7 @@ REPORT_LOG = USER_DIR / "logs" / "reports.jsonl"
 # with no `.git`, so `gh` cannot infer a repo from `cwd=str(AOS_DIR)` the way
 # a dev checkout would let it (aos#2323). This is the one place that names
 # the repo for every `gh` call this script makes.
-GH_REPO = "logi348/aos-hardened"
+GH_REPO = "logi348/aos-founder"
 
 # The bridge's PII redactor, loaded by file path — same trick
 # core/engine/notify/router.py uses for this exact module, since a bare CLI

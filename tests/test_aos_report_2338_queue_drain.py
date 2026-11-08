@@ -92,7 +92,7 @@ class TestQueueAndDrain:
             captured["title"] = title
             captured["body"] = body
             captured["labels"] = labels
-            return {"number": 1, "url": "https://github.com/logi348/aos-hardened/issues/1"}, None
+            return {"number": 1, "url": "https://github.com/logi348/aos-founder/issues/1"}, None
 
         monkeypatch.setattr(aos_report, "file_issue", fake_file_issue)
 
@@ -103,7 +103,7 @@ class TestQueueAndDrain:
         assert captured["labels"] == ["bug", "has-fix"]
         assert summary["filed"] == [
             {"title": "Bridge crashes on empty schedule",
-             "issue_url": "https://github.com/logi348/aos-hardened/issues/1"}
+             "issue_url": "https://github.com/logi348/aos-founder/issues/1"}
         ]
         assert summary["still_queued"] == []
 
@@ -138,7 +138,7 @@ class TestQueueAndDrain:
         summary = aos_report.drain_queue()
 
         assert captured == {"number": 2323, "body": "extra context"}
-        assert summary["filed"][0]["issue_url"] == "https://github.com/logi348/aos-hardened/issues/2323"
+        assert summary["filed"][0]["issue_url"] == "https://github.com/logi348/aos-founder/issues/2323"
         assert aos_report._pending_queue_entries() == []
 
 
@@ -166,9 +166,9 @@ _STUB_GH_TEMPLATE = textwrap.dedent("""\
 
     argv = sys.argv[1:]
     if argv[:2] == ["issue", "create"]:
-        print("https://github.com/logi348/aos-hardened/issues/99999")
+        print("https://github.com/logi348/aos-founder/issues/99999")
     elif argv[:2] == ["issue", "comment"]:
-        print("https://github.com/logi348/aos-hardened/issues/99999#issuecomment-1")
+        print("https://github.com/logi348/aos-founder/issues/99999#issuecomment-1")
     elif argv[:2] == ["issue", "list"]:
         print("[]")
     sys.exit(0)

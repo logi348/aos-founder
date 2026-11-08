@@ -5,10 +5,10 @@
 #
 #  Usage (one-liner — see bootstrap.sh; it fetches a tarball and hands off
 #  here, so a fresh Mac's git-stub CLT prompt can't kill the install):
-#    bash -c "$(curl -fsSL https://raw.githubusercontent.com/logi348/aos-hardened/main/bootstrap.sh)"
+#    bash -c "$(curl -fsSL https://raw.githubusercontent.com/logi348/aos-founder/main/bootstrap.sh)"
 #
 #  Or manually:
-#    git clone https://github.com/logi348/aos-hardened.git ~/aos
+#    git clone https://github.com/logi348/aos-founder.git ~/aos
 #    bash ~/aos/install.sh
 #
 #  Idempotent. Safe to re-run. Resumes from where it left off.
@@ -58,7 +58,7 @@ AOS_VERSION=$(
 )
 AOS_VERSION=$(echo "$AOS_VERSION" | tr -d '[:space:]')
 [[ -n "$AOS_VERSION" ]] || AOS_VERSION="0.1.0"
-AOS_REPO="https://github.com/logi348/aos-hardened.git"
+AOS_REPO="https://github.com/logi348/aos-founder.git"
 AOS_BRANCH="main"
 
 # ── Paths ────────────────────────────────────────────
@@ -503,7 +503,7 @@ prereq_python3() {
     # blaming the version file, which is what sent operators looking for a
     # Python fault that was never there.
     if [[ ! -d "$AOS_DIR/.git" ]]; then
-        _die "AOS repository missing at $AOS_DIR — the clone did not happen. Re-run: git clone https://github.com/logi348/aos-hardened.git ~/aos && bash ~/aos/install.sh"
+        _die "AOS repository missing at $AOS_DIR — the clone did not happen. Re-run: git clone https://github.com/logi348/aos-founder.git ~/aos && bash ~/aos/install.sh"
     fi
 
     local pinned

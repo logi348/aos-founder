@@ -37,14 +37,14 @@ the PR against HARDENING.md.
 
 ## By hand
 
-Do this on a working copy (your laptop, or `~/project/aos-hardened`), never in
+Do this on a working copy (your laptop, or `~/project/aos-founder`), never in
 `~/aos` on the Mac mini.
 
 ### One-time setup
 
 ```bash
-git clone https://github.com/logi348/aos-hardened.git
-cd aos-hardened
+git clone https://github.com/logi348/aos-founder.git
+cd aos-founder
 git remote add upstream https://github.com/AOS-Agent/aos.git
 git remote set-url --push upstream DISABLED   # you never push to upstream
 ```
@@ -93,7 +93,7 @@ git push origin main
 ```
 
 Upstream's own repository references (`AOS-Agent/aos`) will reappear in merged
-files; replace them with `logi348/aos-hardened` again before pushing.
+files; replace them with `logi348/aos-founder` again before pushing.
 
 ## Applying it on the Mac mini
 

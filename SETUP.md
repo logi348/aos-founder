@@ -12,14 +12,14 @@ by the user who runs AOS.
 
 1. **GitHub security**
    - Turn on 2FA for your GitHub account, if it isn't already.
-   - In `logi348/aos-hardened`: Settings → Actions → General → tick **"Allow
+   - In `logi348/aos-founder`: Settings → Actions → General → tick **"Allow
      GitHub Actions to create and approve pull requests"**, then save.
    - Optional: branch protection on `main`, set to require a pull request. On
      a free plan GitHub doesn't offer this for private repos. The read-only
      token in step 2 is the control that matters.
 2. **Create a read-only GitHub token**
    - GitHub → Settings → Developer settings → Fine-grained tokens → Generate.
-   - Repository access: only `aos-hardened`. Permissions: **Contents →
+   - Repository access: only `aos-founder`. Permissions: **Contents →
      Read-only**. Expiry: one year. Set a calendar reminder to renew it.
    - Copy it somewhere temporary. You paste it once, in step 11.
 3. **Create the Telegram bot** (on your phone)
@@ -85,7 +85,7 @@ by the user who runs AOS.
    Click **Install** in the dialog and wait for it to finish.
 11. Clone the fork:
     ```bash
-    git clone https://github.com/logi348/aos-hardened.git ~/aos
+    git clone https://github.com/logi348/aos-founder.git ~/aos
     ```
     - Username: `logi348`. Password: **paste the token from step 2**.
     - macOS stores the token in the Keychain, so later update checks use it
