@@ -20,7 +20,7 @@ Chief is the personal command center app — the primary interface to AOS. It is
 - **SwiftUI** — iOS 17+, macOS 14+, Swift 6.0
 - **Dark glass-morphism theme** — premium feel, custom gradients, haptics
 - **Context-driven home screen** — cards change based on time, schedule, energy, deadlines
-- **Connected to AOS** via Listen server at `100.112.113.53:7600` over Tailscale
+- **Connected to AOS** via Listen server at `<your-mac>.ts.net:7600` over Tailscale
 
 ## Before You Start ANY Task
 

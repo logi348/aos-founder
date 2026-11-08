@@ -14,9 +14,9 @@ Line format (example)::
 
     {
       "id": "tg-1555",
-      "chat_id": 6679471412,
+      "chat_id": 123456789,
       "from_user": {
-          "id": 6679471412,
+          "id": 123456789,
           "first_name": "Hi",
           "last_name": "Al",
           "username": null

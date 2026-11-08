@@ -121,7 +121,7 @@ grep "setMessageReaction" logs/bridge.err.log | tail -10
 Sessions stored in `data/bridge/sessions.json`:
 ```json
 {
-  "telegram:6679471412": "session-uuid-here",
+  "telegram:123456789": "session-uuid-here",
   "telegram:<FORUM_GROUP_ID>:topic:2": "another-session-uuid"
 }
 ```
