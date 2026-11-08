@@ -69,6 +69,24 @@ def _resolve_role() -> str:
     return "developer" if (Path.home() / "project" / "aos").exists() else "operator"
 
 
+def _has_workshop() -> bool:
+    """True when operator.yaml records a workshop (see workshop-setup).
+
+    A workshop machine is a developer machine whose operator is not a framework
+    developer: their assistant changes AOS for them through the workshop skill,
+    their own private GitHub repo, and an ``aos update`` they approve. They get
+    the workshop variant of the developer rules.
+    """
+    cfg = Path.home() / ".aos" / "config" / "operator.yaml"
+    try:
+        import yaml
+
+        data = yaml.safe_load(cfg.read_text()) or {}
+        return isinstance(data.get("workshop"), dict) and bool(data["workshop"])
+    except Exception:
+        return False
+
+
 def _check_sections(filepath: Path, sections: dict) -> bool:
     """Check if all managed sections are present and current."""
     if not filepath.exists():
@@ -182,6 +200,24 @@ _RULES_DEVELOPER = """\
 - Research first: check vault, config, and available data before asking.
 - Delegate: dispatch to specialist agents for domain work."""
 
+# Developer rules for a workshop machine (operator.yaml has `workshop:`): the
+# operator isn't a framework developer — their assistant changes AOS for them
+# via the workshop skill, their own private repo, and an `aos update` they
+# approve.
+_RULES_WORKSHOP = """\
+## Rules
+
+- **Changes to how AOS works go through the workshop skill.** Make them in `~/project/aos/` (the workshop), push them to the operator's own private GitHub repo, then install them with `aos update` — which the operator approves each time.
+- **NEVER edit `~/aos/` directly.** It's the running copy; edits there are wiped every 30 minutes. Only `~/.aos/` (their settings and data) and `~/.claude/` are edited directly.
+- **NEVER push without the operator's approval.** Show them, in plain words, what will change for them first. Never force-push. Never push to `upstream`.
+- **Never hardcode lists the filesystem declares.** Discover services, skills, agents from their directories. Lists drift. Directories don't.
+- **Destructive operations require operator approval.** Deleting files, removing services, dropping data — present what you'll do, get explicit approval. No auto-delete ever.
+- Secrets: macOS Keychain only (`agent-secret get/set`). Never in files.
+- Network: localhost only. Tailscale for remote access. Cloudflare Tunnel permitted ONLY as explicit operator opt-in via the remote-access wizard (approved 2026-07-15).
+- Questions: one at a time, never batch.
+- Research first: check vault, config, and available data before asking.
+- Delegate: dispatch to specialist agents for domain work."""
+
 _RULES_OPERATOR = """\
 ## Rules
 
@@ -232,7 +268,13 @@ def _boundaries_content() -> str:
     return "\n".join(lines)
 
 
-def _global_sections(role: str) -> dict:
+def _rules_for(role: str, workshop: bool = False) -> str:
+    if role == "operator":
+        return _RULES_OPERATOR
+    return _RULES_WORKSHOP if workshop else _RULES_DEVELOPER
+
+
+def _global_sections(role: str, workshop: bool = False) -> dict:
     """Managed sections for ~/.claude/CLAUDE.md, role-aware.
 
     Only the rules block differs by role; every other section is shared. The
@@ -240,7 +282,9 @@ def _global_sections(role: str) -> dict:
     pre-marker bullets — push-to-main approval, no hardcoded lists, destructive
     ops approval — so migration 103 can strip the unmanaged duplicates). Both
     roles share the version, and the content-drift path in _fix_sections
-    re-syncs the block if a machine's role later flips.
+    re-syncs the block if a machine's role later flips. ``workshop`` selects
+    the workshop variant of the developer rules (same version, same drift
+    re-sync).
     """
     return {
         "boundaries": (3, _boundaries_content()),
@@ -262,7 +306,7 @@ Additional agents activated from catalog or created by user."""),
 Skills at `~/.claude/skills/`. Each has `SKILL.md` with trigger phrases.
 When a request matches, load and follow the skill's protocol."""),
 
-        "rules": (4, _RULES_OPERATOR if role == "operator" else _RULES_DEVELOPER),
+        "rules": (4, _rules_for(role, workshop)),
 
         "quick-reference": (3, """\
 ## Quick Reference
@@ -287,7 +331,9 @@ class GlobalClaudeMdCheck(ReconcileCheck):
     target = Path.home() / ".claude" / "CLAUDE.md"
 
     def check(self) -> bool:
-        return _check_sections(self.target, _global_sections(_resolve_role()))
+        return _check_sections(self.target, _global_sections(_resolve_role(), _has_workshop()))
 
     def fix(self) -> CheckResult:
-        return _fix_sections(self.target, _global_sections(_resolve_role()), GLOBAL_HEADER)
+        return _fix_sections(
+            self.target, _global_sections(_resolve_role(), _has_workshop()), GLOBAL_HEADER
+        )

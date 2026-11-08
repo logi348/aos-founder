@@ -180,3 +180,55 @@ def test_migration_never_overwrites_existing_role(mig, tmp_path, monkeypatch):
     assert mig.check() is True
     assert mig.up() is True
     assert yaml.safe_load(oper.read_text())["role"] == "developer"  # untouched
+
+
+# ── Workshop machines (founder edition) ──────────────────────────────────────
+
+
+def test_workshop_rules_route_changes_through_the_workshop(cm):
+    rules = cm._global_sections("developer", workshop=True)["rules"][1]
+    assert "workshop skill" in rules
+    assert "~/project/aos/" in rules
+    assert "aos update" in rules
+    assert "NEVER edit `~/aos/` directly" in rules
+    assert "NEVER push without the operator's approval" in rules
+    # Plain-language: no framework-developer "ship from the dev workspace" lecture.
+    assert "dev workspace" not in rules
+    assert "Cloudflare Tunnel permitted ONLY as explicit operator opt-in" in rules
+
+
+def test_workshop_flag_leaves_plain_developer_and_operator_rules_alone(cm):
+    assert cm._global_sections("developer")["rules"][1] == cm._RULES_DEVELOPER
+    assert cm._global_sections("operator", workshop=True)["rules"][1] == cm._RULES_OPERATOR
+    ws = cm._global_sections("developer", workshop=True)
+    dev = cm._global_sections("developer")
+    assert ws["rules"][0] == dev["rules"][0]
+    assert {k: v for k, v in ws.items() if k != "rules"} == {
+        k: v for k, v in dev.items() if k != "rules"
+    }
+
+
+def test_has_workshop_reads_operator_yaml(cm, tmp_path, monkeypatch):
+    cfg = tmp_path / ".aos" / "config"
+    cfg.mkdir(parents=True)
+    monkeypatch.setattr(cm.Path, "home", classmethod(lambda cls: tmp_path))
+    (cfg / "operator.yaml").write_text("name: Founder\nrole: developer\n")
+    assert cm._has_workshop() is False
+    (cfg / "operator.yaml").write_text(
+        "name: Founder\nrole: developer\nworkshop:\n  repo: me/aos\n"
+        "  url: https://github.com/me/aos.git\n"
+    )
+    assert cm._has_workshop() is True
+
+
+def test_workshop_appearing_resyncs_rules_block(cm, tmp_path):
+    target = tmp_path / "CLAUDE.md"
+    dev = cm._global_sections("developer")
+    cm._fix_sections(target, dev, cm.GLOBAL_HEADER)
+    ws = cm._global_sections("developer", workshop=True)
+    assert not cm._check_sections(target, ws)
+    cm._fix_sections(target, ws, cm.GLOBAL_HEADER)
+    text = target.read_text()
+    assert "workshop skill" in text
+    assert text.count('<!-- AOS:MANAGED name="rules"') == 1
+    assert cm._check_sections(target, ws)

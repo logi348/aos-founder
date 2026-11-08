@@ -42,12 +42,23 @@ fi
 # ── Helpers ───────────────────────────────────────────────
 
 _has_remote() {
-    cd "$AOS_DIR" 2>/dev/null && git remote -v 2>/dev/null | grep -q "origin" && return 0
-    return 1
+    [[ -n "$(_get_repo)" ]]
 }
 
+# Founder edition: feedback goes to the operator's OWN repo (`workshop.repo`
+# in operator.yaml, written by workshop-setup) — never to ~/aos's origin, which
+# may still be the upstream project. No workshop → stays in the local queue.
 _get_repo() {
-    cd "$AOS_DIR" 2>/dev/null && git remote get-url origin 2>/dev/null | sed 's|.*github.com[:/]||;s|\.git$||' || echo ""
+    "$AOS_PY" - "$HOME/.aos/config/operator.yaml" <<'PY' 2>/dev/null || true
+import re, sys, yaml
+try:
+    data = yaml.safe_load(open(sys.argv[1])) or {}
+except Exception:
+    sys.exit(0)
+repo = str(((data.get("workshop") or {}).get("repo")) or "").strip()
+if re.match(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", repo):
+    print(repo)
+PY
 }
 
 _collect_context() {
@@ -211,9 +222,9 @@ _push_to_github() {
     local repo
     repo=$(_get_repo)
     if [[ -z "$repo" ]]; then
-        echo "  ${RED}No GitHub remote configured${RESET}"
-        echo "  ${DIM}Add one: cd ~/aos && git remote add origin git@github.com:user/aos.git${RESET}"
-        return 1
+        echo "  ${YELLOW}No GitHub repo for feedback on this machine — kept in the local queue${RESET}"
+        echo "  ${DIM}Set up the workshop (workshop-setup) to file feedback to your own repo${RESET}"
+        return 0
     fi
 
     if [[ ! -f "$QUEUE_FILE" ]]; then

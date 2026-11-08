@@ -8,8 +8,9 @@ on a release install `~/aos` is a symlink into an unpacked tarball with no
 `.git`, so `gh` could never infer a target repo, and every report silently
 fell back to the local queue with no visible failure (exit 0).
 
-Fix: all three calls now pass `--repo logi348/aos-founder` (the one `GH_REPO`
-constant) and never depend on `cwd`; `file_issue`/`comment_on_issue` return
+Fix: all three calls now pass `--repo <GH_REPO>` (the one `GH_REPO`
+constant — in the founder edition the operator's own `workshop.repo` from
+operator.yaml, here `me/aos`) and never depend on `cwd`; `file_issue`/`comment_on_issue` return
 `(result, error)` instead of swallowing the failure, and the queue-fallback
 path in `main()` exits non-zero with a plain-English notice.
 
@@ -62,6 +63,8 @@ def aos_report(monkeypatch, tmp_path):
     """The aos-report module, with its report log pointed at a scratch file."""
     mod = _load_aos_report()
     monkeypatch.setattr(mod, "REPORT_LOG", tmp_path / "reports.jsonl")
+    # Founder edition: reports go to the operator's own workshop repo.
+    monkeypatch.setattr(mod, "GH_REPO", "me/aos")
     return mod
 
 
@@ -84,15 +87,15 @@ class TestGhRepoAndFailureSurfacing:
     def test_file_issue_passes_repo_flag_and_no_cwd(self, aos_report, monkeypatch):
         calls = self._stub_run(
             monkeypatch, aos_report, returncode=0,
-            stdout="https://github.com/logi348/aos-founder/issues/42\n",
+            stdout="https://github.com/me/aos/issues/42\n",
         )
         result, err = aos_report.file_issue("Title", "Body", ["bug"])
         assert err is None
-        assert result == {"number": 42, "url": "https://github.com/logi348/aos-founder/issues/42"}
+        assert result == {"number": 42, "url": "https://github.com/me/aos/issues/42"}
         assert len(calls) == 1
         cmd = calls[0]["cmd"]
         assert "--repo" in cmd
-        assert cmd[cmd.index("--repo") + 1] == "logi348/aos-founder"
+        assert cmd[cmd.index("--repo") + 1] == "me/aos"
         assert "cwd" not in calls[0]["kwargs"]
 
     def test_comment_on_issue_passes_repo_flag_and_no_cwd(self, aos_report, monkeypatch):
@@ -102,7 +105,7 @@ class TestGhRepoAndFailureSurfacing:
         assert err is None
         cmd = calls[0]["cmd"]
         assert "--repo" in cmd
-        assert cmd[cmd.index("--repo") + 1] == "logi348/aos-founder"
+        assert cmd[cmd.index("--repo") + 1] == "me/aos"
         assert "cwd" not in calls[0]["kwargs"]
 
     def test_search_existing_issues_passes_repo_flag_and_no_cwd(self, aos_report, monkeypatch):
@@ -110,7 +113,7 @@ class TestGhRepoAndFailureSurfacing:
         aos_report.search_existing_issues("some bug title")
         cmd = calls[0]["cmd"]
         assert "--repo" in cmd
-        assert cmd[cmd.index("--repo") + 1] == "logi348/aos-founder"
+        assert cmd[cmd.index("--repo") + 1] == "me/aos"
         assert "cwd" not in calls[0]["kwargs"]
 
     def test_file_issue_failure_returns_error_not_none_silently(self, aos_report, monkeypatch):
@@ -159,9 +162,9 @@ _STUB_GH_TEMPLATE = textwrap.dedent("""\
 
     argv = sys.argv[1:]
     if argv[:2] == ["issue", "create"]:
-        print("https://github.com/logi348/aos-founder/issues/99999")
+        print("https://github.com/me/aos/issues/99999")
     elif argv[:2] == ["issue", "comment"]:
-        print("https://github.com/logi348/aos-founder/issues/99999#issuecomment-1")
+        print("https://github.com/me/aos/issues/99999#issuecomment-1")
     elif argv[:2] == ["issue", "list"]:
         print("[]")
     sys.exit(0)
@@ -186,7 +189,15 @@ def _read_argv_log(log_path: Path) -> list[list[str]]:
     return [json.loads(line) for line in log_path.read_text().splitlines() if line.strip()]
 
 
-def _run_aos_report(args, stdin_data, home, stub_bin_dir, gh_log, stub_gh_mode="success"):
+def _run_aos_report(args, stdin_data, home, stub_bin_dir, gh_log, stub_gh_mode="success",
+                    workshop_repo="me/aos"):
+    # Founder edition: the repo comes from operator.yaml `workshop.repo`.
+    if workshop_repo:
+        cfg = home / ".aos" / "config"
+        cfg.mkdir(parents=True, exist_ok=True)
+        (cfg / "operator.yaml").write_text(
+            f"name: Test\nworkshop:\n  repo: {workshop_repo}\n"
+        )
     env = dict(os.environ)
     env["HOME"] = str(home)
     env["STUB_GH_LOG"] = str(gh_log)
@@ -218,7 +229,7 @@ class TestEndToEnd:
         assert calls, "stub gh was never invoked"
         create_call = next(c for c in calls if c[:2] == ["issue", "create"])
         assert "--repo" in create_call
-        assert create_call[create_call.index("--repo") + 1] == "logi348/aos-founder"
+        assert create_call[create_call.index("--repo") + 1] == "me/aos"
 
     def test_duplicate_of_uses_repo_flag(self, tmp_path, stub_gh):
         bin_dir, gh_log = stub_gh
@@ -238,7 +249,7 @@ class TestEndToEnd:
         calls = _read_argv_log(gh_log)
         comment_call = next(c for c in calls if c[:2] == ["issue", "comment"])
         assert "--repo" in comment_call
-        assert comment_call[comment_call.index("--repo") + 1] == "logi348/aos-founder"
+        assert comment_call[comment_call.index("--repo") + 1] == "me/aos"
 
     def test_gh_failure_propagates_nonzero_exit_and_humanized_notice(self, tmp_path, stub_gh):
         bin_dir, gh_log = stub_gh
@@ -256,3 +267,79 @@ class TestEndToEnd:
         out = json.loads(result.stdout)
         assert out["action"] == "queued"
         assert "error" in out
+
+
+# ---------------------------------------------------------------------------
+# Founder edition: the repo is the operator's own workshop repo, or nothing.
+# Never the upstream project's repo.
+# ---------------------------------------------------------------------------
+
+class TestRepoResolution:
+    def test_resolves_workshop_repo_from_operator_yaml(self, tmp_path, monkeypatch):
+        mod = _load_aos_report()
+        oy = tmp_path / "operator.yaml"
+        oy.write_text("name: X\nworkshop:\n  repo: someone/aos\n  url: https://github.com/someone/aos.git\n")
+        monkeypatch.setattr(mod, "OPERATOR_YAML", oy)
+        assert mod._resolve_gh_repo() == "someone/aos"
+
+    def test_no_workshop_means_no_repo_never_upstream(self, tmp_path, monkeypatch):
+        mod = _load_aos_report()
+        oy = tmp_path / "operator.yaml"
+        oy.write_text("name: X\n")
+        monkeypatch.setattr(mod, "OPERATOR_YAML", oy)
+        assert mod._resolve_gh_repo() is None
+        monkeypatch.setattr(mod, "OPERATOR_YAML", tmp_path / "missing.yaml")
+        assert mod._resolve_gh_repo() is None
+        assert "logi348" not in AOS_REPORT.read_text().split("GH_REPO = ")[1].splitlines()[0]
+
+    def test_no_repo_makes_no_gh_calls(self, monkeypatch, tmp_path):
+        mod = _load_aos_report()
+        monkeypatch.setattr(mod, "REPORT_LOG", tmp_path / "reports.jsonl")
+        monkeypatch.setattr(mod, "GH_REPO", None)
+        calls = []
+        monkeypatch.setattr(mod.subprocess, "run", lambda cmd, **kw: calls.append(cmd))
+        assert mod.search_existing_issues("a bug title here") == []
+        result, err = mod.file_issue("T", "B", ["bug"])
+        assert result is None and "kept locally" in err
+        ok, err = mod.comment_on_issue(1, "x")
+        assert ok is False and "kept locally" in err
+        mod.log_report("Queued", ["bug"], None, "queued", body="b")
+        summary = mod.drain_queue()
+        assert summary["still_queued"] == ["Queued"]
+        assert "note" in summary
+        assert calls == []
+
+
+class TestNoWorkshopEndToEnd:
+    def test_report_without_workshop_is_kept_locally_and_never_calls_gh(self, tmp_path, stub_gh):
+        bin_dir, gh_log = stub_gh
+        home = tmp_path / "home"
+        home.mkdir()
+        payload = json.dumps({"title": "Something broke", "body": "Steps to repro."})
+
+        result = _run_aos_report([], payload, home, bin_dir, gh_log, workshop_repo=None)
+
+        assert result.returncode == 0, result.stderr
+        out = json.loads(result.stdout)
+        assert out["action"] == "saved_locally"
+        assert "kept locally" in result.stderr
+        assert _read_argv_log(gh_log) == []
+        entries = [json.loads(l) for l in
+                   (home / ".aos" / "logs" / "reports.jsonl").read_text().splitlines()]
+        assert entries[0]["action"] == "queued"
+        assert "Steps to repro." in entries[0]["body"]
+
+        drained = _run_aos_report(["--drain"], "", home, bin_dir, gh_log, workshop_repo=None)
+        assert drained.returncode == 0, drained.stderr
+        assert json.loads(drained.stdout)["still_queued"] == ["Something broke"]
+        assert _read_argv_log(gh_log) == []
+
+    def test_workshop_repo_set_files_there(self, tmp_path, stub_gh):
+        bin_dir, gh_log = stub_gh
+        home = tmp_path / "home"
+        home.mkdir()
+        payload = json.dumps({"title": "Something broke", "body": "Steps to repro."})
+        result = _run_aos_report([], payload, home, bin_dir, gh_log, workshop_repo="founder/aos")
+        assert result.returncode == 0, result.stderr
+        create_call = next(c for c in _read_argv_log(gh_log) if c[:2] == ["issue", "create"])
+        assert create_call[create_call.index("--repo") + 1] == "founder/aos"

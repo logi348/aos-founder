@@ -553,6 +553,24 @@ gh auth status
 
 "Done — GitHub is connected. When we build your app, its code will be saved there."
 
+### Your Own Copy of Me (silent, right after GitHub)
+
+Tell them one plain line:
+
+"I'm making your own private copy of my code on your GitHub — from now on you can
+change anything about how I work, and it's yours alone."
+
+Then run it yourself:
+```bash
+~/aos/core/bin/internal/workshop-setup
+```
+
+If it succeeds, add `workshop` to `integrations_connected`. If it fails, don't block
+onboarding and don't troubleshoot now: note it in the onboarding log and in
+`onboarding.yaml` (`workshop: deferred`), say "That didn't work just now — I'll set it
+up later when you want to change how I work," and carry on. The `workshop` skill
+offers it again on request.
+
 ### Vercel and Supabase (always set up — the app needs both)
 
 Say it in one breath, so the three tools make sense together:
@@ -687,7 +705,7 @@ phases:
   team: deferred
 operator_name: "{name}"
 agent_name: "{agent_name}"
-integrations_connected: [github, vercel, supabase]   # only the ones verified working
+integrations_connected: [github, workshop, vercel, supabase]   # only the ones verified working
 notes: "{one line — anything worth remembering, e.g. areas skipped in the brain dump}"
 ```
 
@@ -725,6 +743,7 @@ never show commands to the operator.
 | "Send me a morning briefing" / "Set up a daily routine" | [Daily routine](#daily-routine) |
 | "How much can you do without asking me?" | [Trust](#trust) |
 | "Usage stats" / "telemetry" | [Telemetry](#telemetry) |
+| "Change how you work" / "Customize yourself" | Load the `workshop` skill (it sets up the workshop first if onboarding couldn't) |
 
 After each one, update `~/.aos/config/onboarding.yaml` (see Wrap-Up).
 

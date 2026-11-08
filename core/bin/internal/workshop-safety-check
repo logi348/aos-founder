@@ -1,0 +1,58 @@
+#!/bin/bash
+# workshop-safety-check — flag workshop changes that touch AOS's safety rules.
+#
+# The workshop skill runs this before showing the operator a change. Any path
+# below is part of how AOS keeps itself (and the operator) safe: guards,
+# permissions, self-repair checks, schedules, trust levels, install and update
+# machinery. A change there must be called out in plain words and approved
+# explicitly.
+#
+# Usage:
+#   workshop-safety-check [<git diff range>] [-C <repo>]
+#       e.g. workshop-safety-check main..change/shorter-briefing
+#   no range → `git diff --name-only HEAD` plus staged/untracked files
+#   file names on stdin also work:  git diff --name-only X | workshop-safety-check -
+#
+# Prints one "SAFETY: <path> — <what it is>" line per sensitive file.
+# Prints nothing when the change is ordinary. Always exits 0.
+
+REPO="${AOS_HOME_OVERRIDE:-$HOME}/project/aos"
+RANGE=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -C) REPO="$2"; shift 2 ;;
+        *)  RANGE="$1"; shift ;;
+    esac
+done
+
+if [[ "$RANGE" == "-" ]]; then
+    FILES=$(cat)
+elif [[ -n "$RANGE" ]]; then
+    FILES=$(git -C "$REPO" diff --name-only "$RANGE" 2>/dev/null)
+else
+    FILES=$( {
+        git -C "$REPO" diff --name-only HEAD 2>/dev/null
+        git -C "$REPO" diff --name-only --cached 2>/dev/null
+        git -C "$REPO" ls-files --others --exclude-standard 2>/dev/null
+    } | sort -u)
+fi
+
+while IFS= read -r f; do
+    [[ -z "$f" ]] && continue
+    why=""
+    case "$f" in
+        core/hooks/*)                               why="the guards that check my commands before they run" ;;
+        core/infra/lib/claude_permissions.py)       why="the list of what I'm allowed to do without asking" ;;
+        core/infra/reconcile/checks/*)              why="the self-repair checks that undo tampering and drift" ;;
+        config/crons.yaml)                          why="the schedule of jobs that run on their own" ;;
+        config/defaults/trust.yaml)                 why="how much I may do without asking you" ;;
+        install.sh)                                 why="the installer" ;;
+        core/bin/crons/check-update)                why="how updates are checked and applied" ;;
+        core/bin/internal/release-manager)          why="how updates are installed and rolled back" ;;
+        *settings*.json|*settings*.yaml|*permission*|*/rules/*|.claude/rules/*)
+                                                    why="settings or permission rules" ;;
+    esac
+    [[ -n "$why" ]] && echo "SAFETY: $f — $why"
+done <<< "$FILES"
+
+exit 0

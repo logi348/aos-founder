@@ -39,12 +39,41 @@ AOS_DIR = Path.home() / "aos"
 USER_DIR = Path.home() / ".aos"
 REPORT_LOG = USER_DIR / "logs" / "reports.jsonl"
 
-# The repo issues are filed against — explicit and never inferred from `cwd`.
-# On a release install ~/aos is a symlink into an unpacked release tarball
-# with no `.git`, so `gh` cannot infer a repo from `cwd=str(AOS_DIR)` the way
-# a dev checkout would let it (aos#2323). This is the one place that names
-# the repo for every `gh` call this script makes.
-GH_REPO = "logi348/aos-founder"
+OPERATOR_YAML = USER_DIR / "config" / "operator.yaml"
+
+_REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+
+
+def _resolve_gh_repo() -> str | None:
+    """The repo issues are filed against — explicit, never inferred from `cwd`.
+
+    On a release install ~/aos is a symlink into an unpacked release tarball
+    with no `.git`, so `gh` cannot infer a repo from `cwd` (aos#2323).
+
+    Founder edition: reports go to the operator's OWN repo — `workshop.repo`
+    in operator.yaml, written by workshop-setup — and nowhere else. With no
+    workshop there is no GitHub filing at all: the report is kept locally
+    (reports.jsonl) and can be filed later with `--drain`. This install never
+    defaults to the upstream project's repo.
+    """
+    try:
+        import yaml
+
+        data = yaml.safe_load(OPERATOR_YAML.read_text()) or {}
+        repo = str(((data.get("workshop") or {}).get("repo")) or "").strip()
+    except Exception:
+        return None
+    return repo if _REPO_RE.match(repo) else None
+
+
+# The one place that names the repo for every `gh` call this script makes.
+# None → no GitHub filing on this machine (reports stay local).
+GH_REPO = _resolve_gh_repo()
+
+NO_REPO_NOTICE = (
+    "no GitHub repo for reports on this machine (no workshop set up) — "
+    "kept locally in ~/.aos/logs/reports.jsonl"
+)
 
 # The bridge's PII redactor, loaded by file path — same trick
 # core/engine/notify/router.py uses for this exact module, since a bare CLI
@@ -208,6 +237,8 @@ def scrub(text: str) -> str:
 
 def search_existing_issues(title: str) -> list[dict]:
     """Search for existing issues that might be duplicates."""
+    if not GH_REPO:
+        return []
     try:
         # Extract key terms from title
         words = re.sub(r'[^\w\s]', '', title.lower()).split()
@@ -236,6 +267,8 @@ def file_issue(title: str, body: str, labels: list[str]) -> tuple[dict | None, s
     success (aos#2323) — the caller decides what to do with the error, but
     it must always get one.
     """
+    if not GH_REPO:
+        return None, NO_REPO_NOTICE
     cmd = [
         "gh", "issue", "create",
         "--repo", GH_REPO,
@@ -267,6 +300,8 @@ def comment_on_issue(number: int, body: str) -> tuple[bool, str | None]:
     Returns (True, None) on success, or (False, a human-readable error) on
     failure — same contract as `file_issue` (aos#2323).
     """
+    if not GH_REPO:
+        return False, NO_REPO_NOTICE
     try:
         result = subprocess.run(
             ["gh", "issue", "comment", str(number), "--repo", GH_REPO, "--body", body],
@@ -409,6 +444,16 @@ def drain_queue() -> dict:
     pending = _pending_queue_entries()
     filed, still_queued, errors = [], [], []
 
+    if not GH_REPO:
+        # Nowhere to file — leave everything queued and say why. No gh call.
+        return {
+            "attempted": 0,
+            "filed": [],
+            "still_queued": [e.get("title", "") for e in pending],
+            "errors": [],
+            "note": NO_REPO_NOTICE,
+        }
+
     for entry in pending:
         entry_id = entry.get("id")
         title = entry.get("title", "")
@@ -457,6 +502,9 @@ def main():
     if len(sys.argv) > 1 and sys.argv[1] == "--drain":
         summary = drain_queue()
         print(json.dumps(summary, indent=2))
+        if summary.get("note"):
+            print(f"aos-report: {summary['note']}", file=sys.stderr)
+            return
         if summary["still_queued"]:
             print(
                 f"aos-report: {len(summary['still_queued'])} of "
@@ -541,6 +589,18 @@ def main():
     sections.append("\n---\n*Filed by AOS report system*")
 
     full_body = "\n".join(sections)
+
+    # No workshop repo → no GitHub filing, by design (founder edition). Keep
+    # the full report locally so `--drain` can file it once a repo exists.
+    if not GH_REPO:
+        entry_body = full_body
+        if duplicate_of:
+            entry_body = f"**Additional report from {operator}:**\n\n{full_body}"
+        log_report(title, labels, None, "queued", body=entry_body,
+                   duplicate_of=duplicate_of)
+        print(f"aos-report: {NO_REPO_NOTICE}.", file=sys.stderr)
+        print(json.dumps({"action": "saved_locally", "note": NO_REPO_NOTICE}))
+        return
 
     # Handle duplicates
     if duplicate_of:

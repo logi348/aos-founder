@@ -54,6 +54,8 @@ def aos_report(monkeypatch, tmp_path):
     """The aos-report module, with its report log pointed at a scratch file."""
     mod = _load_aos_report()
     monkeypatch.setattr(mod, "REPORT_LOG", tmp_path / "reports.jsonl")
+    # Founder edition: reports go to the operator's own workshop repo.
+    monkeypatch.setattr(mod, "GH_REPO", "me/aos")
     return mod
 
 
@@ -92,7 +94,7 @@ class TestQueueAndDrain:
             captured["title"] = title
             captured["body"] = body
             captured["labels"] = labels
-            return {"number": 1, "url": "https://github.com/logi348/aos-founder/issues/1"}, None
+            return {"number": 1, "url": "https://github.com/me/aos/issues/1"}, None
 
         monkeypatch.setattr(aos_report, "file_issue", fake_file_issue)
 
@@ -103,7 +105,7 @@ class TestQueueAndDrain:
         assert captured["labels"] == ["bug", "has-fix"]
         assert summary["filed"] == [
             {"title": "Bridge crashes on empty schedule",
-             "issue_url": "https://github.com/logi348/aos-founder/issues/1"}
+             "issue_url": "https://github.com/me/aos/issues/1"}
         ]
         assert summary["still_queued"] == []
 
@@ -138,7 +140,7 @@ class TestQueueAndDrain:
         summary = aos_report.drain_queue()
 
         assert captured == {"number": 2323, "body": "extra context"}
-        assert summary["filed"][0]["issue_url"] == "https://github.com/logi348/aos-founder/issues/2323"
+        assert summary["filed"][0]["issue_url"] == "https://github.com/me/aos/issues/2323"
         assert aos_report._pending_queue_entries() == []
 
 
@@ -166,9 +168,9 @@ _STUB_GH_TEMPLATE = textwrap.dedent("""\
 
     argv = sys.argv[1:]
     if argv[:2] == ["issue", "create"]:
-        print("https://github.com/logi348/aos-founder/issues/99999")
+        print("https://github.com/me/aos/issues/99999")
     elif argv[:2] == ["issue", "comment"]:
-        print("https://github.com/logi348/aos-founder/issues/99999#issuecomment-1")
+        print("https://github.com/me/aos/issues/99999#issuecomment-1")
     elif argv[:2] == ["issue", "list"]:
         print("[]")
     sys.exit(0)
@@ -192,7 +194,15 @@ def _read_argv_log(log_path: Path) -> list[list[str]]:
     return [json.loads(line) for line in log_path.read_text().splitlines() if line.strip()]
 
 
-def _run_aos_report(args, stdin_data, home, stub_bin_dir, gh_log, stub_gh_mode="success"):
+def _run_aos_report(args, stdin_data, home, stub_bin_dir, gh_log, stub_gh_mode="success",
+                    workshop_repo="me/aos"):
+    # Founder edition: the repo comes from operator.yaml `workshop.repo`.
+    if workshop_repo:
+        cfg = home / ".aos" / "config"
+        cfg.mkdir(parents=True, exist_ok=True)
+        (cfg / "operator.yaml").write_text(
+            f"name: Test\nworkshop:\n  repo: {workshop_repo}\n"
+        )
     env = dict(os.environ)
     env["HOME"] = str(home)
     env["STUB_GH_LOG"] = str(gh_log)

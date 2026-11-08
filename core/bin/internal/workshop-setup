@@ -1,0 +1,282 @@
+#!/bin/bash
+# workshop-setup — give this machine a "workshop" for changing AOS itself.
+#
+# Why: ~/aos is the running copy. When it is a git clone, the
+# runtime_protection reconcile check (every 30 minutes and on every deploy)
+# throws away uncommitted edits there and resets local commits to origin/main.
+# So durable changes to AOS must live somewhere else and arrive through the
+# normal, operator-approved update path:
+#
+#   ~/project/aos (workshop)  →  the operator's own PRIVATE repo  →  aos update
+#
+# After this runs the install is independent of the upstream project: ~/aos
+# and the workshop both track the operator's repo. `upstream` exists only so
+# the assistant can look for improvements when the operator asks; it is never
+# fetched automatically and can't be pushed to.
+#
+# What this does (idempotent — safe to run again):
+#   1. checks GitHub login (gh auth status) and finds the account name
+#   2. creates <me>/aos as a PRIVATE repo (reuses it if it already exists)
+#   3. `gh auth setup-git` so updates can fetch the private repo unprompted
+#   4. clones the installed code (~/aos) to ~/project/aos (if missing) and
+#      points its origin at <me>/aos
+#   5. pushes main only (no tags, never --force)
+#   6. adds remote `upstream` (fetch-only: push URL DISABLED, no tags)
+#   7. if ~/aos is a git clone, points its origin at <me>/aos and fetches
+#   8. records `role: developer` and `workshop: {repo, url, created}` in
+#      ~/.aos/config/operator.yaml
+#
+# Usage:
+#   workshop-setup            set up (or repair) the workshop
+#   workshop-setup --check    print state; exit 0 if set up, 1 if not
+#
+# Test hooks (no network, no gh):
+#   WORKSHOP_REPO_URL      use this URL as the operator's repo; skips gh entirely
+#   WORKSHOP_REPO_SLUG     owner/name recorded for it (default: local/aos)
+#   WORKSHOP_UPSTREAM_URL  use this URL as upstream
+#   WORKSHOP_PYTHON        Python interpreter with PyYAML
+#   AOS_HOME_OVERRIDE      treat this directory as $HOME
+
+set -euo pipefail
+
+H="${AOS_HOME_OVERRIDE:-$HOME}"
+WORKSHOP="$H/project/aos"
+RUNTIME="$H/aos"
+RELEASE_REPO="$H/.aos/repo"
+OPERATOR_YAML="$H/.aos/config/operator.yaml"
+UPSTREAM_URL="${WORKSHOP_UPSTREAM_URL:-https://github.com/logi348/aos-founder.git}"
+
+say()  { echo "workshop-setup: $*"; }
+die()  { echo "workshop-setup: ERROR: $*" >&2; exit 1; }
+
+pick_python() {
+    if [[ -n "${WORKSHOP_PYTHON:-}" ]]; then
+        echo "$WORKSHOP_PYTHON"
+    elif [[ -x "$RUNTIME/core/bin/internal/aos-python" ]]; then
+        echo "$RUNTIME/core/bin/internal/aos-python"
+    else
+        echo "python3"
+    fi
+}
+
+# Print workshop.<key> from operator.yaml (empty if absent).
+operator_workshop() {
+    [[ -f "$OPERATOR_YAML" ]] || return 0
+    "$(pick_python)" - "$OPERATOR_YAML" "$1" <<'PY' 2>/dev/null || true
+import sys, yaml
+data = yaml.safe_load(open(sys.argv[1])) or {}
+ws = data.get("workshop")
+if isinstance(ws, dict) and ws.get(sys.argv[2]):
+    print(ws[sys.argv[2]])
+PY
+}
+
+# ── --check ──────────────────────────────────────────────────────────────────
+check_state() {
+    local ok=0 url repo origin="" push=""
+    url=$(operator_workshop url)
+    repo=$(operator_workshop repo)
+    if [[ -n "$url" && -n "$repo" ]]; then
+        echo "operator.yaml:   workshop repo $repo"
+    else
+        echo "operator.yaml:   no workshop entry"
+        ok=1
+    fi
+    if [[ -d "$WORKSHOP/.git" ]]; then
+        origin=$(git -C "$WORKSHOP" remote get-url origin 2>/dev/null || true)
+        if [[ -n "$url" && "$origin" == "$url" ]]; then
+            echo "workshop:        $WORKSHOP (origin: your repo)"
+        else
+            echo "workshop:        $WORKSHOP (origin: ${origin:-none} — expected ${url:-your repo})"
+            ok=1
+        fi
+        push=$(git -C "$WORKSHOP" remote get-url --push upstream 2>/dev/null || true)
+        if [[ "$push" == "DISABLED" ]]; then
+            echo "upstream:        fetch-only, on request (push disabled)"
+        else
+            echo "upstream:        not set up safely (push: ${push:-missing})"
+            ok=1
+        fi
+    else
+        echo "workshop:        missing ($WORKSHOP)"
+        ok=1
+    fi
+    if [[ -d "$RUNTIME/.git" ]]; then
+        local rorigin
+        rorigin=$(git -C "$RUNTIME" remote get-url origin 2>/dev/null || true)
+        if [[ -n "$url" && "$rorigin" == "$url" ]]; then
+            echo "runtime (~/aos): git clone, updates from your repo"
+        else
+            echo "runtime (~/aos): git clone, origin = ${rorigin:-none} (should be your repo)"
+            ok=1
+        fi
+    elif [[ -e "$RUNTIME" ]]; then
+        echo "runtime (~/aos): release install (updates come from the workshop)"
+    else
+        echo "runtime (~/aos): missing"
+    fi
+    if [[ $ok -eq 0 ]]; then echo "status:          set up"; else echo "status:          not set up"; fi
+    return $ok
+}
+
+if [[ "${1:-}" == "--check" ]]; then
+    check_state && exit 0 || exit 1
+elif [[ -n "${1:-}" ]]; then
+    die "unknown argument: $1 (use --check or no arguments)"
+fi
+
+# ── 1-3. The operator's own private repo ─────────────────────────────────────
+if [[ -n "${WORKSHOP_REPO_URL:-}" ]]; then
+    REPO_URL="$WORKSHOP_REPO_URL"
+    REPO_SLUG="${WORKSHOP_REPO_SLUG:-local/aos}"
+    say "using repo $REPO_URL (WORKSHOP_REPO_URL)"
+else
+    command -v gh >/dev/null 2>&1 || die "GitHub CLI (gh) is not installed"
+    gh auth status >/dev/null 2>&1 || die "not logged in to GitHub — run: gh auth login"
+    ME=$(gh api user -q .login) || die "could not read GitHub login"
+    [[ -n "$ME" ]] || die "empty GitHub login"
+    REPO_SLUG="$ME/aos"
+    say "GitHub account: $ME"
+
+    if gh repo view "$REPO_SLUG" --json name >/dev/null 2>&1; then
+        say "repo $REPO_SLUG already exists — reusing it"
+    else
+        out=$(gh repo create "$REPO_SLUG" --private \
+                --description "My AOS — my assistant's own code, changed for me" 2>&1) || {
+            echo "$out" | grep -qi "already exists" || die "could not create $REPO_SLUG: $out"
+        }
+        say "created private repo $REPO_SLUG"
+        for _ in 1 2 3 4 5; do
+            gh repo view "$REPO_SLUG" --json name >/dev/null 2>&1 && break
+            sleep 2
+        done
+    fi
+    vis=$(gh repo view "$REPO_SLUG" --json visibility -q .visibility 2>/dev/null || true)
+    if [[ -n "$vis" && "$vis" != "PRIVATE" ]]; then
+        say "WARNING: $REPO_SLUG is $vis, not private"
+    fi
+    # Let plain `git fetch` (check-update, release-manager) authenticate to the
+    # private repo with no prompt.
+    gh auth setup-git >/dev/null 2>&1 || say "WARNING: gh auth setup-git failed — updates may prompt for a login"
+    REPO_URL="https://github.com/$REPO_SLUG.git"
+fi
+
+# ── 4. The workshop clone ────────────────────────────────────────────────────
+if [[ -d "$WORKSHOP/.git" ]]; then
+    say "workshop already at $WORKSHOP"
+else
+    [[ -e "$WORKSHOP" ]] && die "$WORKSHOP exists but is not a git repo — move it aside first"
+    mkdir -p "$(dirname "$WORKSHOP")"
+    if [[ -d "$RUNTIME/.git" ]]; then
+        git clone --quiet "$RUNTIME" "$WORKSHOP"
+        say "copied the installed code (~/aos) to $WORKSHOP"
+    elif [[ -d "$RELEASE_REPO/.git" ]]; then
+        git clone --quiet "$RELEASE_REPO" "$WORKSHOP"
+        say "copied the installed code (~/.aos/repo) to $WORKSHOP"
+    elif [[ -d "$RUNTIME" ]]; then
+        # Release install with no git history anywhere: snapshot what's running.
+        mkdir -p "$WORKSHOP"
+        git -C "$WORKSHOP" init --quiet -b main
+        (cd "$RUNTIME/" && tar --exclude=.git -cf - .) | (cd "$WORKSHOP" && tar -xf -)
+        git -C "$WORKSHOP" add -A
+        git -C "$WORKSHOP" -c user.name="AOS" -c user.email="aos@localhost" \
+            commit --quiet -m "AOS as installed on this machine"
+        say "snapshotted the installed code into $WORKSHOP"
+    else
+        die "no installed AOS found at $RUNTIME to copy"
+    fi
+    # The clone's origin is the local copy it came from; drop it (and its
+    # remote-tracking refs) so origin/main can only ever mean the operator's repo.
+    git -C "$WORKSHOP" remote remove origin 2>/dev/null || true
+fi
+if git -C "$WORKSHOP" remote get-url origin >/dev/null 2>&1; then
+    git -C "$WORKSHOP" remote set-url origin "$REPO_URL"
+else
+    git -C "$WORKSHOP" remote add origin "$REPO_URL"
+fi
+git -C "$WORKSHOP" remote set-url --push origin "$REPO_URL"
+# A `stable` tag carried over from the original install would pin updates to
+# an old commit (channel "stable" prefers the tag over main). The operator's
+# repo tracks main only.
+git -C "$WORKSHOP" tag -d stable >/dev/null 2>&1 || true
+
+# Be on main.
+if [[ "$(git -C "$WORKSHOP" symbolic-ref --short HEAD 2>/dev/null)" != "main" ]]; then
+    if git -C "$WORKSHOP" show-ref --verify --quiet refs/heads/main; then
+        git -C "$WORKSHOP" switch --quiet main
+    else
+        git -C "$WORKSHOP" switch --quiet -c main
+    fi
+fi
+
+# ── 5. Push main (only main, no tags, never forced) ──────────────────────────
+git -C "$WORKSHOP" fetch --quiet --prune --no-tags origin 2>/dev/null || true
+if git -C "$WORKSHOP" show-ref --verify --quiet refs/remotes/origin/main; then
+    local_h=$(git -C "$WORKSHOP" rev-parse main)
+    remote_h=$(git -C "$WORKSHOP" rev-parse origin/main)
+    if [[ "$local_h" == "$remote_h" ]]; then
+        say "your repo is up to date"
+    elif git -C "$WORKSHOP" merge-base --is-ancestor main origin/main; then
+        git -C "$WORKSHOP" merge --quiet --ff-only origin/main
+        say "workshop caught up with your repo"
+    elif git -C "$WORKSHOP" merge-base --is-ancestor origin/main main; then
+        git -C "$WORKSHOP" push --quiet --no-tags origin main:main
+        say "pushed main to your repo"
+    else
+        die "your repo's main and the installed code have different histories — not overwriting anything"
+    fi
+else
+    git -C "$WORKSHOP" push --quiet --no-tags origin main:main \
+        || die "could not push to $REPO_URL"
+    say "pushed main to your repo"
+    git -C "$WORKSHOP" fetch --quiet --no-tags origin
+fi
+git -C "$WORKSHOP" branch --quiet --set-upstream-to=origin/main main
+
+# ── 6. upstream: fetch-only, on request, no tags ─────────────────────────────
+if git -C "$WORKSHOP" remote get-url upstream >/dev/null 2>&1; then
+    git -C "$WORKSHOP" remote set-url upstream "$UPSTREAM_URL"
+else
+    git -C "$WORKSHOP" remote add upstream "$UPSTREAM_URL"
+fi
+git -C "$WORKSHOP" remote set-url --push upstream DISABLED
+git -C "$WORKSHOP" config remote.upstream.tagOpt --no-tags
+say "upstream = $UPSTREAM_URL (fetched only when you ask; push disabled)"
+
+# ── 7. Point a git-clone runtime at the operator's repo ──────────────────────
+# check-update converts a git-clone ~/aos into a release install, running
+# `git pull --ff-only origin main` in ~/aos first — so origin must be the
+# operator's repo before that happens.
+if [[ -d "$RUNTIME/.git" ]]; then
+    git -C "$RUNTIME" remote set-url origin "$REPO_URL"
+    git -C "$RUNTIME" remote set-url --push origin "$REPO_URL"
+    git -C "$RUNTIME" tag -d stable >/dev/null 2>&1 || true
+    git -C "$RUNTIME" fetch --quiet --no-tags origin || die "could not fetch your repo into $RUNTIME"
+    say "~/aos now updates from your repo"
+fi
+
+# ── 8. Record it in operator.yaml ────────────────────────────────────────────
+mkdir -p "$(dirname "$OPERATOR_YAML")"
+"$(pick_python)" - "$OPERATOR_YAML" "$REPO_SLUG" "$REPO_URL" <<'PY'
+import datetime, os, sys, yaml
+path, slug, url = sys.argv[1], sys.argv[2], sys.argv[3]
+data = {}
+if os.path.exists(path):
+    with open(path) as f:
+        data = yaml.safe_load(f) or {}
+if not isinstance(data, dict):
+    sys.exit("operator.yaml is not a mapping — refusing to rewrite it")
+data["role"] = "developer"
+ws = data.get("workshop") if isinstance(data.get("workshop"), dict) else {}
+ws["repo"] = slug
+ws["url"] = url
+ws.setdefault("created", datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+data["workshop"] = ws
+tmp = path + ".tmp"
+with open(tmp, "w") as f:
+    yaml.safe_dump(data, f, sort_keys=False, allow_unicode=True)
+os.replace(tmp, path)
+PY
+say "operator.yaml: role developer, workshop recorded"
+
+check_state

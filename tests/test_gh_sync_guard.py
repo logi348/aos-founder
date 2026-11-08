@@ -80,8 +80,9 @@ def test_sync_blocked_under_pytest_even_with_optin(
 
 @pytest.mark.parametrize("mod,create_fn,close_fn", GH_MODULES, ids=IDS)
 def test_sync_is_opt_in_outside_pytest(mod, create_fn, close_fn, monkeypatch):
-    # Simulate a non-pytest process
+    # Simulate a non-pytest process on a machine with a workshop repo
     monkeypatch.setattr(mod, "_in_pytest", lambda: False)
+    monkeypatch.setattr(mod, "_resolve_aos_repo", lambda: "me/aos")
 
     monkeypatch.delenv("AOS_GITHUB_SYNC", raising=False)
     assert mod._gh_sync_enabled() is False, "sync must be OFF by default"
@@ -93,6 +94,30 @@ def test_sync_is_opt_in_outside_pytest(mod, create_fn, close_fn, monkeypatch):
     for on_value in ("1", "true", "yes", "TRUE"):
         monkeypatch.setenv("AOS_GITHUB_SYNC", on_value)
         assert mod._gh_sync_enabled() is True
+
+
+@pytest.mark.parametrize("mod,create_fn,close_fn", GH_MODULES, ids=IDS)
+def test_sync_off_without_workshop_repo(mod, create_fn, close_fn, monkeypatch,
+                                        forbid_subprocess):
+    """Founder edition: no workshop repo → no sync, even when opted in. The
+    engine never falls back to the upstream project's repo."""
+    monkeypatch.setattr(mod, "_in_pytest", lambda: False)
+    monkeypatch.setattr(mod, "_resolve_aos_repo", lambda: None)
+    monkeypatch.setenv("AOS_GITHUB_SYNC", "1")
+    assert mod._gh_sync_enabled() is False
+    assert getattr(mod, create_fn)("t#9999", "guard probe") is None
+    assert getattr(mod, close_fn)("t#9999") is False
+
+
+def test_resolve_aos_repo_reads_workshop_repo(tmp_path, monkeypatch):
+    cfg = tmp_path / ".aos" / "config"
+    cfg.mkdir(parents=True)
+    monkeypatch.setattr(backend.Path, "home", classmethod(lambda cls: tmp_path))
+    assert backend._resolve_aos_repo() is None
+    (cfg / "operator.yaml").write_text("name: X\n")
+    assert backend._resolve_aos_repo() is None
+    (cfg / "operator.yaml").write_text("name: X\nworkshop:\n  repo: me/aos\n")
+    assert backend._resolve_aos_repo() == "me/aos"
 
 
 # ---------------------------------------------------------------------------

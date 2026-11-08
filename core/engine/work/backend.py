@@ -102,7 +102,22 @@ def _resolve_db_path() -> Path:
 DB_PATH = _resolve_db_path()
 WORK_DIR = Path.home() / ".aos" / "work"
 ACTIVITY_FILE = WORK_DIR / "activity.yaml"
-AOS_REPO = "logi348/aos-founder"
+
+def _resolve_aos_repo() -> str | None:
+    """GitHub repo for task issue sync: the operator's own workshop repo.
+
+    Read from `workshop.repo` in operator.yaml (written by workshop-setup).
+    None when there's no workshop — then there is no GitHub sync at all. The
+    founder edition never files on the upstream project's repo.
+    """
+    try:
+        cfg = Path.home() / ".aos" / "config" / "operator.yaml"
+        data = yaml.safe_load(cfg.read_text()) or {}
+        repo = str(((data.get("workshop") or {}).get("repo")) or "").strip()
+    except Exception:
+        return None
+    return repo if re.match(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", repo) else None
+
 MAX_ACTIVITY = 100
 
 # The title the SessionEnd hook generates, and therefore the one shape that
@@ -115,7 +130,7 @@ AUTO_THREAD_PREFIX = "Work in "
 # is ~/aos-releases/<version> — a different directory name on every update —
 # so that tree cannot be matched by a recorded project path the way an ordinary
 # checkout can. Named here rather than inferred because the work engine already
-# keys GitHub issue sync off this same id (see _gh_sync_enabled / AOS_REPO).
+# keys GitHub issue sync off this same id (see _gh_sync_enabled / _resolve_aos_repo).
 FRAMEWORK_PROJECT = "aos"
 RELEASE_DIR_NAME = "aos-releases"
 WORKTREE_SEGMENTS = (".claude", "worktrees")
@@ -409,12 +424,15 @@ def _gh_sync_enabled() -> bool:
     """GitHub Issues sync is opt-in: requires AOS_GITHUB_SYNC=1 in the env.
 
     Hard-disabled under pytest regardless of the env var, so test fixtures
-    that create project="aos" tasks can never file real issues on AOS_REPO
-    (the unguarded suite filed ~1,900 of them).
+    that create project="aos" tasks can never file real issues
+    (the unguarded suite filed ~1,900 of them). Also off when the operator
+    has no workshop repo to sync to (see _resolve_aos_repo).
     """
     if _in_pytest():
         return False
-    return os.environ.get("AOS_GITHUB_SYNC", "").strip().lower() in ("1", "true", "yes")
+    if os.environ.get("AOS_GITHUB_SYNC", "").strip().lower() not in ("1", "true", "yes"):
+        return False
+    return _resolve_aos_repo() is not None
 
 
 def _gh_create_issue(task_id: str, title: str, priority: int = 3,
@@ -433,7 +451,7 @@ def _gh_create_issue(task_id: str, title: str, priority: int = 3,
 
         result = subprocess.run(
             ["gh", "issue", "create",
-             "--repo", AOS_REPO,
+             "--repo", _resolve_aos_repo(),
              "--title", f"[{task_id}] {title}",
              "--body", body,
              "--label", labels],
@@ -457,7 +475,7 @@ def _gh_close_issue(task_id: str) -> bool:
     try:
         result = subprocess.run(
             ["gh", "issue", "list",
-             "--repo", AOS_REPO,
+             "--repo", _resolve_aos_repo(),
              "--search", f"[{task_id}] in:title",
              "--state", "open",
              "--json", "number",
@@ -474,7 +492,7 @@ def _gh_close_issue(task_id: str) -> bool:
         issue_num = issues[0]["number"]
         close_result = subprocess.run(
             ["gh", "issue", "close",
-             "--repo", AOS_REPO,
+             "--repo", _resolve_aos_repo(),
              str(issue_num)],
             capture_output=True, text=True, timeout=15,
         )

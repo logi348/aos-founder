@@ -27,9 +27,37 @@ PRE_COMMIT_HOOK = """\
 #!/bin/bash
 # Installed by AOS reconcile — do not remove
 # ~/aos/ is a read-only runtime copy. All commits go to ~/project/aos/
-echo "ERROR: ~/aos/ is read-only runtime. Commit to ~/project/aos/ instead." >&2
+echo "ERROR: ~/aos/ is read-only runtime — edits here are wiped every 30 minutes." >&2
+echo "Make the change in the workshop (~/project/aos/, the workshop skill), push it," >&2
+echo "then install it with 'aos update'." >&2
 exit 1
 """
+
+MAX_LISTED = 20
+
+
+def _hook_current(text: str) -> bool:
+    """Installed hook blocks commits and points at the workshop."""
+    return "read-only runtime" in text and "workshop" in text
+
+
+def _porcelain_paths(porcelain: str) -> list[str]:
+    """File names from `git status --porcelain` output (renames → new name)."""
+    paths = []
+    for line in porcelain.splitlines():
+        if len(line) < 4:
+            continue
+        path = line[3:]
+        if " -> " in path:
+            path = path.split(" -> ", 1)[1]
+        paths.append(path.strip().strip('"'))
+    return paths
+
+
+def _name_list(paths: list[str]) -> str:
+    shown = ", ".join(paths[:MAX_LISTED])
+    extra = len(paths) - MAX_LISTED
+    return shown + (f" (+{extra} more)" if extra > 0 else "")
 
 
 class RuntimeProtectionCheck(ReconcileCheck):
@@ -53,7 +81,7 @@ class RuntimeProtectionCheck(ReconcileCheck):
         # Check 1: pre-commit hook exists and blocks commits
         if not self.hook_path.exists():
             return False
-        if "read-only runtime" not in self.hook_path.read_text():
+        if not _hook_current(self.hook_path.read_text()):
             return False
 
         # Check 2: .no-auto-commit marker exists
@@ -89,7 +117,7 @@ class RuntimeProtectionCheck(ReconcileCheck):
         fixed = []
 
         # Fix 1: Install pre-commit hook
-        if not self.hook_path.exists() or "read-only runtime" not in self.hook_path.read_text():
+        if not self.hook_path.exists() or not _hook_current(self.hook_path.read_text()):
             self.hooks_dir.mkdir(parents=True, exist_ok=True)
             self.hook_path.write_text(PRE_COMMIT_HOOK)
             self.hook_path.chmod(0o755)
@@ -106,6 +134,8 @@ class RuntimeProtectionCheck(ReconcileCheck):
             cwd=RUNTIME_DIR, capture_output=True, text=True, timeout=10
         )
         if result.stdout.strip():
+            # Name what gets discarded so a wipe is never silent.
+            discarded = _porcelain_paths(result.stdout)
             # Reset tracked files, clean untracked (but not ignored)
             subprocess.run(
                 ["git", "checkout", "--", "."],
@@ -115,7 +145,10 @@ class RuntimeProtectionCheck(ReconcileCheck):
                 ["git", "clean", "-fd"],
                 cwd=RUNTIME_DIR, capture_output=True, timeout=10
             )
-            fixed.append("cleaned dirty files")
+            fixed.append(
+                f"discarded uncommitted changes to {_name_list(discarded)} "
+                "(make lasting changes in ~/project/aos via the workshop)"
+            )
 
         # Fix 4: Reset local commits ahead of origin
         result = subprocess.run(
@@ -125,11 +158,18 @@ class RuntimeProtectionCheck(ReconcileCheck):
         try:
             ahead = int(result.stdout.strip())
             if ahead > 0:
+                names = subprocess.run(
+                    ["git", "diff", "--name-only", "origin/main", "HEAD"],
+                    cwd=RUNTIME_DIR, capture_output=True, text=True, timeout=10
+                ).stdout.split()
                 subprocess.run(
                     ["git", "reset", "--hard", "origin/main"],
                     cwd=RUNTIME_DIR, capture_output=True, timeout=10
                 )
-                fixed.append(f"reset {ahead} local commits to origin/main")
+                fixed.append(
+                    f"reset {ahead} local commits to origin/main"
+                    + (f" (files: {_name_list(names)})" if names else "")
+                )
         except (ValueError, AttributeError):
             pass
 

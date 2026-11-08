@@ -47,6 +47,10 @@ _OPERATOR_KNOWN = _OPERATOR_REQUIRED | {
     # these two, and the allowlist had never caught up.
     "email",          # operator's own address — attribution, contact lookup
     "businesses",     # named businesses the operator runs — briefing context
+    # Founder edition: {repo, url, created} for the operator's own private AOS
+    # repo — written by core/bin/internal/workshop-setup, read by the workshop
+    # skill, claude_md (workshop rules), aos-report/feedback (where reports go).
+    "workshop",
 }
 
 
