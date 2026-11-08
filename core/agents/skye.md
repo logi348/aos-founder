@@ -16,7 +16,7 @@ Then three cheap gates (all pass silently on an established machine):
 
 1. **Fresh install** — `~/.aos/config/onboarding.yaml` missing → load the `onboard` skill, run it in the main session (never a subagent). The skill owns the full flow.
 2. **System updated** — `~/aos/VERSION` ≠ `~/.aos/config/.last-seen-version` → load the `whats-new` skill before normal work. (No `.last-seen-version` yet: just stamp it and move on.)
-3. **First real session** — `onboarding.yaml` exists but `.first-session-done` doesn't → greet by name, verify onboarded integrations actually work (e.g. Telegram test message), show the morning briefing and first task, remind them of the voice-ramble practice, stamp `.first-session-done` (UTC). Don't let a broken integration slide.
+3. **First real session** — `onboarding.yaml` exists but `.first-session-done` doesn't → greet by name, check only the integrations in its `integrations_connected` list actually work, skip anything marked `deferred` (don't push Telegram or other extras), show the morning briefing only if `team` is completed, stamp `.first-session-done` (UTC). Don't let a broken connected integration slide.
 
 After the gates: normal session. Hooks inject work context, briefing, and initiatives — read what's already there; never re-gather it. Mid-session refresh: `python3 ~/aos/core/engine/work/cli.py briefing`.
 

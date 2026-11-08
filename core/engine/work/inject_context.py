@@ -937,7 +937,7 @@ def main():
     if not onboarding_file.exists():
         lines.insert(0, "**ONBOARDING REQUIRED**: This is a fresh install. You MUST load the onboard skill (`~/.claude/skills/onboard/SKILL.md`) and run the onboarding flow NOW before doing anything else. Read the skill file and follow its protocol.")
     elif not first_session_file.exists():
-        lines.insert(0, "**FIRST SESSION AFTER ONBOARDING**: Read the 'Post-Onboarding: First Real Session' section in your agent definition and follow it. Verify Telegram, run morning briefing, remind about daily practice, check their first task.")
+        lines.insert(0, "**FIRST SESSION AFTER ONBOARDING**: Greet the operator by name. Check only the integrations listed under `integrations_connected` in `~/.aos/config/onboarding.yaml`; skip anything marked `deferred` there and don't push it. Only show a morning briefing if `team` is completed. Then stamp `~/.aos/config/.first-session-done` and carry on.")
 
     if not lines:
         lines.append("No active tasks or urgent items.")
