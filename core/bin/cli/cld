@@ -21,16 +21,11 @@
 # Always resolve Python through the AOS resolver — a python3 on PATH can be
 # present, correctly versioned, and unusable (Homebrew 3.14's pyexpat).
 AOS_PY="${AOS_PY:-$HOME/aos/core/bin/internal/aos-python}"
+# The agent id is always "skye" (the frontmatter name in core/agents/skye.md).
+# The name the operator chose is a display name (operator.yaml agent_name) that
+# the agent reads at session start — it is never an agent id, so renaming can
+# never point Claude Code at an agent that doesn't exist.
 AGENT_NAME="skye"
-if [[ -f "$HOME/.aos/config/operator.yaml" ]]; then
-    custom=$("$AOS_PY" -c "
-import yaml
-from pathlib import Path
-d = yaml.safe_load(Path.home().joinpath('.aos/config/operator.yaml').read_text()) or {}
-print(d.get('agent_name', ''))
-" 2>/dev/null)
-    [[ -n "$custom" ]] && AGENT_NAME="$custom"
-fi
 
 # A profile is resolved from the invoked name (a symlink like cld2/cld3) or
 # from an explicit `--profile <name>` as this script's first argument. Plain

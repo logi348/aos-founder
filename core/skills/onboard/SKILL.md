@@ -149,6 +149,24 @@ This first chat takes about half an hour. Mostly I'll just ask about you."
 
 Then move on. No big speech.
 
+### Your Name for Me
+
+Right after the greeting, offer the name — it should feel like theirs:
+
+"One quick thing first: Skye is just my starting name. You can call me anything you
+like — a name, a nickname, anything."
+
+AskUserQuestion:
+- question: "What would you like to call me?"
+- options: ["Keep Skye", "I'll pick a name"]
+
+If they pick one, run it yourself (any name is fine — spaces and capitals too):
+```bash
+~/aos/core/bin/cli/aos rename-agent "{chosen name}"
+```
+Then use that name for yourself from this sentence on, and in `agent_name` of the
+onboarding record. "Nice to meet you. I'm {chosen name}."
+
 ### Research First
 
 Before asking them to talk, see if there's existing information about them. Don't make
@@ -466,7 +484,7 @@ Phase key: `tools`
 
 `python3 ~/aos/core/engine/work/cli.py start "your tools"`
 
-For now there's one tool to connect: GitHub. Everything else waits until they ask.
+Three tools to connect: GitHub, Vercel and Supabase — the kit for building an app. Everything else waits until they ask.
 
 ### Security in One Line
 
@@ -535,7 +553,76 @@ gh auth status
 
 "Done — GitHub is connected. When we build your app, its code will be saved there."
 
-<!-- VERCEL_SUPABASE_INSERT -->
+### Vercel and Supabase (always set up — the app needs both)
+
+Say it in one breath, so the three tools make sense together:
+
+"Two more and you're ready to build. **GitHub** keeps your app's code safe.
+**Vercel** puts your app on the internet — every change gets its own link you can
+open on your phone. **Supabase** holds your app's data: your users, their logins,
+anything they save. Both are free to start."
+
+**Accounts first.** Tip that saves a password: "On both sites, choose **Continue with
+GitHub** — then there's nothing new to remember."
+
+```bash
+open "https://vercel.com/signup"
+```
+"I've opened Vercel's sign-up page. Pick the free **Hobby** plan and choose
+**Continue with GitHub**. Tell me when you're in."
+
+AskUserQuestion:
+- question: "Vercel account ready?"
+- options: ["Done", "I'm stuck"]
+
+```bash
+open "https://supabase.com/dashboard/sign-up"
+```
+"Same again for Supabase: **Continue with GitHub**, then come back."
+
+AskUserQuestion:
+- question: "Supabase account ready?"
+- options: ["Done", "I'm stuck"]
+
+If stuck: ask what they see (or screenshot via Chrome MCP) and guide one click at a time.
+
+**Install and sign in (you run it, they click).** Both sign-ins can ask a question
+in the window, so open a Terminal window for them rather than running it silently:
+
+```bash
+osascript -e 'tell application "Terminal" to do script "bash ~/aos/core/infra/integrations/vercel/setup.sh; bash ~/aos/core/infra/integrations/supabase/setup.sh"'
+```
+
+"A window just opened. It installs two small tools — give it a few minutes. When a
+browser page opens, click **Continue with GitHub** / **Authorize**. If the window
+asks you something, pressing **Return** picks the right answer. Tell me when it says
+it's done."
+
+AskUserQuestion:
+- question: "Has the window finished?"
+- options: ["Yes", "It shows an error", "Still going"]
+
+On error: read the window's last lines (ask them to describe or screenshot), fix it,
+and re-run just the failing one. Running a setup again is always safe.
+
+Verify quietly:
+```bash
+bash ~/aos/core/infra/integrations/vercel/setup.sh --check; bash ~/aos/core/infra/integrations/supabase/setup.sh --check
+```
+
+**Let you work them directly.** The setup registered both with Claude Code. Each
+needs one approval:
+
+"Last bit. Type **/mcp** right here and press Return. You'll see **vercel** and
+**supabase** — pick each one, choose **Authenticate**, and click **Allow** in the
+browser. That lets me check your app's deploys and data for you, so you never
+have to."
+
+Add `vercel` and `supabase` to `integrations_connected` in the onboarding record.
+
+"That's everything you need to build. **Stripe** — for taking payments — we'll set up
+the day you're ready to charge, in test mode first."
+
 
 `python3 ~/aos/core/engine/work/cli.py done "your tools"`
 
@@ -572,6 +659,11 @@ Then one line about extras:
 Google (Gmail, Calendar, Drive), Apple Calendar, Notes and Reminders, Notion, Slack,
 email, WhatsApp, or remote access to this Mac — just ask."
 
+And one line on making it theirs:
+
+"And I'm yours to shape. Tell me any time — 'be blunter', 'shorter answers', 'call
+yourself something else', 'stop asking about X' — and I'll remember it."
+
 ### Write the Onboarding Record
 
 Optionally ask:
@@ -595,7 +687,7 @@ phases:
   team: deferred
 operator_name: "{name}"
 agent_name: "{agent_name}"
-integrations_connected: [github]
+integrations_connected: [github, vercel, supabase]   # only the ones verified working
 notes: "{one line — anything worth remembering, e.g. areas skipped in the brain dump}"
 ```
 

@@ -157,6 +157,28 @@ builtin:
     requires: [gh auth]
     setup: core/infra/integrations/github/setup.sh
 
+  vercel:
+    name: Vercel
+    tier: 2
+    category: development
+    status: available
+    priority: high
+    description: Puts your app on the internet. Every change gets its own preview link.
+    provides: [deploy, preview links, custom domains, environment variables]
+    requires: [free vercel.com account, browser sign-in]
+    setup: core/infra/integrations/vercel/setup.sh
+
+  supabase:
+    name: Supabase
+    tier: 2
+    category: development
+    status: available
+    priority: high
+    description: Your app's database, user sign-ups and logins, and file storage.
+    provides: [postgres database, auth, file storage, edge functions]
+    requires: [free supabase.com account, browser sign-in]
+    setup: core/infra/integrations/supabase/setup.sh
+
   health:
     name: HealthKit Sync
     tier: 2
@@ -173,6 +195,17 @@ builtin:
 # Operator picks what they use, Skye helps connect.
 
 catalog:
+
+  stripe:
+    name: Stripe
+    tier: 3
+    category: payments
+    status: available
+    description: Take payments in your app. Set up only when you are ready to charge; test mode first.
+    access: cli
+    provides: [payments, subscriptions, checkout, webhooks]
+    requires: [stripe.com account, browser sign-in]
+    setup_hint: "On request: brew install stripe/stripe-cli/stripe, then stripe login (browser). Test mode only until the operator says otherwise. Any live charge or payout is a financial commitment: always ask first."
 
   notion:
     name: Notion

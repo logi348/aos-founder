@@ -870,76 +870,43 @@ print('\n'.join(deps))
         ;;
 
     rename-agent)
-        # Rename the main orchestrator agent
+        # Give the main assistant a new name. The name is a display name only:
+        # it lives in operator.yaml (agent_name) and the assistant reads it at
+        # session start. The agent id stays "skye" — renaming the agent file
+        # or settings.json would point Claude Code at an agent that doesn't
+        # exist (its frontmatter name is still skye).
         shift
-        new_name="${1:-}"
+        new_name="$*"
         if [[ -z "$new_name" ]]; then
-            echo "Usage: aos rename-agent <new-name>"
-            echo "Example: aos rename-agent atlas"
-            echo ""
-            # Show current name
             current=$("$AOS_PY" -c "
 import yaml
 from pathlib import Path
-d = yaml.safe_load(Path.home().joinpath('.aos/config/operator.yaml').read_text()) or {}
-print(d.get('agent_name', 'skye'))
-" 2>/dev/null || echo "skye")
-            echo "Current agent name: $current"
+p = Path.home() / '.aos/config/operator.yaml'
+d = (yaml.safe_load(p.read_text()) if p.exists() else None) or {}
+print(d.get('agent_name') or 'Skye')
+" 2>/dev/null || echo "Skye")
+            echo "Usage: aos rename-agent <new name>"
+            echo "Example: aos rename-agent Atlas"
+            echo ""
+            echo "Current name: $current"
+            exit 1
+        fi
+        if (( ${#new_name} > 40 )) || [[ "$new_name" == *$'\n'* ]]; then
+            echo "Pick a name of 40 characters or fewer, on one line."
             exit 1
         fi
 
-        # Validate: lowercase, no spaces
-        if [[ "$new_name" =~ [^a-z0-9_-] ]]; then
-            echo "Agent name must be lowercase letters, numbers, hyphens, or underscores."
-            exit 1
-        fi
-
-        agents_dir="$HOME/.claude/agents"
-        chief_source="$AOS_DIR/core/agents/skye.md"
-
-        # Read current name
-        old_name=$("$AOS_PY" -c "
-import yaml
-from pathlib import Path
-d = yaml.safe_load(Path.home().joinpath('.aos/config/operator.yaml').read_text()) or {}
-print(d.get('agent_name', 'skye'))
-" 2>/dev/null || echo "skye")
-
-        # Create new symlink
-        ln -sf "$chief_source" "$agents_dir/${new_name}.md"
-        echo "  Created agent: $agents_dir/${new_name}.md"
-
-        # Remove old symlink if it was a custom name (don't remove skye.md)
-        if [[ "$old_name" != "skye" ]] && [[ "$old_name" != "$new_name" ]]; then
-            rm -f "$agents_dir/${old_name}.md" 2>/dev/null
-            echo "  Removed old: $agents_dir/${old_name}.md"
-        fi
-
-        # Update operator.yaml
-        "$AOS_PY" -c "
-import yaml
+        AOS_NEW_AGENT_NAME="$new_name" "$AOS_PY" -c "
+import os, yaml
 from pathlib import Path
 p = Path.home() / '.aos/config/operator.yaml'
-d = yaml.safe_load(p.read_text()) or {}
-d['agent_name'] = '$new_name'
+p.parent.mkdir(parents=True, exist_ok=True)
+d = (yaml.safe_load(p.read_text()) if p.exists() else None) or {}
+d['agent_name'] = os.environ['AOS_NEW_AGENT_NAME']
 p.write_text(yaml.dump(d, default_flow_style=False, sort_keys=False, allow_unicode=True))
-" 2>/dev/null
-        echo "  Updated operator.yaml: agent_name=$new_name"
-
-        # Update settings.json
-        "$AOS_PY" -c "
-import json
-from pathlib import Path
-p = Path.home() / '.claude/settings.json'
-s = json.loads(p.read_text())
-s['agent'] = '$new_name'
-p.write_text(json.dumps(s, indent=2) + '\n')
-" 2>/dev/null
-        echo "  Updated settings.json: agent=$new_name"
-
-        echo ""
-        echo "  Done! Your agent is now '$new_name'."
-        echo "  Run 'cld' to start a session with $new_name."
+" || { echo "  Couldn't save the new name."; exit 1; }
+        echo "  Saved: your assistant is now called '$new_name'."
+        echo "  It uses the new name from the next message on."
         ;;
 
     repair)

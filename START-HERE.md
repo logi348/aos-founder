@@ -1,6 +1,7 @@
 # Start here
 
-This sets up **Skye**, your thinking and building partner, on your Mac.
+This sets up your own thinking and building partner on your Mac. It starts out
+called **Skye**, and in the first minute you can give it any name you like.
 You'll paste one line, wait while it installs, and then Skye takes over and
 talks you through the rest.
 
@@ -65,11 +66,12 @@ When it's done, a new app called **cmux** opens, and your web browser asks you
 to sign in to Claude. Sign in with the account that has the paid plan, then
 come back to cmux.
 
-## Step 5: Say hi to Skye
+## Step 5: Say hi
 
 Skye starts the conversation in cmux. From here you just talk, by typing in
-plain words, the way you'd text a person. Skye will:
+plain words, the way you'd text a person. It will:
 
+- ask what you'd like to call it;
 - get to know you, your background and what you're working toward;
 - help you get everything you know out of your head and into notes it can use
   later;
